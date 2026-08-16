@@ -1,0 +1,43 @@
+# Fly.io deployment.
+#
+#   fly launch --no-deploy      # claims the app name, writes no secrets
+#   fly postgres create         # managed Postgres, then `fly postgres attach`
+#   fly secrets set ...         # see docs/DEPLOY.md
+#   fly deploy
+#
+# Railway users: delete this file and see docs/DEPLOY.md -- the Dockerfile and
+# environment variables are identical, only the CLI differs.
+
+app = "mailagent"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8000"
+  APP_ENV = "prod"
+  # Single instance, so boot-time migration is safe. Revisit if this ever
+  # scales past one machine -- concurrent boots would race.
+  MIGRATE_ON_BOOT = "true"
+  RUN_SCHEDULER = "true"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # The scheduler must keep running between webhook calls: an autostopped
+  # machine polls no mail and fires no token-expiry warning.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.checks]
+    [http_service.checks.health]
+      path = "/health"
+      interval = "30s"
+      timeout = "5s"
+      grace_period = "20s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
