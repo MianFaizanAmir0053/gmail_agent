@@ -1,0 +1,12 @@
+# The container runs Linux; LF in the repo keeps checkouts identical there
+# regardless of what the developer's machine does locally.
+* text=auto eol=lf
+
+# Windows-only, and PowerShell is happiest with CRLF.
+*.ps1 text eol=crlf
+
+# Binary-ish: never touch.
+*.png binary
+*.jpg binary
+*.enc binary
+uv.lock -diff
