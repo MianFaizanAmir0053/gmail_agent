@@ -53,6 +53,20 @@ class Settings(BaseSettings):
     extraction_model: str = "gemini-3.6-flash"
     classify_model: str = "gemini-3.5-flash-lite"
 
+    # --- Retrieval (M10) ----------------------------------------------------
+    embedding_model: str = "gemini-embedding-001"
+    """Pinned to the GA model rather than `gemini-embedding-2`.
+
+    Changing this invalidates the entire corpus: vectors from two models are not
+    comparable, so a swap means re-embedding everything before search works
+    again. Stability is worth more here than a benchmark point, and M12's
+    retrieval baseline is meaningless if the embedder moves underneath it.
+    """
+
+    embedding_dimensions: int = 1536
+    """Must equal the width of `chunks.embedding`; ingestion refuses to start
+    otherwise. See `migrations/004_pgvector.sql` for why it is not 3072."""
+
     user_timezone: str = "UTC"
     """IANA zone used to ground relative dates and render approval cards."""
 

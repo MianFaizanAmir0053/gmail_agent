@@ -44,6 +44,15 @@ def test_html_fallback_drops_script_and_style() -> None:
     assert "color:red" not in body
 
 
+def test_numeric_and_named_entities_are_decoded() -> None:
+    """A hand-written table covered five named entities and left `&#128206;`
+    sitting in the body, where it went on to be embedded verbatim."""
+    payload: dict[str, Any] = {
+        "parts": [_part("text/html", "<p>&#128206; Attached &amp; signed &#8212; done</p>")]
+    }
+    assert extract_body(payload) == "\N{PAPERCLIP} Attached & signed \N{EM DASH} done"
+
+
 def test_finds_deeply_nested_parts() -> None:
     payload: dict[str, Any] = {
         "mimeType": "multipart/mixed",

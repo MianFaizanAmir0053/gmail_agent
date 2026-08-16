@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html
 import re
 from datetime import UTC, datetime
 from email.utils import getaddresses
@@ -30,12 +31,14 @@ def _decode(data: str) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _html_to_text(html: str) -> str:
-    text = re.sub(r"(?is)<(script|style).*?</\1>", "", html)
+def _html_to_text(markup: str) -> str:
+    text = re.sub(r"(?is)<(script|style).*?</\1>", "", markup)
     text = re.sub(r"(?i)<br\s*/?>|</p>", "\n", text)
     text = _TAG.sub("", text)
-    for entity, char in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">")):
-        text = text.replace(entity, char)
+    # html.unescape rather than a hand-written table. The table handled five
+    # named entities and left numeric ones alone, so transactional mail arrived
+    # with literal `&#128206;` in the body -- which then went on to be embedded.
+    text = html.unescape(text)
     return _WHITESPACE.sub("\n\n", text).strip()
 
 
@@ -114,6 +117,38 @@ class GmailClient:
             .execute(),
         )
         return [cast(str, m["id"]) for m in response.get("messages", [])]
+
+    def search(self, query: str, limit: int = 200) -> list[str]:
+        """Message IDs matching a Gmail search query, newest first.
+
+        Paginated, unlike `list_unread`: retrieval ingestion walks months of
+        history, and Gmail caps a single page at 500 regardless of what
+        `maxResults` asks for. Stops at `limit` so a wide query cannot turn into
+        an unbounded walk of the whole mailbox.
+        """
+        ids: list[str] = []
+        page_token: str | None = None
+
+        while len(ids) < limit:
+            response = cast(
+                dict[str, Any],
+                self._service.users()
+                .messages()
+                .list(
+                    userId="me",
+                    q=query,
+                    maxResults=min(500, limit - len(ids)),
+                    pageToken=page_token,
+                )
+                .execute(),
+            )
+            ids.extend(cast(str, m["id"]) for m in response.get("messages", []))
+
+            page_token = cast(str | None, response.get("nextPageToken"))
+            if not page_token:
+                break
+
+        return ids[:limit]
 
     def get_message(self, message_id: str) -> EmailMessage:
         response = cast(

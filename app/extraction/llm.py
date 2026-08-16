@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -153,6 +154,35 @@ def _raise_for_block(response: Any) -> None:
         raise LlmError("Model emitted a malformed function call")
 
 
+def call_with_retry[R](
+    call: Callable[[], R],
+    *,
+    what: str,
+    attempts: int = 4,
+    base_delay: float = 2.0,
+) -> R:
+    """Retry a provider call while the failure looks transient.
+
+    Takes a thunk rather than the call's arguments so the embeddings endpoint
+    can share this. The judgement about *which* failures are worth retrying --
+    transient status codes, minus the per-day quota wall -- is the part worth
+    having in one place; the shape of the request is not.
+    """
+    last: BaseException | None = None
+
+    for attempt in range(attempts):
+        try:
+            return call()
+        except Exception as exc:
+            if not _is_transient(exc):
+                raise
+            last = exc
+            if attempt < attempts - 1:
+                time.sleep(_server_retry_delay(exc) or base_delay * (2**attempt))
+
+    raise LlmError(f"{what} unavailable after {attempts} attempts: {last}") from last
+
+
 def _call_with_retry(
     client: GenaiLike,
     *,
@@ -162,19 +192,12 @@ def _call_with_retry(
     attempts: int = 4,
     base_delay: float = 2.0,
 ) -> Any:
-    last: BaseException | None = None
-
-    for attempt in range(attempts):
-        try:
-            return client.models.generate_content(model=model, contents=user, config=config)
-        except Exception as exc:
-            if not _is_transient(exc):
-                raise
-            last = exc
-            if attempt < attempts - 1:
-                time.sleep(_server_retry_delay(exc) or base_delay * (2**attempt))
-
-    raise LlmError(f"{model} unavailable after {attempts} attempts: {last}") from last
+    return call_with_retry(
+        lambda: client.models.generate_content(model=model, contents=user, config=config),
+        what=model,
+        attempts=attempts,
+        base_delay=base_delay,
+    )
 
 
 def structured_call[T: BaseModel](
