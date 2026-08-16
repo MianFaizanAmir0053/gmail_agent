@@ -1,0 +1,27 @@
+{
+  "id": "fx-014",
+  "tags": ["meeting", "implied-duration"],
+  "note": "Start is stated, end is not. Convention: default to 30 minutes when the text says 'quick'/'short', otherwise 60.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx014",
+    "thread_id": "fx014",
+    "subject": "1 Sept kickoff",
+    "body_text": "Kickoff for the reporting project is 1 September at 11am. Nothing to prepare, just turn up.",
+    "sender": "sara@example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T08:30:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Reporting project kickoff",
+    "start_utc": "2026-09-01T06:00:00Z",
+    "end_utc": "2026-09-01T07:00:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": ["sara@example.com"],
+    "location": null,
+    "confidence": 0.8,
+    "reasoning": "11:00 PKT on 1 Sept is 06:00Z. No duration given, so the 60-minute default applies."
+  }
+}

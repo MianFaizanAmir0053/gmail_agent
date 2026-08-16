@@ -1,0 +1,27 @@
+{
+  "id": "fx-009",
+  "tags": ["non-meeting", "newsletter"],
+  "note": "Marketing copy stuffed with dates and a webinar time. The webinar is not on the user's calendar unless they registered.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx009",
+    "thread_id": "fx009",
+    "subject": "This week in platform engineering",
+    "body_text": "Your weekly roundup.\n\n- Kubernetes 1.34 drops 3 September\n- Free webinar: 'Scaling Postgres', Thursday 20 August 6pm UTC. Register here.\n- Job board refreshed Monday\n\nUnsubscribe | Manage preferences",
+    "sender": "newsletter@platformweekly.example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T04:00:00Z"
+  },
+  "expected": {
+    "is_meeting": false,
+    "title": null,
+    "start_utc": null,
+    "end_utc": null,
+    "timezone": null,
+    "attendees": [],
+    "location": null,
+    "confidence": 0.9,
+    "reasoning": "Bulk newsletter. The webinar is an advertisement, not a commitment the user made."
+  }
+}

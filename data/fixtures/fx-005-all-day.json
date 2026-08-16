@@ -1,0 +1,27 @@
+{
+  "id": "fx-005",
+  "tags": ["meeting", "all-day"],
+  "note": "All-day events have no clock time. Convention: midnight-to-midnight in the local zone, which is 19:00Z the previous day for PKT (UTC+5).",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx005",
+    "thread_id": "fx005",
+    "subject": "Company offsite - Friday",
+    "body_text": "Reminder: the company offsite is all day this Friday, 21 August. No need to book anything else that day.",
+    "sender": "ops@example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T05:00:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Company offsite",
+    "start_utc": "2026-08-20T19:00:00Z",
+    "end_utc": "2026-08-21T19:00:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": ["ops@example.com"],
+    "location": null,
+    "confidence": 0.75,
+    "reasoning": "All-day on 21 Aug in Asia/Karachi spans 2026-08-20T19:00Z to 2026-08-21T19:00Z."
+  }
+}

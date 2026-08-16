@@ -1,0 +1,27 @@
+{
+  "id": "fx-012",
+  "tags": ["non-meeting", "vague"],
+  "note": "Genuine intent to meet, no committed time. The hardest non-meeting: a model eager to be helpful will invent a slot.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx012",
+    "thread_id": "fx012",
+    "subject": "Coffee sometime?",
+    "body_text": "Been ages! We should grab coffee sometime in the next few weeks - I'm around most afternoons. Let me know what suits.",
+    "sender": "hina@example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T06:00:00Z"
+  },
+  "expected": {
+    "is_meeting": false,
+    "title": null,
+    "start_utc": null,
+    "end_utc": null,
+    "timezone": null,
+    "attendees": [],
+    "location": null,
+    "confidence": 0.7,
+    "reasoning": "No date and no time committed. Nothing concrete enough to book."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "fx-010",
+  "tags": ["non-meeting", "job-alert"],
+  "note": "Modelled on the live inbox, which is almost entirely job alerts. The dominant real-world class.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx010",
+    "thread_id": "fx010",
+    "subject": "Front-end Developer at ARNE and 4 more jobs for you",
+    "body_text": "New jobs matching your profile\n\nFront-end Developer - ARNE - Remote\nSenior Software Engineer - Teamified - Hybrid\nAngular Developer - Metropolitan - On-site\n\nApply now. You are receiving this because you set up a job alert.",
+    "sender": "jobalerts-noreply@linkedin.example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T05:19:00Z"
+  },
+  "expected": {
+    "is_meeting": false,
+    "title": null,
+    "start_utc": null,
+    "end_utc": null,
+    "timezone": null,
+    "attendees": [],
+    "location": null,
+    "confidence": 0.98,
+    "reasoning": "Automated job alert. No time, no commitment."
+  }
+}

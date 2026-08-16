@@ -1,0 +1,27 @@
+{
+  "id": "fx-008",
+  "tags": ["meeting", "forwarded"],
+  "note": "Details live in the quoted reply, not the covering note. Aggressive quote-stripping deletes the answer.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx008",
+    "thread_id": "fx008",
+    "subject": "Fwd: Onboarding session",
+    "body_text": "FYI - can you make this one?\n\n---------- Forwarded message ---------\nFrom: Hina Raza <hina@example.com>\nDate: Sat, 15 Aug 2026 at 11:02\nSubject: Onboarding session\n\n> Hi team,\n>\n> The onboarding session is set for Tuesday 25 August, 3:00pm to 4:30pm.\n> Room 4 on the third floor.\n>\n> Hina",
+    "sender": "bilal@example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T07:45:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Onboarding session",
+    "start_utc": "2026-08-25T10:00:00Z",
+    "end_utc": "2026-08-25T11:30:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": ["bilal@example.com", "hina@example.com"],
+    "location": "Room 4, third floor",
+    "confidence": 0.75,
+    "reasoning": "Time comes from the quoted original. Forwarder and original sender both attend."
+  }
+}

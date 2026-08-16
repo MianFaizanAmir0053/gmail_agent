@@ -1,0 +1,27 @@
+{
+  "id": "fx-013",
+  "tags": ["meeting", "attendees"],
+  "note": "Attendee convention: everyone expected to attend except the account owner. Cc counts; the mailing list does not.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx013",
+    "thread_id": "fx013",
+    "subject": "Incident post-mortem, Mon 24 Aug 11:00",
+    "body_text": "Post-mortem for last week's outage: Monday 24 August, 11:00-12:00 PKT.\n\nDana is dialling in from the US side. Room 1.",
+    "sender": "ayesha@example.com",
+    "recipients": ["me@example.com", "bilal@example.com", "dana@example.com", "engineering@example.com"],
+    "received_at": "2026-08-17T08:00:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Incident post-mortem",
+    "start_utc": "2026-08-24T06:00:00Z",
+    "end_utc": "2026-08-24T07:00:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": ["ayesha@example.com", "bilal@example.com", "dana@example.com"],
+    "location": "Room 1",
+    "confidence": 0.9,
+    "reasoning": "Owner excluded from attendees; engineering@ is a distribution list, not a person."
+  }
+}

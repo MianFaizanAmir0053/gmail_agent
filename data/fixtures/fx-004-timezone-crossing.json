@@ -1,0 +1,27 @@
+{
+  "id": "fx-004",
+  "tags": ["meeting", "tz-crossing"],
+  "note": "Sender states Pacific time; recipient is in Karachi. A model that assumes recipient-local lands 12 hours out. Aug is PDT (UTC-7), not PST.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx004",
+    "thread_id": "fx004",
+    "subject": "Contract walkthrough",
+    "body_text": "Morning,\n\nCould you join a contract walkthrough on Thursday 20 August at 9:00 AM Pacific? Should run an hour. Zoom link to follow.\n\nBest,\nDana",
+    "sender": "dana@example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T06:30:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Contract walkthrough",
+    "start_utc": "2026-08-20T16:00:00Z",
+    "end_utc": "2026-08-20T17:00:00Z",
+    "timezone": "America/Los_Angeles",
+    "attendees": ["dana@example.com"],
+    "location": null,
+    "confidence": 0.85,
+    "reasoning": "9am PDT on 20 Aug is 16:00 UTC. Zone recorded as the one the meeting was expressed in."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "fx-001",
+  "tags": ["meeting", "explicit-datetime"],
+  "note": "Easiest possible case. If this ever fails, something structural is broken.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx001",
+    "thread_id": "fx001",
+    "subject": "Design review — Wed 19 Aug, 4-5pm PKT",
+    "body_text": "Hi,\n\nBooking the design review for Wednesday 19 August, 4:00-5:00 PM PKT. Meeting room 2.\n\nSara",
+    "sender": "sara@example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T08:12:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Design review",
+    "start_utc": "2026-08-19T11:00:00Z",
+    "end_utc": "2026-08-19T12:00:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": ["sara@example.com"],
+    "location": "Meeting room 2",
+    "confidence": 1.0,
+    "reasoning": "Explicit date, explicit start and end, explicit zone."
+  }
+}

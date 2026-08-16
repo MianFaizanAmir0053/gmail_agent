@@ -1,0 +1,27 @@
+{
+  "id": "fx-002",
+  "tags": ["meeting", "relative-date"],
+  "note": "\"Tomorrow\" is only resolvable against now_utc. Ungrounded models drift by a day.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx002",
+    "thread_id": "fx002",
+    "subject": "Quick call tomorrow?",
+    "body_text": "Can we do a quick call tomorrow 10:30-11:00 to go over the migration plan?\n\n- Bilal",
+    "sender": "bilal@example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T08:40:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Call: migration plan",
+    "start_utc": "2026-08-18T05:30:00Z",
+    "end_utc": "2026-08-18T06:00:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": ["bilal@example.com"],
+    "location": null,
+    "confidence": 0.9,
+    "reasoning": "Tomorrow relative to Mon 17 Aug is Tue 18 Aug. Times assumed recipient-local (PKT)."
+  }
+}

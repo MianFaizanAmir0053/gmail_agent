@@ -1,0 +1,27 @@
+{
+  "id": "fx-003",
+  "tags": ["meeting", "relative-date"],
+  "note": "Weekday-relative. Unambiguous from a Monday: 'this Thursday' is the 20th.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx003",
+    "thread_id": "fx003",
+    "subject": "Sprint planning",
+    "body_text": "Let's do sprint planning this Thursday at 2pm. Should take about an hour.",
+    "sender": "ayesha@example.com",
+    "recipients": ["me@example.com", "bilal@example.com"],
+    "received_at": "2026-08-17T07:05:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Sprint planning",
+    "start_utc": "2026-08-20T09:00:00Z",
+    "end_utc": "2026-08-20T10:00:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": ["ayesha@example.com", "bilal@example.com"],
+    "location": null,
+    "confidence": 0.9,
+    "reasoning": "This Thursday from Mon 17 Aug is 20 Aug. Duration stated as about an hour."
+  }
+}

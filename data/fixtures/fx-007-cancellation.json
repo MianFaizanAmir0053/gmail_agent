@@ -1,0 +1,27 @@
+{
+  "id": "fx-007",
+  "tags": ["non-meeting", "cancellation"],
+  "note": "Contains a date and a time and the word 'sync' -- everything a naive keyword matcher keys on. Creating an event here is actively wrong.",
+  "now_utc": "2026-08-17T09:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx007",
+    "thread_id": "fx007",
+    "subject": "Cancelling Thursday's sync",
+    "body_text": "Half the team is out, so I'm cancelling the Thursday 2pm sync. We'll pick it up next week.",
+    "sender": "ayesha@example.com",
+    "recipients": ["me@example.com"],
+    "received_at": "2026-08-17T08:20:00Z"
+  },
+  "expected": {
+    "is_meeting": false,
+    "title": null,
+    "start_utc": null,
+    "end_utc": null,
+    "timezone": null,
+    "attendees": [],
+    "location": null,
+    "confidence": 0.9,
+    "reasoning": "Cancellation. No event should be created."
+  }
+}
