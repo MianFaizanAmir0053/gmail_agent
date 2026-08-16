@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    services:
+      # Ledger behaviour is Postgres behaviour (ON CONFLICT, CHECK constraints).
+      # Without a real server the integration tests skip silently and the
+      # idempotency guarantee stops being verified.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: mailagent
+          POSTGRES_PASSWORD: mailagent
+          POSTGRES_DB: mailagent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mailagent"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Typecheck
+        run: uv run mypy app tests
+
+      - name: Test
+        run: uv run pytest
+        env:
+          DATABASE_URL: postgresql://mailagent:mailagent@localhost:5432/mailagent
+          TEST_DATABASE_URL: postgresql://mailagent:mailagent@localhost:5432/mailagent
+          GEMINI_API_KEY: not-a-real-key
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t mailagent:ci .

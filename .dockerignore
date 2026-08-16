@@ -1,0 +1,25 @@
+# Secrets must never reach the image layer cache or a registry.
+.env
+secrets/
+*.enc
+client_secret*.json
+data/raw_emails/
+data/fixtures_draft/
+data/anonymization-map.json
+
+.git/
+.github/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+docs/
+tests/
+results/
+*.md
+!README.md

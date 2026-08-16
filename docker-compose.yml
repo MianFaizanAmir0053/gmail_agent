@@ -1,0 +1,30 @@
+services:
+  db:
+    # pgvector image from the start so M10 needs no swap.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: mailagent
+      POSTGRES_PASSWORD: mailagent
+      POSTGRES_DB: mailagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailagent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    env_file: .env
+    environment:
+      # Override the host-facing URL from .env with the compose network name.
+      DATABASE_URL: postgresql://mailagent:mailagent@db:5432/mailagent
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
