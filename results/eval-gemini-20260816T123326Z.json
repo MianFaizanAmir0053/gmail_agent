@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-08-16T12:33:26.599898+00:00",
+  "extractor": "gemini",
+  "fixtures": 14,
+  "headline_exact_match": 0.9285714285714286,
+  "is_meeting": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "tp": 9,
+    "fp": 0,
+    "fn": 0,
+    "tn": 5
+  },
+  "fields": {
+    "title": {
+      "accuracy": 1.0,
+      "correct": 9,
+      "total": 9
+    },
+    "start_utc": {
+      "accuracy": 1.0,
+      "correct": 9,
+      "total": 9
+    },
+    "end_utc": {
+      "accuracy": 1.0,
+      "correct": 9,
+      "total": 9
+    },
+    "timezone": {
+      "accuracy": 1.0,
+      "correct": 9,
+      "total": 9
+    },
+    "attendees": {
+      "accuracy": 0.8888888888888888,
+      "correct": 8,
+      "total": 9
+    }
+  },
+  "attendees_micro_f1": 0.9600000000000001,
+  "failures": [
+    {
+      "id": "fx-005",
+      "tags": [
+        "meeting",
+        "all-day"
+      ],
+      "wrong_fields": [
+        "attendees"
+      ]
+    }
+  ]
+}

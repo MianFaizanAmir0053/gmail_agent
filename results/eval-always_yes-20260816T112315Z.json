@@ -1,0 +1,222 @@
+{
+  "timestamp": "2026-08-16T11:23:15.169206+00:00",
+  "extractor": "always_yes",
+  "fixtures": 14,
+  "headline_exact_match": 0.0,
+  "is_meeting": {
+    "accuracy": 0.6428571428571429,
+    "precision": 0.6428571428571429,
+    "recall": 1.0,
+    "f1": 0.782608695652174,
+    "tp": 9,
+    "fp": 5,
+    "fn": 0,
+    "tn": 0
+  },
+  "fields": {
+    "title": {
+      "accuracy": 0.0,
+      "correct": 0,
+      "total": 9
+    },
+    "start_utc": {
+      "accuracy": 0.0,
+      "correct": 0,
+      "total": 9
+    },
+    "end_utc": {
+      "accuracy": 0.0,
+      "correct": 0,
+      "total": 9
+    },
+    "timezone": {
+      "accuracy": 0.0,
+      "correct": 0,
+      "total": 9
+    },
+    "attendees": {
+      "accuracy": 0.0,
+      "correct": 0,
+      "total": 9
+    }
+  },
+  "attendees_micro_f1": 0.0,
+  "failures": [
+    {
+      "id": "fx-001",
+      "tags": [
+        "meeting",
+        "explicit-datetime"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    },
+    {
+      "id": "fx-002",
+      "tags": [
+        "meeting",
+        "relative-date"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    },
+    {
+      "id": "fx-003",
+      "tags": [
+        "meeting",
+        "relative-date"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    },
+    {
+      "id": "fx-004",
+      "tags": [
+        "meeting",
+        "tz-crossing"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    },
+    {
+      "id": "fx-005",
+      "tags": [
+        "meeting",
+        "all-day"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    },
+    {
+      "id": "fx-006",
+      "tags": [
+        "meeting",
+        "reschedule"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    },
+    {
+      "id": "fx-007",
+      "tags": [
+        "non-meeting",
+        "cancellation"
+      ],
+      "wrong_fields": [
+        "is_meeting"
+      ]
+    },
+    {
+      "id": "fx-008",
+      "tags": [
+        "meeting",
+        "forwarded"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    },
+    {
+      "id": "fx-009",
+      "tags": [
+        "non-meeting",
+        "newsletter"
+      ],
+      "wrong_fields": [
+        "is_meeting"
+      ]
+    },
+    {
+      "id": "fx-010",
+      "tags": [
+        "non-meeting",
+        "job-alert"
+      ],
+      "wrong_fields": [
+        "is_meeting"
+      ]
+    },
+    {
+      "id": "fx-011",
+      "tags": [
+        "non-meeting",
+        "receipt"
+      ],
+      "wrong_fields": [
+        "is_meeting"
+      ]
+    },
+    {
+      "id": "fx-012",
+      "tags": [
+        "non-meeting",
+        "vague"
+      ],
+      "wrong_fields": [
+        "is_meeting"
+      ]
+    },
+    {
+      "id": "fx-013",
+      "tags": [
+        "meeting",
+        "attendees"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    },
+    {
+      "id": "fx-014",
+      "tags": [
+        "meeting",
+        "implied-duration"
+      ],
+      "wrong_fields": [
+        "title",
+        "start_utc",
+        "end_utc",
+        "timezone",
+        "attendees"
+      ]
+    }
+  ]
+}
