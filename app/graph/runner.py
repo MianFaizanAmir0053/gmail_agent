@@ -95,6 +95,7 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
         raise RuntimeError("TEST_CALENDAR_ID must be set before the graph can act.")
 
     from app.extraction.pipeline import build_pipeline
+    from app.rag.search import build_context_search
 
     credentials = load_credentials(settings)
 
@@ -102,9 +103,14 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
         psycopg.connect(settings.database_url, autocommit=True) as conn,
         postgres_checkpointer(settings.database_url) as checkpointer,
     ):
+        # Shares the graph's connection. Retrieval is read-only and runs inside
+        # an extraction that is already holding it, so a second pool would buy
+        # nothing but another thing to close.
+        searcher = build_context_search(conn, settings) if settings.search_context_enabled else None
+
         deps = Deps(
             gmail=GmailClient(build_service("gmail", "v1", credentials)),
-            pipeline=build_pipeline(owner_email=settings.owner_email),
+            pipeline=build_pipeline(owner_email=settings.owner_email, searcher=searcher),
             calendar=CalendarClient(
                 build_service("calendar", "v3", credentials),
                 settings.test_calendar_id,

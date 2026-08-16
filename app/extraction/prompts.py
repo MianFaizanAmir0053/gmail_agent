@@ -85,6 +85,22 @@ You extract calendar events from email.
 {_EXAMPLES}
 """
 
+SEARCH_SUFFIX = """\
+You can search past email threads with the `search_context` tool.
+
+Use it when the message names a person without giving their address, or refers
+to something previously agreed. A first name plus the surrounding context is
+usually enough to find them. If the search returns nothing, leave the attendee
+out -- never invent an address.
+"""
+"""Appended to `EXTRACT_SYSTEM` only when the tool is actually wired in.
+
+Kept out of the base prompt on purpose. The frozen baseline was measured against
+`EXTRACT_SYSTEM` exactly as it stands, and adding instructions about a tool that
+is not present would change that number for reasons unrelated to retrieval --
+while also telling the model about a capability it does not have.
+"""
+
 
 def grounding_block(now_utc: datetime, user_timezone: str) -> str:
     """Volatile context. Belongs in the user turn, never in the system prompt.

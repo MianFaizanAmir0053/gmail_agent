@@ -187,16 +187,50 @@ def _call_with_retry(
     client: GenaiLike,
     *,
     model: str,
-    user: str,
+    contents: Any,
     config: Any,
     attempts: int = 4,
     base_delay: float = 2.0,
 ) -> Any:
     return call_with_retry(
-        lambda: client.models.generate_content(model=model, contents=user, config=config),
+        lambda: client.models.generate_content(model=model, contents=contents, config=config),
         what=model,
         attempts=attempts,
         base_delay=base_delay,
+    )
+
+
+def _function_calls(response: Any) -> list[Any]:
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return []
+    content = getattr(candidates[0], "content", None)
+    parts = getattr(content, "parts", None) or []
+    return [part.function_call for part in parts if getattr(part, "function_call", None)]
+
+
+ToolDispatch = Callable[[str, dict[str, Any]], dict[str, Any]]
+"""Runs one tool call: `(name, arguments) -> function response payload`."""
+
+MAX_TOOL_TURNS = 3
+"""How many times the model may call a tool before it has to answer.
+
+An unbounded loop is a cost bug waiting to happen, and a model that keeps
+searching is not converging. On the final turn the tools are withdrawn from the
+request entirely, which is what makes termination a property of the code rather
+than a hope about the model's behaviour.
+"""
+
+
+def _record(model: str, usage: Usage) -> None:
+    # Reported to whatever span encloses this call, if any. A no-op outside a
+    # trace, so the eval harness and unit tests need no observability wiring.
+    record_llm_usage(
+        model=model,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cached_tokens=usage.cached_input_tokens,
+        thinking_tokens=usage.thinking_tokens,
     )
 
 
@@ -209,31 +243,105 @@ def structured_call[T: BaseModel](
     schema: type[T],
     thinking_level: str | None = None,
     max_output_tokens: int = 4096,
+    tools: list[dict[str, Any]] | None = None,
+    dispatch: ToolDispatch | None = None,
+    max_tool_turns: int = MAX_TOOL_TURNS,
 ) -> Completion[T]:
-    """Ask for JSON matching `schema`.
+    """Ask for JSON matching `schema`, optionally letting the model use tools.
 
     `thinking_level` is one of MINIMAL / LOW / MEDIUM / HIGH; `None` leaves the
     model's default alone. Note this is the Gemini **3.x** knob -- the 2.x
     `thinking_budget` integer is rejected with a bare
     `400 Request contains an invalid argument` on 3.x models, which names
     nothing and is thoroughly unhelpful to debug.
+
+    Passing `tools` keeps `response_json_schema` in force: the model may call a
+    function, and the turn *after* the results come back still returns
+    schema-valid JSON. Verified against the API rather than assumed -- the two
+    features are commonly believed to be mutually exclusive, and if they were,
+    a searching extractor would have had to give up validated output.
+
+    Without tools the request is byte-identical to what it was before this
+    parameter existed, down to `contents` being a bare string rather than a list.
+    The frozen extraction baseline was measured with that exact shape and should
+    not move because an unrelated feature was added.
     """
     from google.genai import types
 
-    config = types.GenerateContentConfig(
-        system_instruction=system,
-        response_mime_type="application/json",
-        response_json_schema=response_json_schema(schema),
-        max_output_tokens=max_output_tokens,
-        thinking_config=(
-            types.ThinkingConfig(thinking_level=types.ThinkingLevel(thinking_level))
-            if thinking_level is not None
-            else None
-        ),
+    if tools and dispatch is None:
+        raise ValueError("tools were supplied with no dispatch to run them")
+
+    declarations = (
+        [types.Tool(function_declarations=[types.FunctionDeclaration(**t) for t in tools])]
+        if tools
+        else None
     )
 
-    response = _call_with_retry(client, model=model, user=user, config=config)
+    def _config(with_tools: bool) -> Any:
+        return types.GenerateContentConfig(
+            system_instruction=system,
+            response_mime_type="application/json",
+            response_json_schema=response_json_schema(schema),
+            max_output_tokens=max_output_tokens,
+            tools=declarations if with_tools else None,
+            thinking_config=(
+                types.ThinkingConfig(thinking_level=types.ThinkingLevel(thinking_level))
+                if thinking_level is not None
+                else None
+            ),
+        )
 
+    if not declarations:
+        response = _call_with_retry(client, model=model, contents=user, config=_config(False))
+        usage = _usage(response)
+        _record(model, usage)
+        return Completion(parsed=_parse(response, schema), usage=usage, model=model)
+
+    history: list[Any] = [types.Content(role="user", parts=[types.Part(text=user)])]
+    total = Usage()
+
+    for turn in range(max_tool_turns + 1):
+        response = _call_with_retry(
+            client, model=model, contents=history, config=_config(turn < max_tool_turns)
+        )
+        _raise_for_block(response)
+
+        usage = _usage(response)
+        _record(model, usage)
+        total = _add(total, usage)
+
+        calls = _function_calls(response)
+        if not calls:
+            return Completion(parsed=_parse(response, schema), usage=total, model=model)
+
+        assert dispatch is not None
+        history.append(response.candidates[0].content)
+        history.append(
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_function_response(
+                        name=call.name or "",
+                        response=dispatch(call.name or "", dict(call.args or {})),
+                    )
+                    for call in calls
+                ],
+            )
+        )
+
+    raise LlmError(f"{model} kept calling tools after {max_tool_turns} turns")
+
+
+def _add(left: Usage, right: Usage) -> Usage:
+    return Usage(
+        input_tokens=left.input_tokens + right.input_tokens,
+        output_tokens=left.output_tokens + right.output_tokens,
+        cached_input_tokens=left.cached_input_tokens + right.cached_input_tokens,
+        thinking_tokens=left.thinking_tokens + right.thinking_tokens,
+    )
+
+
+def _parse[T: BaseModel](response: Any, schema: type[T]) -> T:
     _raise_for_block(response)
 
     text = getattr(response, "text", None)
@@ -241,23 +349,9 @@ def structured_call[T: BaseModel](
         raise LlmError("Response contained no text")
 
     try:
-        parsed = schema.model_validate_json(text)
+        return schema.model_validate_json(text)
     except ValidationError as exc:
         # Don't trust response.parsed blindly: the SDK populates it only on a
         # clean parse, and validating ourselves keeps the error message specific
         # about which field the model got wrong.
         raise LlmError(f"Response did not match {schema.__name__}: {exc}") from exc
-
-    usage = _usage(response)
-
-    # Reported to whatever span encloses this call, if any. A no-op outside a
-    # trace, so the eval harness and unit tests need no observability wiring.
-    record_llm_usage(
-        model=model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cached_tokens=usage.cached_input_tokens,
-        thinking_tokens=usage.thinking_tokens,
-    )
-
-    return Completion(parsed=parsed, usage=usage, model=model)

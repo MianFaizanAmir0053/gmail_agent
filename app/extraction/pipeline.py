@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction import prompts
@@ -22,6 +22,12 @@ from app.extraction.payloads import (
     ExtractionPayload,
     InvalidPayloadError,
     to_extraction_result,
+)
+from app.tools.search_context import (
+    SEARCH_CONTEXT_TOOL,
+    TOOL_NAME,
+    Searcher,
+    execute_search_context,
 )
 
 MINIMAL_THINKING = "MINIMAL"
@@ -35,6 +41,7 @@ class RunStats:
 
     classify_calls: int = 0
     extract_calls: int = 0
+    search_calls: int = 0
     cache_hits: int = 0
     usages: list[Usage] = field(default_factory=list)
 
@@ -67,6 +74,14 @@ class ExtractionPipeline:
     extraction_model: str
     owner_email: str = ""
     classify_thinking_level: str | None = MINIMAL_THINKING
+    searcher: Searcher | None = None
+    """Optional retrieval over past threads (M11).
+
+    Left unset the pipeline behaves exactly as it did when the baseline was
+    frozen -- no tool declaration, no extra system text, no extra turns. That is
+    what makes "before retrieval" and "after retrieval" comparable numbers
+    rather than two different systems.
+    """
     stats: RunStats = field(default_factory=RunStats)
 
     def classify(
@@ -91,13 +106,20 @@ class ExtractionPipeline:
         self, email: EmailMessage, *, now_utc: datetime, user_timezone: str, extra: str = ""
     ) -> ExtractionResult:
         """Full extraction. `extra` carries a human correction on a re-run."""
+        searching = self.searcher is not None
         detail = structured_call(
             self.client,
             model=self.extraction_model,
-            system=prompts.EXTRACT_SYSTEM,
+            system=(
+                f"{prompts.EXTRACT_SYSTEM}\n{prompts.SEARCH_SUFFIX}"
+                if searching
+                else prompts.EXTRACT_SYSTEM
+            ),
             user=self._user(email, now_utc, user_timezone, extra),
             schema=ExtractionPayload,
             max_output_tokens=4096,
+            tools=[SEARCH_CONTEXT_TOOL] if searching else None,
+            dispatch=self._dispatch if searching else None,
         )
         self.stats.extract_calls += 1
         self.stats.record(detail.usage)
@@ -118,6 +140,18 @@ class ExtractionPipeline:
             return _rejected(triage.reasoning, confidence=triage.confidence)
         return self.extract(email, now_utc=now_utc, user_timezone=user_timezone)
 
+    def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Run a tool call the model asked for.
+
+        An unknown name is answered rather than raised. The model can read the
+        error and move on; aborting a whole extraction because it hallucinated a
+        function name would be a far worse trade.
+        """
+        if name != TOOL_NAME or self.searcher is None:
+            return {"error": f"No such tool: {name}", "results": []}
+        self.stats.search_calls += 1
+        return execute_search_context(self.searcher, args)
+
     def _user(self, email: EmailMessage, now_utc: datetime, user_timezone: str, extra: str) -> str:
         content = prompts.user_content(email, now_utc=now_utc, user_timezone=user_timezone)
         if extra:
@@ -125,7 +159,7 @@ class ExtractionPipeline:
         return content
 
 
-def build_pipeline(owner_email: str = "") -> ExtractionPipeline:
+def build_pipeline(owner_email: str = "", searcher: Searcher | None = None) -> ExtractionPipeline:
     """Wire a pipeline from settings.
 
     Imports the SDK lazily so the eval harness and unit tests never need an API
@@ -142,6 +176,7 @@ def build_pipeline(owner_email: str = "") -> ExtractionPipeline:
         classify_model=settings.classify_model,
         extraction_model=settings.extraction_model,
         owner_email=owner_email,
+        searcher=searcher,
     )
 
 
