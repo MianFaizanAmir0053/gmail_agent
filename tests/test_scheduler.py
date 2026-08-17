@@ -8,6 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.config import Settings
+from app.jobs.ingest_job import incremental_query, scheduled_ingest
 from app.jobs.scheduler import build_scheduler, check_token, run_poll
 
 
@@ -23,6 +24,55 @@ def _settings(**overrides: Any) -> Settings:
 def test_both_jobs_are_registered() -> None:
     scheduler = build_scheduler(_settings())
     assert {job.id for job in scheduler.get_jobs()} == {"poll", "token_health"}
+
+
+def test_ingestion_is_not_scheduled_unless_asked_for() -> None:
+    """The only timed job that spends money without anyone asking for anything."""
+    assert "ingest" not in {job.id for job in build_scheduler(_settings()).get_jobs()}
+
+
+def test_ingestion_is_scheduled_when_enabled() -> None:
+    scheduler = build_scheduler(_settings(ingest_enabled=True, ingest_interval_hours=6))
+    job = next(j for j in scheduler.get_jobs() if j.id == "ingest")
+
+    assert "6:00:00" in str(job.trigger)
+    assert job.max_instances == 1
+
+
+def test_a_failing_ingest_does_not_escape_the_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[str] = []
+
+    def _explode(settings: Settings, *, backfill: bool = False) -> Any:
+        raise RuntimeError("embeddings unavailable")
+
+    monkeypatch.setattr("app.jobs.ingest_job.run_ingest", _explode)
+    monkeypatch.setattr("app.jobs.ingest_job._alert", lambda s, text: sent.append(text))
+
+    scheduled_ingest(_settings())  # must not raise
+
+    assert sent and "embeddings unavailable" in sent[0]
+
+
+def test_an_ingest_failure_with_no_alert_channel_is_still_survivable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken alert path must not turn a recoverable failure into a crash."""
+
+    def _explode(settings: Settings, *, backfill: bool = False) -> Any:
+        raise RuntimeError("embeddings unavailable")
+
+    monkeypatch.setattr("app.jobs.ingest_job.run_ingest", _explode)
+
+    scheduled_ingest(_settings())  # no allowlist, no bot token; must not raise
+
+
+def test_the_incremental_window_overlaps_the_interval() -> None:
+    """A missed run must not leave a permanent hole; dedupe makes overlap free."""
+    settings = _settings(ingest_interval_hours=24, ingest_window_days=2)
+    query = incremental_query(settings.ingest_window_days)
+
+    assert "newer_than:2d" in query
+    assert settings.ingest_window_days * 24 > settings.ingest_interval_hours
 
 
 def test_polls_do_not_stack_behind_a_slow_run() -> None:

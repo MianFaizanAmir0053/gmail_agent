@@ -32,7 +32,7 @@ M01 and M02 are parallel — when the OAuth consent screen makes you want to qui
 | [M11](M11-hybrid-retrieval.md) | Hybrid retrieval & `search_context` | 2d | ☑ done |
 | [M12](M12-retrieval-eval.md) | Retrieval evaluation | 1d | ☑ done — hybrid lost to vector-only |
 | [M13](M13-reviewer-agent.md) | Reviewer agent | 2–3d | ◐ built and wired, delta not yet measured |
-| [M14](M14-pipeline-packaging.md) | Scheduled pipeline & portfolio packaging | 2d | ☐ |
+| [M14](M14-pipeline-packaging.md) | Scheduled pipeline & portfolio packaging | 2d | ◐ pipeline + README done; demo video outstanding |
 
 **Ship publicly after M07.** M08 is the highest value-per-hour module in the plan.
 

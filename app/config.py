@@ -143,6 +143,27 @@ class Settings(BaseSettings):
     """Gmail's own limits are generous; the constraint is the per-day Gemini
     quota, which a tight loop over a busy inbox would burn through by lunchtime."""
 
+    # --- Scheduled ingestion (M14) -------------------------------------------
+    ingest_enabled: bool = False
+    """Run retrieval ingestion on a timer.
+
+    Off by default because it is the only scheduled job that spends money
+    without a human having asked for anything. A poll that finds no mail costs
+    nothing; an ingest that finds new mail always embeds it.
+    """
+
+    ingest_interval_hours: int = 24
+    ingest_window_days: int = 2
+    """How far back the incremental query reaches.
+
+    Deliberately wider than the interval. The overlap is free -- content-hash
+    dedupe means a second pass over the same mail embeds nothing -- and it is
+    what stops a single missed run leaving a permanent hole in the corpus.
+    """
+
+    ingest_limit: int = 100
+    ingest_backfill_limit: int = 500
+
     migrate_on_boot: bool = False
     """Apply pending migrations at startup. Convenient on a single-instance
     deploy, wrong the moment there are two -- both would race."""

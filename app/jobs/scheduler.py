@@ -18,6 +18,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.config import Settings
 from app.google.auth import token_store
 from app.graph.runner import graph_session
+from app.jobs.ingest_job import scheduled_ingest
 from app.jobs.poll import poll_once
 from app.telegram.client import TelegramClient
 from app.telegram.notify import admin_chat_id
@@ -97,5 +98,20 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         max_instances=1,
         coalesce=True,
     )
+
+    if settings.ingest_enabled:
+        scheduler.add_job(
+            scheduled_ingest,
+            "interval",
+            hours=settings.ingest_interval_hours,
+            args=[settings],
+            id="ingest",
+            max_instances=1,
+            coalesce=True,
+            # No grace period worth speaking of: a missed daily ingest is caught
+            # by the next run's overlapping window, so hurrying to catch up
+            # after a restart would only race the poller for the same quota.
+            misfire_grace_time=3600,
+        )
 
     return scheduler
