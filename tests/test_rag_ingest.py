@@ -177,6 +177,41 @@ def test_a_width_mismatch_fails_before_anything_is_embedded(
     assert client.models.calls == 0
 
 
+def test_a_failure_partway_keeps_what_it_already_paid_for(
+    rag_conn: psycopg.Connection, settings: Settings
+) -> None:
+    """A backfill that dies must not discard embeddings it has already bought."""
+
+    class DiesOnSecondBatch(CountingClient):
+        def __init__(self, dimensions: int) -> None:
+            super().__init__(dimensions)
+            original = self.models.embed_content
+
+            def embed_content(**kwargs: Any) -> Any:
+                if self.models.calls >= 1:
+                    raise RuntimeError("network died")
+                return original(**kwargs)
+
+            self.models.embed_content = embed_content  # type: ignore[method-assign]
+
+    body = "Paragraph {i}. " + "word " * 400
+    mailbox = FakeMailbox(
+        [email(f"m{i}", body.replace("{i}", str(i))) for i in range(4)],
+    )
+
+    with pytest.raises(RuntimeError, match="network died"):
+        ingest(
+            rag_conn,
+            mailbox,
+            DiesOnSecondBatch(settings.embedding_dimensions),
+            settings=settings,
+            batch_size=2,
+        )
+
+    row = rag_conn.execute("SELECT count(*) FROM chunks WHERE thread_id = %s", (THREAD,)).fetchone()
+    assert row is not None and row[0] == 2
+
+
 def test_a_run_is_recorded(rag_conn: psycopg.Connection, settings: Settings) -> None:
     mailbox = FakeMailbox([email("m1", "Let's lock Thursday 3pm for the offsite in room 2.")])
     ingest(rag_conn, mailbox, CountingClient(settings.embedding_dimensions), settings=settings)

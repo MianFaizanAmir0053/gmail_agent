@@ -30,7 +30,7 @@ M01 and M02 are parallel — when the OAuth consent screen makes you want to qui
 | [M09](M09-dashboard.md) | Next.js dashboard | 3d | ☑ done |
 | [M10](M10-rag-ingestion.md) | RAG ingestion pipeline | 3d | ☑ done |
 | [M11](M11-hybrid-retrieval.md) | Hybrid retrieval & `search_context` | 2d | ☑ done |
-| [M12](M12-retrieval-eval.md) | Retrieval evaluation | 1d | ☐ |
+| [M12](M12-retrieval-eval.md) | Retrieval evaluation | 1d | ☑ done — hybrid lost to vector-only |
 | [M13](M13-reviewer-agent.md) | Reviewer agent | 2–3d | ☐ |
 | [M14](M14-pipeline-packaging.md) | Scheduled pipeline & portfolio packaging | 2d | ☐ |
 

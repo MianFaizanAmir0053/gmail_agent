@@ -31,6 +31,10 @@ Cost here is *estimated* from characters, and every name that carries it says so
 from __future__ import annotations
 
 import math
+import time
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import psycopg
@@ -42,8 +46,17 @@ QUERY_TASK = "RETRIEVAL_QUERY"
 
 BATCH_SIZE = 32
 """Chunks per request. Small enough to stay well inside the endpoint's
-per-request input cap, large enough that a few thousand chunks is a couple of
-minutes rather than an afternoon."""
+per-request input cap, large enough to keep the round trips down."""
+
+DOCUMENTS_PER_MINUTE = 90
+"""Free-tier throughput ceiling, with a margin under the published 100.
+
+The quota is named `EmbedContentRequestsPerMinute...` and is counted **per
+document, not per request**. Thirteen batched calls carrying four hundred chunks
+exhaust it just as thoroughly as four hundred individual ones -- so batching
+buys fewer round trips and no throughput at all. Discovered by a backfill that
+died a third of the way in, having already paid for the embeddings it lost.
+"""
 
 CHARS_PER_TOKEN = 4
 """Rough conversion for the cost estimate. English prose runs about four
@@ -123,6 +136,39 @@ def _embed_batch(
     return vectors
 
 
+@dataclass(slots=True)
+class Pacer:
+    """Sliding-window throttle over documents embedded per minute.
+
+    Waiting deliberately rather than relying on retries: a 429 costs the whole
+    batch and its backoff, and four of them in a row end a backfill that has
+    already paid for everything it is about to discard. Sleeping ahead of the
+    limit is slower per minute and far faster per corpus.
+
+    `sleep` and `clock` are injectable so the behaviour is testable without a
+    test that actually takes a minute.
+    """
+
+    per_minute: int = DOCUMENTS_PER_MINUTE
+    sleep: Callable[[float], None] = time.sleep
+    clock: Callable[[], float] = time.monotonic
+    _window: deque[tuple[float, int]] = field(default_factory=deque)
+
+    def reserve(self, count: int) -> None:
+        """Block until `count` more documents fit inside the window."""
+        while True:
+            now = self.clock()
+            while self._window and now - self._window[0][0] >= 60.0:
+                self._window.popleft()
+
+            used = sum(n for _, n in self._window)
+            if not self._window or used + count <= self.per_minute:
+                self._window.append((now, count))
+                return
+
+            self.sleep(max(60.0 - (now - self._window[0][0]), 0.0) + 0.05)
+
+
 def embed_documents(
     client: GenaiLike,
     texts: list[str],
@@ -130,6 +176,7 @@ def embed_documents(
     model: str,
     dimensions: int,
     batch_size: int = BATCH_SIZE,
+    pacer: Pacer | None = None,
 ) -> tuple[list[list[float]], int]:
     """Embed chunks for storage. Returns `(vectors, request_count)`."""
     vectors: list[list[float]] = []
@@ -137,6 +184,8 @@ def embed_documents(
 
     for start in range(0, len(texts), batch_size):
         batch = texts[start : start + batch_size]
+        if pacer is not None:
+            pacer.reserve(len(batch))
         vectors.extend(
             _embed_batch(client, batch, model=model, dimensions=dimensions, task_type=DOCUMENT_TASK)
         )

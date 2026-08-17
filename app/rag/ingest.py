@@ -30,6 +30,7 @@ from app.rag.chunk import Chunk, chunk_message
 from app.rag.embed import (
     BATCH_SIZE,
     EmbeddingError,
+    Pacer,
     column_dimensions,
     embed_documents,
     estimated_tokens,
@@ -184,6 +185,9 @@ def ingest(
 
     run_id = _start_run(conn, query, settings.embedding_model)
 
+    stats = Stats()
+    pacer = Pacer()
+
     try:
         chunks, stats = collect(mailbox, query=query, limit=limit, owner_email=settings.owner_email)
 
@@ -191,9 +195,13 @@ def ingest(
         fresh = [c for c in chunks if c.content_hash not in seen]
         stats.chunks_duplicate = len(chunks) - len(fresh)
 
-        if fresh:
-            texts = [c.embedding_text() for c in fresh]
-            stats.estimated_tokens = estimated_tokens(texts)
+        # Committed a batch at a time rather than once at the end. A backfill
+        # that dies two thirds of the way through used to roll back every chunk
+        # it had already paid to embed; now the next run's dedupe skips them and
+        # it resumes from where the failure was.
+        for start in range(0, len(fresh), batch_size):
+            group = fresh[start : start + batch_size]
+            texts = [chunk.embedding_text() for chunk in group]
 
             vectors, calls = embed_documents(
                 client,
@@ -201,15 +209,19 @@ def ingest(
                 model=settings.embedding_model,
                 dimensions=dimensions,
                 batch_size=batch_size,
+                pacer=pacer,
             )
-            stats.embed_calls = calls
-            stats.chunks_inserted = insert_chunks(conn, fresh, vectors, settings.embedding_model)
+
+            stats.embed_calls += calls
+            stats.estimated_tokens += estimated_tokens(texts)
+            stats.chunks_inserted += insert_chunks(conn, group, vectors, settings.embedding_model)
+            conn.commit()
 
         _finish_run(conn, run_id, stats, status="success")
         conn.commit()
     except Exception as exc:
         conn.rollback()
-        _finish_run(conn, run_id, Stats(), status="failed", error=f"{type(exc).__name__}: {exc}")
+        _finish_run(conn, run_id, stats, status="failed", error=f"{type(exc).__name__}: {exc}")
         conn.commit()
         raise
 

@@ -16,6 +16,7 @@ from app.rag.search import (
     Hit,
     fuse,
     keyword_search,
+    or_terms,
     rrf,
     vector_search,
 )
@@ -51,6 +52,24 @@ def test_agreement_between_searches_beats_a_single_first_place() -> None:
     """A document both searches like should outrank one only one of them loves."""
     consensus = fuse([hit(1), hit(2)], [hit(3), hit(2)], limit=3)
     assert consensus[0].chunk_id == 2
+
+
+def test_weighting_tilts_towards_the_list_it_favours() -> None:
+    """The knob M12 used to ask whether RRF's loss was inherent or just symmetry."""
+    even = rrf([[1], [2]])
+    tilted = rrf([[1], [2]], weights=(4.0, 1.0))
+
+    assert even[1] == even[2]
+    assert tilted[1] > tilted[2]
+
+
+def test_keyword_terms_are_ored_not_anded() -> None:
+    """plainto_tsquery ANDs, which made the keyword half work only on identifiers."""
+    assert or_terms("who is Alice from Zetafonts") == "who or is or Alice or from or Zetafonts"
+
+
+def test_a_query_with_no_word_characters_returns_nothing() -> None:
+    assert or_terms("!!! ???") == ""
 
 
 def test_a_document_found_by_only_one_search_still_survives() -> None:
@@ -96,10 +115,32 @@ pytestmark_integration = pytest.mark.integration
 @pytest.fixture
 def corpus(migrated_database: str) -> Iterator[psycopg.Connection]:
     """Three chunks with hand-made embeddings, so similarity is predictable."""
+    # The sentinel tokens matter. This runs against the same database the real
+    # poller and ingester use, so a query built from ordinary words ("review",
+    # "payment") matches hundreds of real chunks and the assertions become a
+    # measurement of somebody's actual mailbox.
     rows = [
-        ("m1", 0, "Platform review", "Ahmed Raza will join the platform review.", ["ahmed@x.com"]),
-        ("m2", 1, "Offsite logistics", "Room 2 is booked for the offsite.", ["sara@x.com"]),
-        ("m3", 2, "Invoice ORD-77Z", "Payment reference ORD-77Z cleared today.", ["fin@x.com"]),
+        (
+            "m1",
+            0,
+            "Platform review",
+            "Ahmed Raza will join the platform review. sentinelalpha",
+            ["ahmed@x.com"],
+        ),
+        (
+            "m2",
+            1,
+            "Offsite logistics",
+            "Room 2 is booked for the offsite. sentinelbeta",
+            ["sara@x.com"],
+        ),
+        (
+            "m3",
+            2,
+            "Invoice ORD-77Z",
+            "Payment reference ORD-77Z cleared today. sentinelgamma",
+            ["fin@x.com"],
+        ),
     ]
 
     with psycopg.connect(migrated_database) as conn:
@@ -188,14 +229,41 @@ class FakeClient:
 
 
 @pytest.mark.integration
-def test_hybrid_beats_either_half_alone(corpus: psycopg.Connection) -> None:
+def test_the_default_mode_is_vector_only(corpus: psycopg.Connection) -> None:
+    """What M12 measured. Fusion is a setting, not the default."""
+    search = ContextSearch(
+        conn=corpus,
+        client=FakeClient(FakeEmbeddings(index=1)),
+        embedding_model="fake",
+        embedding_dimensions=DIMENSIONS,
+    )
+    # The query text points squarely at m3; the embedding points at m2. Vector
+    # wins, which is only observable when the keyword half is not fused in.
+    assert search("sentinelgamma")[0].message_id == "m2"
+
+
+@pytest.mark.integration
+def test_hybrid_mode_fuses_both_halves(corpus: psycopg.Connection) -> None:
+    """The embedding points at m1; only the keyword half can reach m3."""
+    search = ContextSearch(
+        conn=corpus,
+        client=FakeClient(FakeEmbeddings(index=0)),
+        embedding_model="fake",
+        embedding_dimensions=DIMENSIONS,
+        mode="hybrid",
+    )
+    assert {h.message_id for h in search("sentinelgamma")} >= {"m1", "m3"}
+
+
+@pytest.mark.integration
+def test_vector_mode_cannot_reach_a_keyword_only_match(corpus: psycopg.Connection) -> None:
     search = ContextSearch(
         conn=corpus,
         client=FakeClient(FakeEmbeddings(index=0)),
         embedding_model="fake",
         embedding_dimensions=DIMENSIONS,
     )
-    assert search("who is Ahmed on the platform review")[0].message_id == "m1"
+    assert "m3" not in {h.message_id for h in search("sentinelgamma")}
 
 
 @pytest.mark.integration
@@ -220,7 +288,7 @@ def test_the_reranker_seam_is_actually_applied(corpus: psycopg.Connection) -> No
         embedding_dimensions=DIMENSIONS,
         rerank=lambda _query, hits: list(reversed(hits)),
     )
-    plain = ContextSearch(
+    plain: ContextSearch = ContextSearch(
         conn=corpus,
         client=FakeClient(FakeEmbeddings(index=0)),
         embedding_model="fake",

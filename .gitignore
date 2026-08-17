@@ -8,6 +8,9 @@ client_secret*.json
 # Real email content (M02). Only anonymised fixtures are committed.
 data/raw_emails/
 data/fixtures_draft/
+# Labelled retrieval queries: real names, real Gmail message ids. Same rule as
+# the raw emails -- the committed evidence is the results table, not the labels.
+data/retrieval_eval.json
 # Real-identity lookup table produced by the anonymiser. Never commit.
 data/anonymization-map.json
 

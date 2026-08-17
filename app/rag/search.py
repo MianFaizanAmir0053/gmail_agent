@@ -26,6 +26,7 @@ a rewrite.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -132,6 +133,29 @@ def vector_search(
     return [_to_hit(row, float(row[7])) for row in rows]
 
 
+_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def or_terms(query: str) -> str:
+    """Rewrite free text as an OR query for `websearch_to_tsquery`.
+
+    **`plainto_tsquery` ANDs its terms**, which is the single most damaging
+    default in this file. "who is Alice from Zetafonts and what does she want"
+    becomes `alic & zetafont & want`, so a chunk has to contain all three or it
+    does not match *at all* -- and the keyword half silently degrades to working
+    only on bare identifiers. Measured at 34% hit@5 before this, 66% after.
+
+    OR does not make ranking indiscriminate: `ts_rank` still rewards documents
+    that match more of the terms, which is the behaviour wanted from the keyword
+    half in the first place.
+
+    `websearch_to_tsquery` rather than `to_tsquery` because it never raises. The
+    query text is written by a language model and will contain punctuation,
+    quotes, and the occasional stray operator.
+    """
+    return " or ".join(_WORD.findall(query))
+
+
 def keyword_search(
     conn: psycopg.Connection,
     query: str,
@@ -140,49 +164,80 @@ def keyword_search(
     participant: str | None = None,
     since: date | None = None,
 ) -> list[Hit]:
-    """BM25-style ranking over the generated `tsv` column.
+    """BM25-style ranking over the generated `tsv` column."""
+    terms = or_terms(query)
+    if not terms:
+        return []
 
-    `plainto_tsquery` rather than `to_tsquery`: the query text comes from a
-    language model and will contain punctuation, quotes, and the occasional
-    stray operator, all of which make `to_tsquery` raise rather than return
-    nothing useful.
-    """
     rows = conn.execute(
         f"""
         {_SELECT}, ts_rank(tsv, q) AS score
-          FROM chunks, plainto_tsquery('english', %(query)s) AS q
+          FROM chunks, websearch_to_tsquery('english', %(query)s) AS q
          WHERE tsv @@ q
         {_FILTERS}
          ORDER BY score DESC
          LIMIT %(limit)s
         """,
-        {"query": query, "participant": participant, "since": since, "limit": limit},
+        {"query": terms, "participant": participant, "since": since, "limit": limit},
     ).fetchall()
     return [_to_hit(row, float(row[7])) for row in rows]
 
 
-def rrf(rankings: list[list[int]], k: int = RRF_K) -> dict[int, float]:
-    """Reciprocal Rank Fusion. Ranks are 1-based."""
+def rrf(
+    rankings: list[list[int]], k: int = RRF_K, weights: Sequence[float] | None = None
+) -> dict[int, float]:
+    """Reciprocal Rank Fusion. Ranks are 1-based.
+
+    `weights` is available but is not the default, and using it should feel like
+    a cost: an unweighted RRF has nothing to tune, and the moment one list is
+    worth twice another, that ratio is a number fitted to a particular corpus
+    and a particular embedding model. M12 measures what it actually buys.
+    """
+    factors = list(weights) if weights is not None else [1.0] * len(rankings)
     scores: dict[int, float] = {}
-    for ranking in rankings:
+    for ranking, weight in zip(rankings, factors, strict=True):
         for rank, doc_id in enumerate(ranking, start=1):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+            scores[doc_id] = scores.get(doc_id, 0.0) + weight / (k + rank)
     return scores
 
 
-def fuse(*result_lists: list[Hit], limit: int = DEFAULT_LIMIT, k: int = RRF_K) -> list[Hit]:
+def fuse(
+    *result_lists: list[Hit],
+    limit: int = DEFAULT_LIMIT,
+    k: int = RRF_K,
+    weights: Sequence[float] | None = None,
+) -> list[Hit]:
     """Merge ranked lists by RRF, keeping one Hit per chunk."""
     by_id: dict[int, Hit] = {}
     for results in result_lists:
         for hit in results:
             by_id.setdefault(hit.chunk_id, hit)
 
-    scores = rrf([[hit.chunk_id for hit in results] for results in result_lists], k=k)
+    scores = rrf(
+        [[hit.chunk_id for hit in results] for results in result_lists], k=k, weights=weights
+    )
     ordered = sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
 
     # The fused score replaces the per-search one, which was measured on a scale
     # that no longer means anything once two of them have been combined.
     return [replace(by_id[chunk_id], score=score) for chunk_id, score in ordered[:limit]]
+
+
+HYBRID_WEIGHTS: Sequence[float] | None = None
+"""Unweighted, deliberately, despite M12 scoring the weighted variants higher.
+
+Weighting turns out not to be a middle ground. With `k = 60` and 20 candidates
+per search, a document only the keyword half found scores at most `w_k / 61`,
+while the *worst* vector candidate scores `w_v / 80`. So the keyword half can
+contribute a result of its own only while `w_v / w_k < 80/61`, about 1.3 -- at
+2:1 every vector candidate already outranks every keyword-only one, and fusion
+degenerates into vector search reordered by keyword agreement.
+
+That is exactly why `rrf-2:1` and `rrf-4:1` scored alike and close to vector
+alone in `results/retrieval-comparison.md`. They were not a compromise between
+the two halves; they were vector-only wearing a costume. If fusion is switched
+on it should be the real thing.
+"""
 
 
 @dataclass(slots=True)
@@ -193,6 +248,20 @@ class ContextSearch:
     client: EmbeddingClientLike
     embedding_model: str
     embedding_dimensions: int
+    mode: str = "vector"
+    """`vector` or `hybrid`.
+
+    Defaults to `vector` because that is what M12 measured, not because fusion
+    is uninteresting. On this corpus the keyword half never returned a relevant
+    message that vector search had missed -- including on bare order references,
+    where it was supposed to win outright -- so fusion could only displace
+    correct results, and it did: hit@5 fell from 100% to 93%.
+
+    See `results/retrieval-comparison.md`. It is a setting rather than a deletion
+    because that is a result about one mailbox and one embedding model, and the
+    argument for keeping a lexical half is about the corpora it was not measured
+    on.
+    """
     rerank: Reranker | None = None
 
     def __call__(
@@ -203,9 +272,6 @@ class ContextSearch:
         since: date | None = None,
         limit: int = DEFAULT_LIMIT,
     ) -> list[Hit]:
-        keyword = keyword_search(self.conn, query, participant=participant, since=since)
-
-        vector: list[Hit] = []
         try:
             embedded = embed_query(
                 self.client,
@@ -216,13 +282,35 @@ class ContextSearch:
         except Exception:
             # Degrade to keyword-only rather than failing the extraction. Half a
             # search is worth more here than an exception thrown three nodes deep
-            # over a lookup the model asked for speculatively.
-            pass
+            # over a lookup the model asked for speculatively. This is also the
+            # standing argument for keeping the lexical half maintained even
+            # while it is switched off.
+            hits = keyword_search(self.conn, query, participant=participant, since=since)[:limit]
         else:
-            vector = vector_search(self.conn, embedded, participant=participant, since=since)
+            hits = self._search(query, embedded, participant=participant, since=since, limit=limit)
 
-        fused = fuse(vector, keyword, limit=limit)
-        return self.rerank(query, fused) if self.rerank else fused
+        return self.rerank(query, hits) if self.rerank else hits
+
+    def _search(
+        self,
+        query: str,
+        embedded: list[float],
+        *,
+        participant: str | None,
+        since: date | None,
+        limit: int,
+    ) -> list[Hit]:
+        if self.mode == "vector":
+            return vector_search(
+                self.conn, embedded, limit=limit, participant=participant, since=since
+            )
+
+        return fuse(
+            vector_search(self.conn, embedded, participant=participant, since=since),
+            keyword_search(self.conn, query, participant=participant, since=since),
+            limit=limit,
+            weights=HYBRID_WEIGHTS,
+        )
 
 
 def build_context_search(conn: psycopg.Connection, settings: Any) -> ContextSearch:
@@ -234,6 +322,7 @@ def build_context_search(conn: psycopg.Connection, settings: Any) -> ContextSear
         client=genai.Client(api_key=settings.gemini_api_key.get_secret_value()),
         embedding_model=settings.embedding_model,
         embedding_dimensions=settings.embedding_dimensions,
+        mode=settings.retrieval_mode,
     )
 
 

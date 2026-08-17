@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     """Must equal the width of `chunks.embedding`; ingestion refuses to start
     otherwise. See `migrations/004_pgvector.sql` for why it is not 3072."""
 
+    retrieval_mode: Literal["vector", "hybrid"] = "vector"
+    """How `search_context` ranks (M12).
+
+    `vector` is the default because it is what the measurement supports, not
+    because fusion was never built. Over 29 hand-labelled queries the keyword
+    half never surfaced a relevant message vector search had missed -- not even
+    on bare order references, the one category it was expected to win -- so
+    fusion could only displace correct results, and hit@5 fell from 100% to 93%.
+    `results/retrieval-comparison.md` has the table.
+    """
+
     search_context_enabled: bool = True
     """Give the extractor the `search_context` tool (M11).
 

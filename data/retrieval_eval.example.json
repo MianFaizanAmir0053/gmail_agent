@@ -1,0 +1,20 @@
+[
+  {
+    "query": "ORD-20260814-4WJWF",
+    "relevant": ["18f3a1b2c4d5e6f7"],
+    "kind": "exact",
+    "note": "A bare identifier. Embeddings have nothing to work with; BM25 should win outright."
+  },
+  {
+    "query": "what is Priya's email address at Northwind",
+    "relevant": ["18f3a1b2c4d5e600"],
+    "kind": "identity",
+    "note": "A first name and a company. This is what search_context exists for."
+  },
+  {
+    "query": "which companies rejected my application",
+    "relevant": ["18f3a1b2c4d5e601", "18f3a1b2c4d5e602"],
+    "kind": "semantic",
+    "note": "No shared vocabulary with the source text; vector search should win."
+  }
+]

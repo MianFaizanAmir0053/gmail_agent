@@ -12,6 +12,7 @@ from app.rag.embed import (
     DOCUMENT_TASK,
     QUERY_TASK,
     EmbeddingError,
+    Pacer,
     embed_documents,
     embed_query,
     estimated_tokens,
@@ -111,6 +112,80 @@ def test_documents_and_queries_use_different_task_types() -> None:
 
     assert models.calls[0]["config"].task_type == DOCUMENT_TASK
     assert models.calls[1]["config"].task_type == QUERY_TASK
+
+
+# --- pacing -----------------------------------------------------------------
+
+
+class FakeClock:
+    """A clock that only moves when something sleeps."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_the_pacer_does_not_wait_below_the_limit() -> None:
+    clock = FakeClock()
+    pacer = Pacer(per_minute=100, sleep=clock.sleep, clock=clock)
+
+    for _ in range(3):
+        pacer.reserve(32)
+
+    assert clock.slept == []
+
+
+def test_the_pacer_waits_out_the_window_when_full() -> None:
+    """The quota counts documents, not requests, so batching does not evade it."""
+    clock = FakeClock()
+    pacer = Pacer(per_minute=100, sleep=clock.sleep, clock=clock)
+
+    for _ in range(4):
+        pacer.reserve(32)
+
+    assert clock.slept
+    assert clock.now >= 60.0
+
+
+def test_the_window_slides_rather_than_resetting() -> None:
+    clock = FakeClock()
+    pacer = Pacer(per_minute=100, sleep=clock.sleep, clock=clock)
+
+    pacer.reserve(90)
+    clock.now += 61.0
+    pacer.reserve(90)
+
+    assert clock.slept == []
+
+
+def test_a_batch_larger_than_the_whole_quota_still_proceeds() -> None:
+    """Otherwise an oversized batch would sleep for ever waiting for room."""
+    clock = FakeClock()
+    Pacer(per_minute=10, sleep=clock.sleep, clock=clock).reserve(32)
+    assert clock.slept == []
+
+
+def test_embed_documents_reserves_the_batch_it_is_about_to_send() -> None:
+    clock = FakeClock()
+    pacer = Pacer(per_minute=100, sleep=clock.sleep, clock=clock)
+
+    embed_documents(
+        FakeClient(FakeModels()),
+        [f"t{i}" for i in range(150)],
+        model="fake",
+        dimensions=4,
+        batch_size=32,
+        pacer=pacer,
+    )
+
+    assert clock.slept
 
 
 # --- small helpers ----------------------------------------------------------
