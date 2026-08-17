@@ -25,10 +25,17 @@ def _gemini() -> Extractor:
     return build_pipeline(owner_email="me@example.com")
 
 
+def _gemini_reviewed() -> Extractor:
+    from app.eval.reviewed import build_reviewed
+
+    return build_reviewed(owner_email="me@example.com")
+
+
 EXTRACTORS: dict[str, Callable[[], Extractor]] = {
     "always_no": lambda: baselines.always_no,
     "always_yes": lambda: baselines.always_yes,
     "gemini": _gemini,
+    "gemini_reviewed": _gemini_reviewed,
 }
 
 
@@ -74,7 +81,7 @@ def main() -> None:
             print(f"   {line}")
 
     if not args.no_save:
-        path = report.save(result, extractor=args.extractor)
+        path = report.save(result, extractor=args.extractor, errors=errors)
         print(f"\nwrote {path}")
 
 

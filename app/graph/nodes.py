@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 
 from langgraph.types import interrupt
 
+from app.agents.reviewer import Reviewer
 from app.contracts import ActionResult, ExtractionResult
 from app.extraction.pipeline import ExtractionPipeline
 from app.google.calendar import CalendarClient
@@ -35,6 +36,15 @@ Enforced here rather than in the prompt: an instruction to "only revise twice"
 is a suggestion, a counter in graph state is a guarantee.
 """
 
+MAX_REVIEW_ROUNDS = 2
+"""Reviewer-driven re-extractions before the graph stops listening.
+
+A separate budget from `MAX_REVISIONS`. The failure they guard against is the
+same -- an unbounded loop between two components that keep disagreeing -- but a
+human asking twice and an agent asking twice should not exhaust each other's
+allowance.
+"""
+
 
 @dataclass(slots=True)
 class Deps:
@@ -45,6 +55,9 @@ class Deps:
     calendar: CalendarClient
     ledger: MessageLedger
     user_timezone: str
+    reviewer: Reviewer | None = None
+    """M13. Left unset, `review` approves everything and the graph behaves
+    exactly as it did before the reviewer existed."""
 
     def now(self) -> datetime:
         return datetime.now(UTC)
@@ -75,18 +88,52 @@ def extract(deps: Deps, state: GraphState) -> GraphState:
         state["email"],
         now_utc=deps.now(),
         user_timezone=deps.user_timezone,
-        extra=state.get("correction", ""),
+        extra=_guidance(state),
     )
     return {"extraction": extraction}
 
 
-def review(deps: Deps, state: GraphState) -> GraphState:
-    """Placeholder for M13's reviewer agent.
+def _guidance(state: GraphState) -> str:
+    """Human correction and reviewer feedback, both labelled.
 
-    Wired now so adding the reviewer is a one-node change rather than a graph
-    rewrite -- and so the shape of the flow in the README does not change later.
+    Concatenated rather than merged, and the human is named first: on a
+    disagreement the extractor should know which instruction came from the
+    person who will be asked to approve the result.
     """
-    return {}
+    parts: list[str] = []
+    if correction := state.get("correction", ""):
+        parts.append(f"Correction from the user, which takes precedence:\n{correction}")
+    if feedback := state.get("review_feedback", ""):
+        parts.append(f"A reviewer found these problems with your previous answer:\n{feedback}")
+    return "\n\n".join(parts)
+
+
+def review(deps: Deps, state: GraphState) -> GraphState:
+    """Second agent, own tools, own evidence.
+
+    Returns a decision rather than acting on one: the routing lives in
+    `build.py`, where the revision cap is enforced. A node that decided its own
+    successor could loop for ever no matter what the counter said.
+    """
+    if deps.reviewer is None:
+        return {"review_decision": "approve"}
+
+    extraction = state["extraction"]
+    if not extraction.is_meeting:
+        # Nothing to review. Spending a call to confirm that a newsletter is
+        # still not a meeting is the reviewer's cheapest way to be useless.
+        return {"review_decision": "approve"}
+
+    verdict = deps.reviewer(
+        state["email"], extraction, now_utc=deps.now(), user_timezone=deps.user_timezone
+    )
+
+    return {
+        "review_decision": verdict.decision,
+        "review_issues": verdict.issues,
+        "review_feedback": verdict.feedback() if verdict.decision == "revise" else "",
+        "review_rounds": state.get("review_rounds", 0) + (verdict.decision == "revise"),
+    }
 
 
 def detect_conflicts(deps: Deps, state: GraphState) -> GraphState:
@@ -149,8 +196,18 @@ def skip(deps: Deps, state: GraphState) -> GraphState:
 
 
 def reject(deps: Deps, state: GraphState) -> GraphState:
-    deps.ledger.mark(state["message_id"], MessageStatus.REJECTED, error="declined by user")
-    return {"action": ActionResult(status="rejected", error="declined by user")}
+    """Reached from two directions: a human declining, or the reviewer rejecting.
+
+    The reason is recorded rather than assumed, so the failures view does not
+    report an agent's decision as a person's.
+    """
+    reason = (
+        "; ".join(state.get("review_issues", [])) or "rejected by reviewer"
+        if state.get("review_decision") == "reject"
+        else "declined by user"
+    )
+    deps.ledger.mark(state["message_id"], MessageStatus.REJECTED, error=reason)
+    return {"action": ActionResult(status="rejected", error=reason)}
 
 
 def _to_tool_input(state: GraphState) -> CreateEventInput:

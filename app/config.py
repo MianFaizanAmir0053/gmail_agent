@@ -67,6 +67,24 @@ class Settings(BaseSettings):
     """Must equal the width of `chunks.embedding`; ingestion refuses to start
     otherwise. See `migrations/004_pgvector.sql` for why it is not 3072."""
 
+    reviewer_enabled: bool = False
+    """Run the M13 reviewer agent before a human sees the proposal.
+
+    Off until the eval delta says otherwise. A reviewer is not free -- it is an
+    extra call per meeting, plus its tool turns -- and it can lower accuracy by
+    "correcting" fields that were already right.
+    """
+
+    reviewer_model: str = "gemini-3.7-flash"
+    """Deliberately not the extraction model.
+
+    Two reasons. A reviewer sharing the extractor's weights inherits its blind
+    spots, and asking the same model to check its own answer is closer to
+    self-consistency than to review. Second, and more mundanely, the free tier
+    is 20 requests per day *per model*, so sharing one would halve how many
+    emails a day the pair can process.
+    """
+
     retrieval_mode: Literal["vector", "hybrid"] = "vector"
     """How `search_context` ranks (M12).
 

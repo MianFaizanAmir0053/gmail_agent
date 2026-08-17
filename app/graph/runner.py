@@ -94,6 +94,7 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
     if settings.test_calendar_id is None:
         raise RuntimeError("TEST_CALENDAR_ID must be set before the graph can act.")
 
+    from app.agents.reviewer import build_reviewer
     from app.extraction.pipeline import build_pipeline
     from app.rag.search import build_context_search
 
@@ -108,15 +109,25 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
         # nothing but another thing to close.
         searcher = build_context_search(conn, settings) if settings.search_context_enabled else None
 
+        calendar = CalendarClient(
+            build_service("calendar", "v3", credentials),
+            settings.test_calendar_id,
+            dry_run=settings.dry_run,
+        )
+
         deps = Deps(
             gmail=GmailClient(build_service("gmail", "v1", credentials)),
             pipeline=build_pipeline(owner_email=settings.owner_email, searcher=searcher),
-            calendar=CalendarClient(
-                build_service("calendar", "v3", credentials),
-                settings.test_calendar_id,
-                dry_run=settings.dry_run,
-            ),
+            calendar=calendar,
             ledger=MessageLedger(conn),
             user_timezone=settings.user_timezone,
+            # The reviewer gets the calendar even when DRY_RUN is set: freebusy
+            # is a read, and a reviewer that cannot see the calendar loses the
+            # one check the extractor genuinely could not make.
+            reviewer=(
+                build_reviewer(searcher=searcher, calendar=calendar)
+                if settings.reviewer_enabled
+                else None
+            ),
         )
         yield GraphSession(deps=deps, conn=conn, checkpointer=checkpointer)

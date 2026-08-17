@@ -26,7 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy
 
 from app.graph import nodes
-from app.graph.nodes import MAX_REVISIONS, Deps
+from app.graph.nodes import MAX_REVIEW_ROUNDS, MAX_REVISIONS, Deps
 from app.graph.state import GraphState
 from app.obs.trace import Tracer, traced
 
@@ -50,6 +50,24 @@ def _has_event(state: GraphState) -> Literal["conflicts", "skip"]:
     if extraction is None or not extraction.is_meeting or extraction.start_utc is None:
         return "skip"
     return "conflicts"
+
+
+def _after_review(state: GraphState) -> Literal["extract", "conflicts", "skip", "reject"]:
+    """Where the reviewer's verdict sends the graph.
+
+    The cap lives here rather than in the reviewer's prompt. "Only revise twice"
+    is a request; a counter compared in the router is the reason the loop
+    terminates. Once the budget is spent the graph carries on with whatever the
+    last extraction produced -- a human is about to see it either way, and the
+    reviewer's objections travel with it onto the approval card.
+    """
+    decision = state.get("review_decision", "approve")
+
+    if decision == "reject":
+        return "reject"
+    if decision == "revise" and state.get("review_rounds", 0) <= MAX_REVIEW_ROUNDS:
+        return "extract"
+    return _has_event(state)
 
 
 def _decision(state: GraphState) -> Literal["act", "reject", "extract"]:
@@ -90,7 +108,9 @@ def build_graph(
     builder.add_edge("fetch", "classify")
     builder.add_conditional_edges("classify", _is_meeting, ["extract", "skip"])
     builder.add_edge("extract", "review")
-    builder.add_conditional_edges("review", _has_event, ["conflicts", "skip"])
+    builder.add_conditional_edges(
+        "review", _after_review, ["extract", "conflicts", "skip", "reject"]
+    )
     builder.add_edge("conflicts", "await_approval")
     builder.add_conditional_edges("await_approval", _decision, ["act", "reject", "extract"])
     builder.add_edge("act", END)

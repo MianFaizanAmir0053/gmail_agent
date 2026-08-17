@@ -133,6 +133,26 @@ def _interrupt_payload(graph: Any, config: dict[str, Any]) -> dict[str, Any] | N
     return None
 
 
+@dataclass
+class FakeReviewer:
+    """Returns a fixed sequence of verdicts, then approves."""
+
+    verdicts: list[str] = field(default_factory=list)
+    seen: list[ExtractionResult] = field(default_factory=list)
+
+    def __call__(self, email: EmailMessage, extraction: ExtractionResult, **kwargs: Any) -> Any:
+        from app.agents.reviewer import ReviewVerdict
+
+        self.seen.append(extraction)
+        decision = self.verdicts.pop(0) if self.verdicts else "approve"
+        return ReviewVerdict(
+            decision=decision,
+            issues=[] if decision == "approve" else ["the stated zone was ignored"],
+            confidence=0.8,
+            reasoning="checked",
+        )
+
+
 # --- routing ---------------------------------------------------------------
 
 
@@ -204,7 +224,12 @@ def test_edit_re_extracts_with_the_correction() -> None:
 
     graph.invoke(Command(resume={"action": "edit", "correction": "4pm not 3pm"}), config)
 
-    assert pipeline.corrections == ["", "4pm not 3pm"]
+    # Labelled by the node rather than the pipeline: by M13 there are two
+    # possible sources of guidance, and the extractor is told which is which.
+    assert pipeline.corrections[0] == ""
+    assert "4pm not 3pm" in pipeline.corrections[1]
+    assert "from the user" in pipeline.corrections[1]
+
     payload = _interrupt_payload(graph, config)
     assert payload is not None
     assert payload["proposed"]["title"] == "Corrected review"
@@ -222,6 +247,76 @@ def test_revision_loop_is_bounded_by_state_not_by_the_prompt() -> None:
         graph.invoke(Command(resume={"action": "edit", "correction": "again"}), config)
 
     assert _interrupt_payload(graph, config) is None
+
+
+# --- the reviewer (M13) ----------------------------------------------------
+
+
+def test_without_a_reviewer_the_graph_is_unchanged() -> None:
+    graph, config, state = _run(_deps())
+
+    assert state.get("review_decision") == "approve"
+    assert _interrupt_payload(graph, config) is not None
+
+
+def test_an_approving_reviewer_lets_the_proposal_through() -> None:
+    reviewer = FakeReviewer()
+    graph, config, _ = _run(_deps(reviewer=reviewer))
+
+    assert len(reviewer.seen) == 1
+    assert _interrupt_payload(graph, config) is not None
+
+
+def test_a_revision_sends_the_extraction_round_again() -> None:
+    pipeline = FakePipeline(extractions=[_meeting(), _meeting("Design review (PT)")])
+    reviewer = FakeReviewer(verdicts=["revise"])
+
+    graph, config, _ = _run(_deps(pipeline=pipeline, reviewer=reviewer))
+
+    assert len(pipeline.corrections) == 2
+    assert "reviewer" in pipeline.corrections[1].lower()
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None
+    assert payload["proposed"]["title"] == "Design review (PT)"
+
+
+def test_the_reviewer_loop_terminates_however_stubborn_it_is() -> None:
+    """The cap is compared in the router, so no verdict sequence can outlast it."""
+    reviewer = FakeReviewer(verdicts=["revise"] * 10)
+    graph, config, _ = _run(_deps(reviewer=reviewer))
+
+    # It parked at approval rather than looping, which is the whole claim.
+    assert _interrupt_payload(graph, config) is not None
+    # Three verdicts, two re-extractions: the budget is on revisions, not on
+    # opinions. The eval wrapper in app/eval/reviewed.py spends exactly the same.
+    assert len(reviewer.seen) == 3
+
+
+def test_a_rejecting_reviewer_stops_before_a_human_is_asked() -> None:
+    ledger = FakeLedger()
+    reviewer = FakeReviewer(verdicts=["reject"])
+
+    graph, config, state = _run(_deps(ledger=ledger, reviewer=reviewer))
+
+    assert _interrupt_payload(graph, config) is None
+    assert ledger.statuses[-1] is MessageStatus.REJECTED
+    assert state["action"].status == "rejected"
+
+
+def test_a_reviewer_rejection_is_not_recorded_as_a_human_decision() -> None:
+    """The failures view must not report an agent's call as a person's."""
+    ledger = FakeLedger()
+    _, _, state = _run(_deps(ledger=ledger, reviewer=FakeReviewer(verdicts=["reject"])))
+
+    assert "declined by user" not in (state["action"].error or "")
+    assert "zone" in (state["action"].error or "")
+
+
+def test_a_non_meeting_never_reaches_the_reviewer() -> None:
+    reviewer = FakeReviewer()
+    _run(_deps(pipeline=FakePipeline(is_meeting=False), reviewer=reviewer))
+
+    assert reviewer.seen == []
 
 
 def test_conflicts_reach_the_approval_card() -> None:

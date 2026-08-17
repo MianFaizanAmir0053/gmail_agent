@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from app.contracts import EmailMessage
 
-_CONVENTIONS = """\
+CONVENTIONS = """\
 Conventions, applied without exception:
 
 - `is_meeting` means "this message should create a calendar event". It does not
@@ -74,14 +74,14 @@ You triage email. For each message decide only whether it should create a
 calendar event. Be strict: a false positive puts a wrong entry on someone's
 calendar, which is worse than missing an ambiguous one.
 
-{_CONVENTIONS}
+{CONVENTIONS}
 Answer only the is_meeting question. Do not extract times.
 """
 
 EXTRACT_SYSTEM = f"""\
 You extract calendar events from email.
 
-{_CONVENTIONS}
+{CONVENTIONS}
 {_EXAMPLES}
 """
 

@@ -46,6 +46,14 @@ def publish(conn: psycopg.Connection, directory: Path = RESULTS_DIR) -> tuple[in
             skipped += 1
             continue
 
+        if data.get("errors"):
+            # A run where fixtures raised is not a measurement. Errors score as
+            # "not a meeting", so publishing one would draw a quota outage on
+            # the accuracy chart as though the extractor had got worse.
+            print(f"  skipped {path.name}: {len(data['errors'])} fixture(s) errored")
+            skipped += 1
+            continue
+
         row = conn.execute(
             """
             INSERT INTO eval_runs (

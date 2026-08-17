@@ -155,7 +155,10 @@ class ExtractionPipeline:
     def _user(self, email: EmailMessage, now_utc: datetime, user_timezone: str, extra: str) -> str:
         content = prompts.user_content(email, now_utc=now_utc, user_timezone=user_timezone)
         if extra:
-            content = f"{content}\nCorrection from the user, which takes precedence:\n{extra}\n"
+            # Appended verbatim. The caller labels it, because by M13 there are
+            # two possible sources -- a human and the reviewer agent -- and only
+            # the caller knows which one this is.
+            content = f"{content}\n{extra}\n"
         return content
 
 

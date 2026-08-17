@@ -52,13 +52,26 @@ def render(report: EvalReport, *, extractor: str) -> str:
     return "\n".join(lines)
 
 
-def to_dict(report: EvalReport, *, extractor: str) -> dict[str, Any]:
+def to_dict(
+    report: EvalReport, *, extractor: str, errors: list[str] | None = None
+) -> dict[str, Any]:
+    """Serialise a run, including whether it can be believed.
+
+    `errors` is not decoration. A fixture that raised is scored as "not a
+    meeting", and the runner says so loudly on the terminal -- but that warning
+    used to live only in the terminal. The saved file looked exactly like a
+    legitimate run, so a quota failure could be published into the eval-history
+    chart as a genuine accuracy regression. Found by a run that scored 33.3%
+    because six of nine fixtures had hit a daily request limit.
+    """
     clf = report.is_meeting
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "extractor": extractor,
         "fixtures": report.total,
         "headline_exact_match": report.exact_match,
+        "trustworthy": not errors,
+        "errors": errors or [],
         "is_meeting": {
             "accuracy": clf.accuracy,
             "precision": clf.precision,
@@ -81,11 +94,21 @@ def to_dict(report: EvalReport, *, extractor: str) -> dict[str, Any]:
     }
 
 
-def save(report: EvalReport, *, extractor: str, directory: Path = RESULTS_DIR) -> Path:
+def save(
+    report: EvalReport,
+    *,
+    extractor: str,
+    directory: Path = RESULTS_DIR,
+    errors: list[str] | None = None,
+) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    path = directory / f"eval-{extractor}-{stamp}.json"
+    # An untrustworthy run is still saved, and named so the reason is visible
+    # from a directory listing. Discarding it would hide that the run happened.
+    prefix = "eval" if not errors else "eval-INVALID"
+    path = directory / f"{prefix}-{extractor}-{stamp}.json"
     path.write_text(
-        json.dumps(to_dict(report, extractor=extractor), indent=2) + "\n", encoding="utf-8"
+        json.dumps(to_dict(report, extractor=extractor, errors=errors), indent=2) + "\n",
+        encoding="utf-8",
     )
     return path
