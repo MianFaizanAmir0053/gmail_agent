@@ -92,8 +92,8 @@ Module ids are stable; specs and tasks refer to them.
 | Id | Responsibility | Depends on | Est. |
 |---|---|---|---|
 | [M15-go-live](docs/plans/M15-go-live.md) | Harden the deploy (reproducible image, liveness, visible retries, checkpoint retention); observe mode on the paid tier; OAuth "In production" proven by evidence; measure volume, loose ends and cost | — | 5d |
-| M16-web-channel | Owner-only web app: chat, approval cards, web push, Google sign-in; channel interface with Telegram as an optional adapter | M15 | 5d |
-| M17-action-policy | Tool registry with risk tiers enforced in code; `DRY_RUN` in the registry; outbound-action table with single-use nonces bound to an argument hash and to the `DRY_RUN` state a proposal was made under; recipient rule; fail-closed budget cap; `/pause`; audit log. `DRY_RUN` stays on until this lands | M15 | 4d |
+| [M16-web-channel](docs/plans/M16-web-channel.md) | Owner-only web app on Vercel: timeline, approval cards, web push, Google sign-in; one recorded decision queue applied by a single worker; Telegram as an optional adapter | M15 | 8d |
+| M17-action-policy | Tool registry with risk tiers enforced in code; `DRY_RUN` in the registry; outbound-action table with single-use nonces bound to an argument hash and to the `DRY_RUN` state a proposal was made under; recipient rule; a deterministic calendar event id, so an interrupted `act` can be re-driven without double-booking; fail-closed budget cap; `/pause`; audit log. `DRY_RUN` stays on until this lands | M15 | 4d |
 | M18-untrusted-input | Strip one-time codes and reset links; structurally separate owner input from content; forwards untrusted; tool-less readers; injection suite gating CI; re-index and re-run evals | M17 | 4d |
 | M19-planner | Chat planner, plan-then-execute, about six Google tools; tool-routing eval first; tools executed by our own node | M16, M17, M18 | 5d |
 | M20-mail-sync | Full mailbox sync through `history.list` including SENT; cursor resync; per-source item tables; recall check | M15 | 3d |

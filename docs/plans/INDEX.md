@@ -48,7 +48,7 @@ All modules speak `app/contracts.py`. Get it right early — see [M00](M00-skele
 
 Plan, decisions and capability map: `../../ASSISTANT-PLAN.md`. Evidence: `../research/assistant-landscape-2026-09.md`. The active task list lives in `../../tasks/todo.md`.
 
-Each module is specified and approved just before it is built, so only M15 has a spec so far.
+Each module is specified and approved just before it is built, so only M15 and M16 have specs so far.
 
 ```
 M15 ─┬─► M16 ─────────────────┬─► M19 ─┬─► M22 ─┬─► M23
@@ -61,7 +61,7 @@ M15 ─┬─► M16 ─────────────────┬─�
 | # | Module | Est. | Status |
 |---|---|---|---|
 | [M15](M15-go-live.md) | Go live and measure | 5d + 8d unattended | ◐ code complete; waiting on day 0 (deploy) |
-| M16 | Web channel | 5d | ☐ not specified |
+| [M16](M16-web-channel.md) | Web channel | 8d | ◐ spec approved; tasks next |
 | M17 | Action policy | 4d | ☐ not specified |
 | M18 | Untrusted input | 4d | ☐ not specified |
 | M19 | Planner | 5d | ☐ not specified |
