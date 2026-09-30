@@ -24,7 +24,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ValidationError
 
 from app.extraction.payloads import response_json_schema
-from app.obs.trace import record_llm_usage
+from app.obs.trace import record_llm_usage, record_retry
 
 BLOCKING_FINISH_REASONS = frozenset(
     {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION", "IMAGE_SAFETY"}
@@ -178,6 +178,7 @@ def call_with_retry[R](
                 raise
             last = exc
             if attempt < attempts - 1:
+                record_retry()
                 time.sleep(_server_retry_delay(exc) or base_delay * (2**attempt))
 
     raise LlmError(f"{what} unavailable after {attempts} attempts: {last}") from last

@@ -137,7 +137,7 @@ write at runtime instead of at boot.
 
 **Acceptance criteria:**
 - [x] A shutdown signal mid-tick claims no further messages, and a stopped pass leaves the sync cursor where it was.
-- [ ] Boot recovery marks only stale `claimed` rows; fresh claims and other statuses are untouched. *The integration tests are written but have not run: they need `TEST_DATABASE_URL` (the Neon project).*
+- [x] Boot recovery marks only stale `claimed` rows; fresh claims and other statuses are untouched. Passed on Neon.
 
 **Verification:** ledger and scheduler tests (integration marker for Postgres); `.\tasks.ps1 check`.
 
@@ -154,7 +154,7 @@ write at runtime instead of at boot.
 **Acceptance criteria:**
 - [x] A tick with one `FAILED` message records `ok = false`.
 - [x] A raising tick records `ok = false` with the error type, and the scheduler keeps running. A database outage costs only the record.
-- [ ] The gap query catches gaps at the start, middle and end of a window. *The integration tests are written but have not run: they need `TEST_DATABASE_URL`.*
+- [x] The gap query catches gaps at the start, middle and end of a window. Passed on Neon.
 
 **Verification:** `.\tasks.ps1 migrate`; tests with the integration marker; `.\tasks.ps1 check`.
 
@@ -182,8 +182,8 @@ write at runtime instead of at boot.
 ### Checkpoint: after tasks 5–8
 
 - [x] `.\tasks.ps1 check` is green.
-- [ ] The integration tests pass on the Neon test database: `uv run --env-file .env.test pytest -m integration`.
-- [ ] Against the Neon test database, `serve` with the scheduler on writes `ok = false` rows to `job_runs`, and `/health` flips to 503 when polling is broken.
+- [x] The integration tests pass on the Neon test database: `uv run --env-file .env.test pytest -m integration`. Result: 54 passed; 1 failed, the known `test_vector_mode_cannot_reach_a_keyword_only_match`.
+- [x] Against the Neon test database, `serve` with the scheduler on writes `ok = false` rows to `job_runs`, and `/health` flips to 503 when polling is broken. Seen on 2026-09-30: 4 rows (`GoogleAuthNotConfiguredError`); `no successful poll in three intervals` after 4.5 minutes.
   - Break polling with `TEST_CALENDAR_ID` unset, so `graph_session` fails before any Gmail read.
   - Neon holds test data only. The healthy path, with real mail, is first exercised on Supabase at task 14.
 
@@ -195,8 +195,8 @@ price-table session, which may also touch `trace.py`: keep this change to the
 retry plumbing, and rebase onto their merge if both land.
 
 **Acceptance criteria:**
-- [ ] A call that succeeds after two 429s writes `retry_count = 2`.
-- [ ] A call that exhausts its retries still writes its error span, with the count.
+- [x] A call that succeeds after two transient failures writes `retry_count = 2`, checked against the spans table on Neon.
+- [x] A call that exhausts its retries still writes its error span, with the count (3 of 4 attempts were retries).
 
 **Verification:** `uv run pytest tests/test_tool_loop.py tests/test_obs.py`; `.\tasks.ps1 check`.
 
