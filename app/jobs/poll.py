@@ -17,13 +17,12 @@ from typing import NamedTuple
 
 import psycopg
 
-from app.channel.park import ProposalRecord, record_park
+from app.channel.channels import configured_channels
+from app.channel.park import Announce, record_park
 from app.config import get_settings
 from app.graph.runner import GraphSession, graph_session
 from app.store.db import connect
 from app.store.ledger import MessageLedger, MessageStatus, SyncCursor
-from app.telegram.client import TelegramClient
-from app.telegram.notify import admin_chat_id, send_approval_card
 
 CLAIMED_NOT_RUN = "claimed but graph did not complete"
 
@@ -54,8 +53,12 @@ def poll_once(
     *,
     stop: threading.Event | None = None,
     show_titles: bool = True,
+    announce: Announce | None = None,
 ) -> PollResult:
     """One pass over the newest unread mail.
+
+    `announce` tells the owner about each proposal that parks: every configured
+    channel, in production (`app.channel.channels`).
 
     `show_titles=False` is for production, where this output lands in hosted
     logs that sit outside the database's controls: message ids and statuses
@@ -96,7 +99,7 @@ def poll_once(
         else:
             # The ledger mark and the proposal row, together.
             try:
-                record_park(session, message_id, pending, announce=announce_telegram)
+                record_park(session, message_id, pending, announce=announce)
             except Exception as exc:
                 # The thread is still parked, and reconciliation records it.
                 # The rest of the batch should not wait an interval for that.
@@ -112,33 +115,6 @@ def poll_once(
         # behind it, and moving it forward would skip that mail for good.
         SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
     return PollResult(seen=len(message_ids), started=started, failed=failed)
-
-
-def announce_telegram(record: ProposalRecord) -> None:
-    """The park step's announcement, until the channels of 16.13 replace it."""
-    _notify(record)
-
-
-def _notify(record: ProposalRecord) -> None:
-    """Push the card to Telegram, if configured.
-
-    Failing to notify must not fail the run: the proposal is already durably
-    parked, and `app.jobs.approve --list` can still act on it.
-    """
-    settings = get_settings()
-    chat_id = admin_chat_id(settings.allowed_chat_ids)
-    if chat_id is None or settings.telegram_bot_token is None:
-        return
-
-    try:
-        send_approval_card(
-            TelegramClient(settings.telegram_bot_token.get_secret_value()),
-            chat_id,
-            record,
-            zone=settings.user_timezone,
-        )
-    except Exception as exc:
-        print(f"    (telegram notify failed: {exc})")
 
 
 def reset(conn: psycopg.Connection, *, app_env: str) -> int:
@@ -174,7 +150,7 @@ def main() -> None:
         return
 
     with graph_session(settings) as session:
-        result = poll_once(session, args.limit)
+        result = poll_once(session, args.limit, announce=configured_channels(settings).announce)
 
     print(f"\nSaw {result.seen} unread, started {result.started} new, {result.failed} failed.")
     if result.started == 0 and result.seen:

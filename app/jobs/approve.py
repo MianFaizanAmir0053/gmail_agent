@@ -25,11 +25,12 @@ from collections.abc import Callable
 
 import psycopg
 
+from app.channel.channels import configured_channels
 from app.channel.decide import Action, DecisionResult, decide
+from app.channel.park import Announce
 from app.channel.reconcile import reconcile
 from app.config import get_settings
 from app.graph.runner import GraphSession, graph_session
-from app.jobs.poll import announce_telegram
 from app.store.db import connect_autocommit
 
 WAIT_SECONDS = 180
@@ -133,9 +134,9 @@ def list_pending(conn: psycopg.Connection) -> int:
     return len(rows)
 
 
-def reconcile_now(session: GraphSession) -> str:
+def reconcile_now(session: GraphSession, *, announce: Announce | None = None) -> str:
     """Run reconciliation (M16, D3) at once, rather than at the next hourly pass."""
-    result = reconcile(session, announce=announce_telegram)
+    result = reconcile(session, announce=announce)
     return (
         f"Recorded {result.recorded} parked thread(s); closed {result.closed} row(s); "
         f"{result.errors} error(s)."
@@ -172,7 +173,7 @@ def main() -> None:
         # A sweep must reach every parked thread, including one whose row is
         # missing, so reconciliation runs first.
         with graph_session(settings) as session:
-            print(reconcile_now(session))
+            print(reconcile_now(session, announce=configured_channels(settings).announce))
         if args.reconcile:
             return
 

@@ -111,7 +111,6 @@ def parks(monkeypatch: pytest.MonkeyPatch) -> Parks:
             announce(proposal_from(message_id, pending, 1))
 
     monkeypatch.setattr(poll, "record_park", record_park)
-    monkeypatch.setattr(poll, "_notify", lambda record: fake.announced.append(record.message_id))
     return fake
 
 
@@ -152,10 +151,21 @@ def test_a_parked_message_goes_through_the_park_step(
     """The ledger mark and the proposal row are written together (M16, D2)."""
     session = FakeSession(unread=["a", "b"], parked={"b": "Design review"})
 
-    poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
+    poll.poll_once(
+        cast(GraphSession, session),
+        10,
+        stop=threading.Event(),
+        announce=lambda record: parks.announced.append(record.message_id),
+    )
 
     assert parks.recorded == ["b"]
     assert parks.announced == ["b"]
+
+
+def test_poll_no_longer_talks_to_telegram_itself() -> None:
+    """It announces through the channels it is given (M16, D7)."""
+    names = set(vars(poll))
+    assert not names & {"TelegramClient", "send_approval_card", "admin_chat_id", "_notify"}
 
 
 def test_production_output_names_no_titles(

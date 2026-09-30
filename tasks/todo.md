@@ -773,9 +773,9 @@ A settle is one transaction of conditional writes.
 - The park step and the scheduler announce through every configured channel. Exceptions and time-outs are isolated per channel.
 
 **Acceptance criteria:**
-- [ ] A failing or hanging channel does not stop the others (fake channels).
-- [ ] With Telegram unconfigured, nothing breaks.
-- [ ] Poll no longer calls Telegram directly.
+- [x] A failing or hanging channel does not stop the others (fake channels). Calls run on a small shared thread pool with a 15-second deadline, in parallel.
+- [x] With Telegram unconfigured, nothing breaks: no channel is built, and announcing is a no-op. Telegram needs both a bot token and an allowlist.
+- [x] Poll no longer calls Telegram directly. Poll, the worker and reconciliation announce through `configured_channels(settings)`. Token alerts move in 16.15.
 - [x] Channels receive the stored record, never the raw interrupt payload (review of the queue, finding 8). Done in 16.11, because Telegram's buttons needed the revision.
 
 **Verification:** `uv run pytest tests/test_channels.py tests/test_poll.py`; `.\tasks.ps1 check`.

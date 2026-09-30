@@ -19,13 +19,14 @@ import psycopg
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.channel.channels import configured_channels
 from app.channel.reconcile import reconcile
 from app.channel.worker import apply_open
 from app.config import Settings
 from app.google.auth import token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
-from app.jobs.poll import STOPPING, announce_telegram, poll_once
+from app.jobs.poll import STOPPING, poll_once
 from app.jobs.purge import PurgeResult, purge
 from app.obs.liveness import LIVENESS
 from app.store.db import connect
@@ -76,6 +77,7 @@ def run_poll(settings: Settings) -> None:
                 settings.poll_batch_size,
                 stop=STOPPING,
                 show_titles=settings.app_env != "prod",
+                announce=configured_channels(settings).announce,
             )
     except Exception as exc:
         # A scheduled job that raises kills nothing but itself, and APScheduler
@@ -139,7 +141,9 @@ def run_decisions(settings: Settings) -> None:
         if not due or STOPPING.is_set():
             return
         with graph_session(settings) as session:
-            applied = apply_open(session, announce=announce_telegram, stop=STOPPING)
+            applied = apply_open(
+                session, announce=configured_channels(settings).announce, stop=STOPPING
+            )
     except Exception as exc:
         log.exception("decisions job failed")
         last = _decisions_failure_recorded_at
@@ -200,7 +204,7 @@ def run_reconcile(settings: Settings) -> None:
     started_at = datetime.now(UTC)
     try:
         with graph_session(settings) as session:
-            result = reconcile(session, announce=announce_telegram)
+            result = reconcile(session, announce=configured_channels(settings).announce)
     except Exception as exc:
         log.exception("reconcile failed")
         record_tick(settings, "reconcile", started_at, ok=False, error=type(exc).__name__)
