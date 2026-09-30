@@ -78,18 +78,23 @@ def decide(
    ```
 
    The same transaction inserts the `decisions` row with `outcome = NULL`. If no row comes back, the card was stale or another tap won, and the request is refused. A partial unique index allows one open decision per message.
+
+   A retry of a request whose decision is still open, after a lost response, is answered `queued` with that decision. Once it has settled, the same request is stale.
+   An unknown action or channel is refused. So is a sweep from anyone but an operator (`cli` or `sweep`), because M24 counts sweeps apart from taps.
 3. **Wake the worker** if it runs in this process, as it does for the web API. Then return. `decide()` never touches the graph.
 
 **Applying decisions.** `app/channel/worker.py` is the scheduler's
 `decisions` job: every 15 seconds, `max_instances=1`, on the single Fly machine
 (`--ha=false`). For each open decision whose retry time has come, it takes a
-10-minute lease with a conditional `UPDATE`, reads the stored state, and moves
-it one step:
+30-minute lease with a conditional `UPDATE`, reads the stored state, and moves
+it one step. The lease cannot be renewed during a resume, and the model calls
+inside one have no deadline, so it is long.
 
 | Stored state | Step |
 |---|---|
 | Parked at the decision's revision | Resume with the decision, then read the state again |
 | Parked at the next revision, after an edit | Settle: the proposal is `pending` at that revision; outcome `reparked` |
+| Parked at any other revision | Show it again at that revision; outcome `no_effect`, reason `unexpected revision`. A parked thread is awaiting the owner, and failing it would bury a live proposal |
 | Ledger final (created, skipped, rejected) | Settle: the proposal is `decided`; the outcome is that status |
 | Mid-graph (`next` set, no interrupt), without `act` in `next` | Re-drive with `invoke(None)`, then read the state again |
 | Mid-graph with `act` in `next` | Settle as failed, reason `act interrupted`. Never re-driven, because `act` is not idempotent (`app/graph/build.py`). M17's deterministic event id lifts this |
@@ -97,6 +102,8 @@ it one step:
 
 - **Failures retry.** A resume or re-drive that raises costs one attempt. The next attempt waits 1 minute, then 10. After the third failure the worker settles: a thread still parked at the decision's revision returns to `pending` with outcome `no_effect`; anything else fails.
 - **A settle is one transaction, and every write in it is conditional:** the proposal `WHERE status = 'deciding'`, the outcome `WHERE outcome IS NULL`, and a failed ledger `WHERE status = 'awaiting_approval'`. The lease stops a second worker; the conditions make a repeated settle harmless.
+- **A settle closes its own decision first**, and changes nothing else unless that close took effect. A late settle, from a worker whose lease ran out, therefore never reaches a proposal that has moved on to a newer decision.
+- **One broken decision does not hold up the others.** If even the clean settle fails after the last attempt, the decision is failed.
 - **A crash anywhere converges.** The decision stays open, its lease expires, and the next tick reads the stored state again. A decision already applied is recognised from that state and never applied twice.
 - **A re-park** settles through the park step (D2), inside the same transaction, so it writes its rows and announces itself as a poll's park does.
 - **`ledger.mark` stays unconditional.** Only the worker resumes, so no second writer can reach a thread mid-decision.
@@ -141,8 +148,10 @@ announces the proposal through every channel (D7).
 | `dry_run` | As recorded at parking |
 | `parked_at`, `updated_at` | Timestamps |
 
-**`decisions`**: the queue, and the record. Rows are never deleted. Only the
-worker's bookkeeping changes, and the outcome is written once.
+**`decisions`**: the queue, and the record. Rows are never deleted: the
+foreign key to `proposals` restricts deletes rather than cascading them, and
+`poll --reset` refuses production. Only the worker's bookkeeping changes, and
+the outcome is written once.
 
 | Column | Meaning |
 |---|---|
@@ -426,6 +435,20 @@ The same round also found:
 The queue itself had no fresh review. Its proof is the worker's tests, which
 inject a failure after each step. The owner declined a cross-model review and
 approved the spec on 2026-09-30.
+
+**A fourth review, on 2026-10-01, read the queue's code against D1 and D2.**
+It found eight issues, and seven were fixed at once:
+1. the worker could fail a live parked thread;
+2. decisions could be deleted by a cascade;
+3. a failure while giving up escaped the worker;
+4. `decide()` accepted any action and channel strings;
+5. transactions were assumed rather than checked;
+6. a park that could not be recorded stopped poll's pass;
+7. a late settle could reach a newer decision's proposal. Settles are now scoped to their own decision, and the lease is 30 minutes.
+
+The rest lands where its callers change:
+- **16.11:** a test that only the worker resumes. Until then, the M15 CLI and Telegram still resume directly (the other half of issue 1). Nothing is deployed before they move.
+- **16.13:** channels receive only a message id (issue 8).
 
 ## Running notes
 

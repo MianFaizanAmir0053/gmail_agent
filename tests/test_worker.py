@@ -22,8 +22,11 @@ from app.channel.park import record_park
 from app.channel.worker import (
     ACT_INTERRUPTED,
     ATTEMPTS_EXHAUSTED,
+    UNEXPECTED_REVISION,
     OpenDecision,
+    Step,
     apply_open,
+    settle_decided,
     settle_failed,
     step_for,
 )
@@ -63,10 +66,12 @@ def test_a_thread_parked_one_revision_on_after_an_edit_is_settled_as_reparked() 
     assert (step.kind, step.outcome) == ("settle", "reparked")
 
 
-def test_a_revision_the_decision_cannot_explain_fails_rather_than_guessing() -> None:
+def test_a_revision_the_decision_cannot_explain_is_resynced_not_failed() -> None:
+    """A parked thread is awaiting the owner. Failing it would bury a live
+    proposal; showing its real revision again lets the owner decide."""
     view = _view(parked=True, revision=2, next_=("await_approval",))
     step = step_for(view, MessageStatus.AWAITING_APPROVAL, _decision("confirm"))
-    assert (step.kind, step.outcome) == ("settle", "failed")
+    assert (step.kind, step.outcome, step.reason) == ("settle", "resync", UNEXPECTED_REVISION)
 
 
 @pytest.mark.parametrize(
@@ -533,11 +538,12 @@ def test_a_crash_inside_the_settle_leaves_nothing_half_written(
     session = _counting(conn)
     _parked(conn, session)
     decide(conn, "m1", action="cancel", revision=1, via="web")
-    _crash_once(monkeypatch, "_close")
+    _crash_once(monkeypatch, "_mark_decided")
 
     with pytest.raises(Crash):
         apply_open(session)
-    # The proposal update ran before the crash, and was rolled back with it.
+    # The decision was closed before the crash, and the close was rolled back
+    # with the rest of the settle.
     assert _proposal(conn) == ("deciding", 1, None)
     assert _open(conn) is not None
 
@@ -565,3 +571,115 @@ def test_a_crash_after_the_settle_applies_nothing_twice(conn: psycopg.Connection
     assert session.resumes == 1
     assert _proposal(conn) == ("pending", 2, None)
     assert _outcomes(conn) == [("reparked", None, True)]
+
+
+# --- fixes from the review of the queue (2026-10-01) ---------------------------
+
+
+@pytest.mark.integration
+def test_a_thread_moved_behind_the_workers_back_is_shown_again(conn: psycopg.Connection) -> None:
+    """Something other than the worker edited the thread (the M15 CLI still
+    can, until 16.10). The live proposal comes back at its real revision."""
+    session = _counting(conn)
+    _parked(conn, session)
+    decide(conn, "m1", action="confirm", revision=1, via="web")
+    GraphSession.resume(session, "m1", {"action": "edit", "correction": "make it 5pm"})
+    announced: list[str] = []
+
+    assert apply_open(session, announce=lambda mid, _: announced.append(mid)) == [
+        ("m1", "no_effect")
+    ]
+
+    assert _proposal(conn) == ("pending", 2, None)
+    assert _outcomes(conn) == [("no_effect", UNEXPECTED_REVISION, True)]
+    assert _ledger(conn) is MessageStatus.AWAITING_APPROVAL
+    assert announced == ["m1"]
+    assert session.resumes == 0
+
+
+@pytest.mark.integration
+def test_one_broken_decision_does_not_hold_up_the_rest(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _counting(conn)
+    for message_id in ("m1", "m2"):
+        MessageLedger(conn).claim(message_id, message_id)
+        session.start(message_id, message_id)
+        pending = session.pending(message_id)
+        assert pending is not None
+        record_park(session, message_id, pending)
+        decide(conn, message_id, action="cancel", revision=1, via="web")
+
+    original = worker.apply_one
+
+    def breaks_on_m1(session: Any, decision: OpenDecision, **kwargs: Any) -> str:
+        if decision.message_id == "m1":
+            raise RuntimeError("unexpected")
+        return original(session, decision, **kwargs)
+
+    monkeypatch.setattr(worker, "apply_one", breaks_on_m1)
+
+    assert apply_open(session) == [("m1", "error"), ("m2", "rejected")]
+
+
+@pytest.mark.integration
+def test_giving_up_falls_back_to_failed_when_the_clean_settle_cannot_run(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    decide(conn, "m1", action="cancel", revision=1, via="web")
+    GraphSession.resume(session, "m1", {"action": "cancel"})
+    conn.execute("UPDATE decisions SET attempts = 3 WHERE message_id = 'm1'")
+
+    def cannot_settle(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("constraint surprise")
+
+    monkeypatch.setattr(worker, "_settle", cannot_settle)
+
+    assert apply_open(session) == [("m1", "failed")]
+    assert _outcomes(conn) == [("failed", ATTEMPTS_EXHAUSTED, True)]
+    # The ledger had already reached its final status, and keeps it.
+    assert _ledger(conn) is MessageStatus.REJECTED
+
+
+@pytest.mark.integration
+def test_a_late_settle_never_touches_a_newer_decision(conn: psycopg.Connection) -> None:
+    """Settles are scoped to their own decision, not to whatever is deciding."""
+    pipeline = FakePipeline(extractions=[_meeting(), _meeting("Design review, 5pm")])
+    session = _counting(conn, pipeline=pipeline)
+    _parked(conn, session)
+    first = decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+    assert first.decision_id is not None
+    apply_open(session)
+    decide(conn, "m1", action="confirm", revision=2, via="web")
+
+    # The first decision's worker wakes up late and settles it again.
+    late = OpenDecision(
+        id=first.decision_id,
+        message_id="m1",
+        revision=1,
+        action="edit",
+        correction="make it 5pm",
+        attempts=0,
+    )
+    worker._settle(
+        conn,
+        late,
+        Step("settle", outcome="rejected", final_status="rejected"),
+        session.thread("m1"),
+        MessageStatus.AWAITING_APPROVAL,
+        None,
+    )
+
+    assert _proposal(conn) == ("deciding", 2, None)
+
+
+@pytest.mark.integration
+def test_settles_refuse_to_run_outside_a_transaction(migrated_database: str) -> None:
+    """Outside one, the first write would commit on its own."""
+    with psycopg.connect(migrated_database, autocommit=True) as bare:
+        with pytest.raises(RuntimeError, match="transaction"):
+            settle_failed(bare, 0, "nobody", reason="x")
+        with pytest.raises(RuntimeError, match="transaction"):
+            settle_decided(bare, 0, "nobody", final_status="skipped")

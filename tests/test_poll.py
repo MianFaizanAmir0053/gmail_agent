@@ -173,3 +173,31 @@ def test_production_output_names_no_titles(
     out = capsys.readouterr().out
     assert "AWAITING APPROVAL" in out
     assert "Salary review" not in out
+
+
+def test_a_park_that_cannot_be_recorded_does_not_stop_the_pass(
+    ledger: FakeLedger, cursor: FakeCursor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The thread is still parked; reconciliation records it. The rest of the
+    batch should not wait an interval for that."""
+    recorded: list[str] = []
+
+    def record_park(session: Any, message_id: str, pending: Any, **kwargs: Any) -> None:
+        if message_id == "a":
+            raise RuntimeError("connection lost")
+        recorded.append(message_id)
+
+    monkeypatch.setattr(poll, "record_park", record_park)
+    session = FakeSession(unread=["a", "b"], parked={"a": "One", "b": "Two"})
+
+    result = poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
+
+    assert recorded == ["b"]
+    # Counted, so the tick is not reported healthy.
+    assert result.failed == 1
+
+
+def test_reset_refuses_the_production_ledger() -> None:
+    """Decisions are M24's evidence; a reset would try to erase them."""
+    with pytest.raises(SystemExit):
+        poll.reset(cast(Any, object()), app_env="prod")

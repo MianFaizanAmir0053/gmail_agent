@@ -198,6 +198,20 @@ def test_a_repark_moves_a_deciding_proposal_to_the_new_revision(
 
 
 @pytest.mark.integration
+def test_the_park_step_refuses_to_run_outside_a_transaction(migrated_database: str) -> None:
+    """Outside one, the ledger write would commit before the proposal write."""
+    with (
+        psycopg.connect(migrated_database, autocommit=True) as bare,
+        pytest.raises(RuntimeError, match="transaction"),
+    ):
+        park.write_park(
+            bare,
+            proposal_from("nobody", PENDING, revision=1),
+            ledger_status=MessageStatus.CLAIMED,
+        )
+
+
+@pytest.mark.integration
 def test_a_park_does_not_reopen_a_decided_proposal(conn: psycopg.Connection) -> None:
     ledger = MessageLedger(conn)
     ledger.claim("m1", "m1")

@@ -30,7 +30,7 @@ from typing import Any, Literal
 
 import psycopg
 
-from app.channel.park import Announce, proposal_from, write_park
+from app.channel.park import Announce, proposal_from, require_transaction, write_park
 from app.graph.runner import GraphSession, ThreadView
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
@@ -56,11 +56,14 @@ not left wondering for an afternoon."""
 
 MAX_ATTEMPTS = len(RETRY_DELAYS) + 1
 
-LEASE = timedelta(minutes=10)
+LEASE = timedelta(minutes=30)
 """How long a worker owns a decision. Only one worker runs (a single machine,
 `max_instances=1`), so the lease guards against a mistake -- a second machine,
 a local run against the production database -- rather than a normal case. A
-worker that dies holding one only delays the decision until it expires."""
+worker that dies holding one only delays the decision until it expires.
+
+Longer than any resume should take, because it cannot be renewed while one
+runs, and the model calls inside a resume have no deadline of their own."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +91,10 @@ def step_for(view: ThreadView, ledger_status: MessageStatus | None, decision: Op
             return Step("resume")
         if decision.action == "edit" and view.revision == decision.revision + 1:
             return Step("settle", outcome="reparked")
-        return Step("settle", outcome="failed", reason=UNEXPECTED_REVISION)
+        # Something else moved the thread. It is still awaiting the owner, so
+        # it is shown again at its real revision; failing it would bury a live
+        # proposal, and reconciliation never revisits a thread that has a row.
+        return Step("settle", outcome="resync", reason=UNEXPECTED_REVISION)
 
     if ledger_status in TERMINAL_STATUSES:
         assert ledger_status is not None
@@ -119,7 +125,16 @@ def apply_open(
             break
         if not _take_lease(session.conn, decision.id):
             continue  # another worker has it
-        applied.append((decision.message_id, apply_one(session, decision, announce=announce)))
+        try:
+            outcome = apply_one(session, decision, announce=announce)
+        except Exception:
+            # One broken decision must not hold up the others. Its lease
+            # expires and the next pass tries it again.
+            log.exception(
+                "decision %d on %s could not be applied", decision.id, decision.message_id
+            )
+            outcome = "error"
+        applied.append((decision.message_id, outcome))
     return applied
 
 
@@ -152,9 +167,7 @@ def _advance(session: GraphSession, decision: OpenDecision, announce: Announce |
         step = step_for(view, ledger_status, decision)
 
         if step.kind == "settle":
-            _settle(session.conn, decision, step, view, ledger_status, announce)
-            assert step.outcome is not None
-            return step.outcome
+            return _settle(session.conn, decision, step, view, ledger_status, announce)
         if step.kind == "resume":
             session.resume(
                 decision.message_id,
@@ -174,29 +187,36 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
     state that settles on its own terms -- a final ledger, a re-park -- settles
     that way. Only a thread stuck mid-graph fails.
     """
-    view = session.thread(decision.message_id)
-    entry = MessageLedger(session.conn).get(decision.message_id)
-    ledger_status = entry.status if entry is not None else None
-    step = step_for(view, ledger_status, decision)
-
-    if step.kind == "settle":
-        _settle(session.conn, decision, step, view, ledger_status, announce)
-        assert step.outcome is not None
-        return step.outcome
-
     conn = session.conn
-    with conn.transaction():
-        if step.kind == "resume":
-            conn.execute(
-                """
-                UPDATE proposals SET status = 'pending', updated_at = now()
-                 WHERE message_id = %s AND status = 'deciding'
-                """,
-                (decision.message_id,),
-            )
-            _close(conn, decision.id, "no_effect", reason=ATTEMPTS_EXHAUSTED)
-            return "no_effect"
-        settle_failed(conn, decision.id, decision.message_id, reason=ATTEMPTS_EXHAUSTED)
+    try:
+        view = session.thread(decision.message_id)
+        entry = MessageLedger(conn).get(decision.message_id)
+        ledger_status = entry.status if entry is not None else None
+        step = step_for(view, ledger_status, decision)
+
+        if step.kind == "settle":
+            return _settle(conn, decision, step, view, ledger_status, announce)
+
+        with conn.transaction():
+            if step.kind == "resume":
+                if _close(conn, decision.id, "no_effect", reason=ATTEMPTS_EXHAUSTED):
+                    conn.execute(
+                        """
+                        UPDATE proposals SET status = 'pending', updated_at = now()
+                         WHERE message_id = %s AND status = 'deciding'
+                        """,
+                        (decision.message_id,),
+                    )
+                return "no_effect"
+            settle_failed(conn, decision.id, decision.message_id, reason=ATTEMPTS_EXHAUSTED)
+            return "failed"
+    except Exception:
+        # Even the clean settle failed -- a surprise constraint, a conflicting
+        # row. The plainest settle there is ends it, rather than retrying the
+        # same failure every pass for ever.
+        log.exception("could not settle %s cleanly; failing it", decision.message_id)
+        with conn.transaction():
+            settle_failed(conn, decision.id, decision.message_id, reason=ATTEMPTS_EXHAUSTED)
         return "failed"
 
 
@@ -231,8 +251,82 @@ def _take_lease(conn: psycopg.Connection, decision_id: int) -> bool:
 
 def settle_decided(
     conn: psycopg.Connection, decision_id: int, message_id: str, *, final_status: str
-) -> None:
-    """The ledger reached a final status. Must run inside a transaction."""
+) -> bool:
+    """The ledger reached a final status. Must run inside a transaction.
+
+    Returns False, changing nothing, if the decision was already settled.
+    """
+    require_transaction(conn)
+    if not _close(conn, decision_id, final_status, reason=None):
+        return False
+    _mark_decided(conn, message_id, final_status)
+    return True
+
+
+def settle_failed(
+    conn: psycopg.Connection, decision_id: int, message_id: str, *, reason: str
+) -> bool:
+    """Nothing more can be done for this decision. Must run inside a transaction.
+
+    The ledger becomes FAILED only from `awaiting_approval`: a message that
+    reached a final status keeps it, and with it any calendar event id.
+    Returns False, changing nothing, if the decision was already settled.
+    """
+    require_transaction(conn)
+    if not _close(conn, decision_id, "failed", reason=reason):
+        return False
+    _mark_failed(conn, message_id, reason)
+    return True
+
+
+def _settle(
+    conn: psycopg.Connection,
+    decision: OpenDecision,
+    step: Step,
+    view: ThreadView,
+    ledger_status: MessageStatus | None,
+    announce: Announce | None,
+) -> str:
+    """Record a step's outcome in one transaction. Returns the outcome.
+
+    Each settle closes its own decision first and changes the rest only if
+    that close took effect. A late settle -- from a worker whose lease ran
+    out -- therefore never reaches a proposal that has moved on to a newer
+    decision.
+    """
+    shows_again = step.outcome in ("reparked", "resync")
+    outcome = "no_effect" if step.outcome == "resync" else step.outcome
+    assert outcome is not None
+
+    with conn.transaction():
+        if shows_again:
+            assert view.payload is not None and ledger_status is not None
+            if not _close(conn, decision.id, outcome, reason=step.reason):
+                return "already settled"
+            write_park(
+                conn,
+                proposal_from(decision.message_id, view.payload, view.revision),
+                ledger_status=ledger_status,
+            )
+        elif outcome == "failed":
+            if not settle_failed(
+                conn, decision.id, decision.message_id, reason=step.reason or NO_OUTCOME
+            ):
+                return "already settled"
+        else:
+            assert step.final_status is not None
+            if not settle_decided(
+                conn, decision.id, decision.message_id, final_status=step.final_status
+            ):
+                return "already settled"
+
+    if shows_again and announce is not None:
+        assert view.payload is not None
+        _announce(announce, decision.message_id, view.payload)
+    return outcome
+
+
+def _mark_decided(conn: psycopg.Connection, message_id: str, final_status: str) -> None:
     conn.execute(
         """
         UPDATE proposals
@@ -241,17 +335,9 @@ def settle_decided(
         """,
         (final_status, message_id),
     )
-    _close(conn, decision_id, final_status, reason=None)
 
 
-def settle_failed(
-    conn: psycopg.Connection, decision_id: int, message_id: str, *, reason: str
-) -> None:
-    """Nothing more can be done for this decision. Must run inside a transaction.
-
-    The ledger becomes FAILED only from `awaiting_approval`: a message that
-    reached a final status keeps it, and with it any calendar event id.
-    """
+def _mark_failed(conn: psycopg.Connection, message_id: str, reason: str) -> None:
     conn.execute(
         """
         UPDATE proposals SET status = 'failed', updated_at = now()
@@ -271,35 +357,6 @@ def settle_failed(
             MessageStatus.AWAITING_APPROVAL.value,
         ),
     )
-    _close(conn, decision_id, "failed", reason=reason)
-
-
-def _settle(
-    conn: psycopg.Connection,
-    decision: OpenDecision,
-    step: Step,
-    view: ThreadView,
-    ledger_status: MessageStatus | None,
-    announce: Announce | None,
-) -> None:
-    with conn.transaction():
-        if step.outcome == "reparked":
-            assert view.payload is not None and ledger_status is not None
-            write_park(
-                conn,
-                proposal_from(decision.message_id, view.payload, view.revision),
-                ledger_status=ledger_status,
-            )
-            _close(conn, decision.id, "reparked", reason=None)
-        elif step.outcome == "failed":
-            settle_failed(conn, decision.id, decision.message_id, reason=step.reason or NO_OUTCOME)
-        else:
-            assert step.final_status is not None
-            settle_decided(conn, decision.id, decision.message_id, final_status=step.final_status)
-
-    if step.outcome == "reparked" and announce is not None:
-        assert view.payload is not None
-        _announce(announce, decision.message_id, view.payload)
 
 
 def _announce(announce: Announce, message_id: str, payload: dict[str, Any]) -> None:
@@ -310,15 +367,17 @@ def _announce(announce: Announce, message_id: str, payload: dict[str, Any]) -> N
         log.exception("could not announce %s", message_id)
 
 
-def _close(conn: psycopg.Connection, decision_id: int, outcome: str, *, reason: str | None) -> None:
-    conn.execute(
+def _close(conn: psycopg.Connection, decision_id: int, outcome: str, *, reason: str | None) -> bool:
+    """Write the outcome, once. True if this call wrote it."""
+    closed = conn.execute(
         """
         UPDATE decisions
            SET outcome = %s, reason = %s, settled_at = now(), lease_until = NULL
          WHERE id = %s AND outcome IS NULL
         """,
         (outcome, reason, decision_id),
-    )
+    ).rowcount
+    return bool(closed)
 
 
 def _due(conn: psycopg.Connection, limit: int) -> list[OpenDecision]:

@@ -75,6 +75,27 @@ def test_an_overlong_correction_is_refused() -> None:
     assert result.status == "invalid"
 
 
+def test_a_correction_postgres_cannot_store_is_refused() -> None:
+    result = decide(NO_DATABASE, "m1", action="edit", revision=1, correction="5\x00pm", via="web")
+    assert result.status == "invalid"
+
+
+@pytest.mark.parametrize(
+    ("action", "via"),
+    [
+        ("approve", "web"),  # not an action
+        ("confirm", "email"),  # not a channel
+        ("sweep", "web"),  # a sweep is an operator's, never a tap
+        ("sweep", "telegram"),
+        ("confirm", "sweep"),  # the sweep path only sweeps
+    ],
+)
+def test_an_action_or_channel_outside_the_contract_is_refused(action: str, via: str) -> None:
+    """Callers are typed, but the CLI and the API hand over strings."""
+    result = decide(NO_DATABASE, "m1", action=cast(Any, action), revision=1, via=cast(Any, via))
+    assert result.status == "invalid"
+
+
 # --- claiming and enqueueing (Postgres) --------------------------------------
 
 
@@ -125,6 +146,32 @@ def test_a_second_tap_on_the_same_card_is_refused(conn: psycopg.Connection) -> N
 
 
 @pytest.mark.integration
+def test_a_retried_request_gets_the_decision_it_already_made(conn: psycopg.Connection) -> None:
+    """A lost response followed by a retry must not read as someone else's tap."""
+    _park(conn)
+    first = decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+
+    again = decide(conn, "m1", action="edit", revision=1, correction=" make it 5pm", via="web")
+
+    assert again.status == "queued"
+    assert again.decision_id == first.decision_id
+    assert len(_decisions(conn)) == 1
+
+
+@pytest.mark.integration
+def test_decisions_outlive_any_attempt_to_delete_their_message(conn: psycopg.Connection) -> None:
+    """M24's evidence: a reset or a stray DELETE must fail rather than erase it."""
+    _park(conn)
+    decide(conn, "m1", action="confirm", revision=1, via="web")
+
+    # RESTRICT reports its own error, not the general foreign-key one.
+    with pytest.raises(psycopg.errors.RestrictViolation), conn.transaction():
+        conn.execute("DELETE FROM processed_messages WHERE gmail_message_id = 'm1'")
+
+    assert len(_decisions(conn)) == 1
+
+
+@pytest.mark.integration
 def test_a_message_with_no_proposal_is_not_found(conn: psycopg.Connection) -> None:
     MessageLedger(conn).claim("m1", "m1")
 
@@ -158,6 +205,9 @@ def committed_proposal(migrated_database: str) -> Iterator[str]:
         _park(setup, message_id)
     yield message_id
     with psycopg.connect(migrated_database, autocommit=True) as cleanup:
+        # Decisions are protected from cascading deletes, so this test's own
+        # rows go first, explicitly.
+        cleanup.execute("DELETE FROM decisions WHERE message_id = %s", (message_id,))
         cleanup.execute("DELETE FROM processed_messages WHERE gmail_message_id = %s", (message_id,))
 
 

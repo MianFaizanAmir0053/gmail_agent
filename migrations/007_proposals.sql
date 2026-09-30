@@ -3,7 +3,9 @@
 -- `proposals` mirrors each parked thread for the web app, which reads through
 -- a role that cannot see checkpoints. `decisions` is both the queue the worker
 -- applies and the permanent record M24 computes autonomy from, so its rows
--- are never deleted; only their content columns are cleared (D8).
+-- are never deleted; only their content columns are cleared (D8). Its foreign
+-- key restricts rather than cascades, so a stray DELETE on the ledger fails
+-- instead of quietly erasing that record.
 --
 -- Every statement can be re-run.
 
@@ -28,7 +30,7 @@ CREATE INDEX IF NOT EXISTS proposals_status_idx ON proposals (status, parked_at)
 
 CREATE TABLE IF NOT EXISTS decisions (
     id                BIGSERIAL PRIMARY KEY,
-    message_id        TEXT        NOT NULL REFERENCES proposals (message_id) ON DELETE CASCADE,
+    message_id        TEXT        NOT NULL REFERENCES proposals (message_id) ON DELETE RESTRICT,
     revision          INT         NOT NULL CHECK (revision >= 1),
     action            TEXT        NOT NULL CHECK (action IN ('confirm', 'edit', 'cancel', 'sweep')),
     via               TEXT        NOT NULL CHECK (via IN ('web', 'cli', 'telegram', 'sweep')),

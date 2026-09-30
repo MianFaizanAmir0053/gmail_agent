@@ -725,6 +725,7 @@ A settle is one transaction of conditional writes.
 - [ ] A stale Telegram card is refused.
 - [ ] The handler never resumes a thread.
 - [ ] The webhook handler is not a coroutine function.
+- [ ] A test fails if any module other than `app/channel/worker.py` calls `resume` or `redrive`. This enforces D1's rule automatically rather than by a search at a checkpoint (review of the queue, finding 1).
 
 **Verification:** `uv run pytest tests/test_telegram.py tests/test_api.py`; `.\tasks.ps1 check`.
 
@@ -771,6 +772,7 @@ A settle is one transaction of conditional writes.
 - [ ] A failing or hanging channel does not stop the others (fake channels).
 - [ ] With Telegram unconfigured, nothing breaks.
 - [ ] Poll no longer calls Telegram directly.
+- [ ] Channels receive only the message id, as D7 specifies. The raw interrupt payload, which carries the model's reasoning, never leaves the park step, and Telegram's card reads the stored payload instead (review of the queue, finding 8).
 
 **Verification:** `uv run pytest tests/test_channels.py tests/test_poll.py`; `.\tasks.ps1 check`.
 

@@ -13,7 +13,7 @@ the first's row lock, then finds the proposal no longer `pending`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 import psycopg
 
@@ -22,6 +22,12 @@ from app.graph.nodes import MAX_REVISIONS
 Action = Literal["confirm", "edit", "cancel", "sweep"]
 Via = Literal["web", "cli", "telegram", "sweep"]
 DecisionStatus = Literal["queued", "stale", "not_found", "invalid"]
+
+ACTIONS: frozenset[str] = frozenset(get_args(Action))
+VIAS: frozenset[str] = frozenset(get_args(Via))
+SWEEPERS = frozenset({"cli", "sweep"})
+"""Who may sweep. A sweep is an operator ending observe mode, never an owner's
+tap, and M24 counts the two differently."""
 
 MAX_CORRECTION_CHARS = 2000
 """Enough for any instruction a person types on a phone. The correction goes
@@ -46,8 +52,23 @@ def decide(
     correction: str = "",
     via: Via,
 ) -> DecisionResult:
-    """Validate, then claim the proposal and enqueue the decision atomically."""
-    correction = correction.strip()
+    """Validate, then claim the proposal and enqueue the decision atomically.
+
+    The caller's connection must commit: autocommit, or `app.store.db.connect`,
+    which commits on exit. On a connection already inside a transaction, the
+    claim is only a savepoint until the caller commits.
+    """
+    # Typed, but the CLI and the API hand over strings.
+    if action not in ACTIONS or via not in VIAS:
+        return DecisionResult("invalid", detail="unknown action or channel")
+    if action == "sweep" and via not in SWEEPERS:
+        return DecisionResult("invalid", detail="only an operator sweeps")
+    if via == "sweep" and action != "sweep":
+        return DecisionResult("invalid", detail="the sweep path only sweeps")
+
+    correction = (correction or "").strip()
+    if "\x00" in correction:
+        return DecisionResult("invalid", detail="the correction contains a NUL character")
     if action == "edit":
         # An empty correction would reach `reject` and be logged as "declined
         # by user"; an edit past the cap would be rejected silently
@@ -77,6 +98,11 @@ def decide(
             ).fetchone()
             if current is None:
                 return DecisionResult("not_found", detail="no proposal for this message")
+            if (
+                repeat := _same_open_decision(conn, message_id, action, revision, correction)
+            ) is not None:
+                # A retry after a lost response: answer as the first request was answered.
+                return DecisionResult("queued", decision_id=repeat, detail="already queued")
             return DecisionResult(
                 "stale", detail=f"the proposal is {current[1]}", current_revision=current[0]
             )
@@ -104,3 +130,23 @@ def decide(
 
     assert inserted is not None
     return DecisionResult("queued", decision_id=int(inserted[0]))
+
+
+def _same_open_decision(
+    conn: psycopg.Connection, message_id: str, action: str, revision: int, correction: str
+) -> int | None:
+    """The open decision this request repeats, if any.
+
+    Only an open one: once a decision has settled, the same request is stale.
+    The card has moved on, and replaying it would act on a state the owner
+    has not seen.
+    """
+    row = conn.execute(
+        """
+        SELECT id FROM decisions
+         WHERE message_id = %s AND outcome IS NULL
+           AND action = %s AND revision = %s AND coalesce(correction, '') = %s
+        """,
+        (message_id, action, revision, correction if action == "edit" else ""),
+    ).fetchone()
+    return None if row is None else int(row[0])

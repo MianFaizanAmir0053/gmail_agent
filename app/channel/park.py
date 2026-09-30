@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import psycopg
+from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
 from app.graph.runner import GraphSession
@@ -88,10 +89,21 @@ def write_park(
     alone, and the proposal row is written only when it is new or mid-decision.
     Anything else raises `ParkConflictError`, which rolls the transaction back.
     """
+    require_transaction(conn)
     if ledger_status in TERMINAL_STATUSES:
         raise ParkConflictError(f"{record.message_id} is already {ledger_status}")
     _move_ledger(conn, record.message_id, ledger_status)
     _upsert_proposal(conn, record)
+
+
+def require_transaction(conn: psycopg.Connection) -> None:
+    """Refuse to run a multi-statement write outside a transaction.
+
+    On an autocommit connection each statement would commit on its own, and a
+    failure between two of them would leave half the change behind.
+    """
+    if conn.info.transaction_status is not TransactionStatus.INTRANS:
+        raise RuntimeError("this write must run inside a transaction")
 
 
 def record_park(
