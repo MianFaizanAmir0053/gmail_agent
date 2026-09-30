@@ -1,89 +1,149 @@
-"""The operator's CLI over parked proposals.
+"""The operator's CLI over proposals (M16: it records decisions and waits).
 
-The session is faked: what is under test is which proposals get which
-decision, not LangGraph's resume, which `test_graph.py` covers.
+Since M16 the CLI never resumes a thread: it records a decision through
+`decide()`, and the worker in the app applies it. What is under test is which
+decisions get recorded, and how the wait for their outcome behaves.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, cast
 
+import psycopg
 import pytest
 
+from app.channel.park import proposal_from, write_park
 from app.graph.runner import GraphSession
-from app.jobs.approve import list_pending, sweep_all
+from app.jobs import approve
+from app.jobs.approve import decide_current, list_pending, sweep_all, wait_for
+from app.store.ledger import MessageLedger, MessageStatus
+
+PENDING: dict[str, Any] = {
+    "proposed": {
+        "title": "Design review",
+        "start_utc": "2026-10-02T11:00:00Z",
+        "end_utc": "2026-10-02T12:00:00Z",
+        "attendees": ["sara@example.com"],
+    },
+    "conflicts": ["Overlaps Standup"],
+    "dry_run": True,
+    "action_type": "calendar_invite",
+    "pipeline_version": "0123456789ab",
+}
+
+
+# --- waiting for the worker ------------------------------------------------------
 
 
 @dataclass
-class FakeRows:
-    rows: list[tuple[str]]
+class Clock:
+    now: float = 0.0
 
-    def fetchall(self) -> list[tuple[str]]:
-        return self.rows
+    def time(self) -> float:
+        return self.now
 
-
-@dataclass
-class FakeConn:
-    awaiting: list[str]
-
-    def execute(self, sql: str, params: tuple[Any, ...]) -> FakeRows:
-        return FakeRows([(message_id,) for message_id in self.awaiting])
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
-@dataclass
-class FakeSession:
-    awaiting: list[str]
-    parked: set[str]
-    dry_run: bool = True
-    resumed: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+def test_the_wait_ends_with_the_outcome_once_the_worker_settles_it() -> None:
+    answers = iter([None, None, "skipped"])
+    clock = Clock()
 
-    @property
-    def conn(self) -> FakeConn:
-        return FakeConn(self.awaiting)
+    outcome = wait_for(
+        lambda: next(answers), timeout=60, poll_every=2, sleep=clock.sleep, clock=clock.time
+    )
 
-    def pending(self, message_id: str) -> dict[str, Any] | None:
-        if message_id not in self.parked:
-            return None
-        return {"proposed": {"title": "Design review"}, "dry_run": self.dry_run}
-
-    def resume(self, message_id: str, decision: dict[str, Any]) -> dict[str, Any]:
-        self.resumed.append((message_id, decision))
-        return {}
+    assert outcome == "skipped"
+    assert clock.now == 4
 
 
-def test_sweep_all_ends_every_parked_proposal_with_a_sweep() -> None:
-    session = FakeSession(awaiting=["a", "b"], parked={"a", "b"})
+def test_the_wait_gives_up_at_its_timeout_rather_than_hanging() -> None:
+    """With no app running, nothing will ever apply the decision."""
+    clock = Clock()
 
-    swept = sweep_all(cast(GraphSession, session))
+    outcome = wait_for(lambda: None, timeout=10, poll_every=2, sleep=clock.sleep, clock=clock.time)
 
-    assert swept == 2
-    assert session.resumed == [("a", {"action": "sweep"}), ("b", {"action": "sweep"})]
+    assert outcome is None
+    assert clock.now == 10
 
 
-def test_list_shows_the_dry_run_each_proposal_was_made_under(
-    capsys: pytest.CaptureFixture[str],
+# --- recording decisions (Postgres) ----------------------------------------------
+
+
+def _park(conn: psycopg.Connection, message_id: str, revision: int = 1) -> None:
+    MessageLedger(conn).claim(message_id, message_id)
+    with conn.transaction():
+        write_park(
+            conn,
+            proposal_from(message_id, PENDING, revision),
+            ledger_status=MessageStatus.CLAIMED,
+        )
+
+
+def _decisions(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
+    return conn.execute(
+        "SELECT message_id, revision, action, via FROM decisions ORDER BY id"
+    ).fetchall()
+
+
+@pytest.mark.integration
+def test_a_decision_is_made_on_the_proposals_current_revision(conn: psycopg.Connection) -> None:
+    """The operator names a message, not a revision: they act on what is shown."""
+    _park(conn, "m1", revision=2)
+
+    result = decide_current(conn, "m1", action="confirm")
+
+    assert result.status == "queued"
+    assert _decisions(conn) == [("m1", 2, "confirm", "cli")]
+
+
+@pytest.mark.integration
+def test_a_message_with_no_proposal_is_not_found(conn: psycopg.Connection) -> None:
+    assert decide_current(conn, "nothing", action="confirm").status == "not_found"
+
+
+@pytest.mark.integration
+def test_sweep_all_queues_a_sweep_for_every_pending_proposal(conn: psycopg.Connection) -> None:
+    _park(conn, "a")
+    _park(conn, "b")
+    _park(conn, "c")
+    decide_current(conn, "c", action="cancel")  # already deciding: left alone
+
+    queued = sweep_all(conn)
+
+    assert len(queued) == 2
+    assert _decisions(conn) == [
+        ("c", 1, "cancel", "cli"),
+        ("a", 1, "sweep", "sweep"),
+        ("b", 1, "sweep", "sweep"),
+    ]
+
+
+@pytest.mark.integration
+def test_list_shows_revision_status_and_the_dry_run_it_was_made_under(
+    conn: psycopg.Connection, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    session = FakeSession(awaiting=["a"], parked={"a"}, dry_run=True)
+    _park(conn, "a", revision=2)
+    _park(conn, "b")
+    decide_current(conn, "b", action="confirm")
 
-    list_pending(cast(GraphSession, session))
+    count = list_pending(conn)
 
-    assert "dry_run when proposed: True" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert count == 2
+    assert "a  r2  pending  Design review" in out
+    assert "b  r1  deciding  Design review" in out
+    assert "dry_run when proposed: True" in out
+    assert "Overlaps Standup" in out
 
 
-def test_sweep_all_leaves_ledger_rows_with_no_live_checkpoint_alone() -> None:
-    """Resuming a thread that is not parked would start a fresh run of it."""
-    session = FakeSession(awaiting=["a", "stale"], parked={"a"})
-
-    swept = sweep_all(cast(GraphSession, session))
-
-    assert swept == 1
-    assert session.resumed == [("a", {"action": "sweep"})]
+# --- reconciliation on demand ------------------------------------------------------
 
 
 def test_reconcile_on_demand_reports_what_it_did(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.channel.reconcile import ReconcileResult
-    from app.jobs import approve
 
     monkeypatch.setattr(
         approve,
@@ -91,6 +151,6 @@ def test_reconcile_on_demand_reports_what_it_did(monkeypatch: pytest.MonkeyPatch
         lambda session, **kwargs: ReconcileResult(recorded=2, closed=1, errors=0),
     )
 
-    line = approve.reconcile_now(cast(GraphSession, FakeSession(awaiting=[], parked=set())))
+    line = approve.reconcile_now(cast(GraphSession, object()))
 
     assert line == "Recorded 2 parked thread(s); closed 1 row(s); 0 error(s)."

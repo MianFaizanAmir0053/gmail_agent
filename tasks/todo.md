@@ -708,9 +708,10 @@ A settle is one transaction of conditional writes.
 - `--list` shows each proposal's revision, status and `dry_run`.
 
 **Acceptance criteria:**
-- [ ] Confirm, edit, cancel and sweep all go through `decide`, and the CLI never resumes a thread itself.
-- [ ] The outcome is printed, or the time-out is stated.
-- [ ] `--sweep-all` ends every pending proposal as swept.
+- [x] Confirm, edit, cancel and sweep all go through `decide`, and the CLI never resumes a thread itself. It decides on the proposal's current revision, because the operator names a message, not a revision.
+- [x] The outcome is printed, or the time-out is stated. The wait is tested with a fake clock, and gives up rather than hangs when no app is running.
+- [x] `--sweep-all` queues a sweep for every pending proposal and waits for the queue to drain. It runs reconciliation first, so a parked thread with a missing row is swept too. A proposal already being decided keeps its decision.
+- The CLI uses an autocommit connection, so the worker in another process sees each decision as soon as it is recorded. It needs no Google credentials except for `--reconcile` and `--sweep-all`.
 
 **Verification:** `uv run pytest tests/test_approve.py`; `.\tasks.ps1 check`.
 

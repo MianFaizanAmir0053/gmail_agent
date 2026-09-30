@@ -1,4 +1,4 @@
-"""Decide on a proposal parked at `await_approval`.
+"""Decide on a proposal from the command line.
 
     python -m app.jobs.approve --list
     python -m app.jobs.approve --message-id 18c0f2a --action confirm
@@ -6,67 +6,129 @@
     python -m app.jobs.approve --sweep-all        # end observe mode (M15)
     python -m app.jobs.approve --reconcile        # repair missing proposal rows now (M16)
 
-This is a *separate process* from the poller on purpose. It is the M05 exit
-criterion in CLI form: the run that produced the proposal has exited, and the
-decision still lands, because the state lives in Postgres rather than in memory.
-Telegram replaces this front-end in M06; the mechanism underneath is identical.
+Since M16 this records decisions and waits for them; it never resumes a thread
+itself. The worker in the app's scheduler is the only thing that does
+(`docs/plans/M16-web-channel.md`, D1), so a decision made here is applied at
+its next tick, within fifteen seconds. With no app running, nothing applies
+it, and the wait says so rather than hanging.
+
+It is still a *separate process* from the app on purpose: the M05 exit
+criterion in CLI form. The decision lands because the state lives in Postgres,
+not in any process's memory.
 """
 
 from __future__ import annotations
 
 import argparse
+import time
+from collections.abc import Callable
 
+import psycopg
+
+from app.channel.decide import Action, DecisionResult, decide
 from app.channel.reconcile import reconcile
 from app.config import get_settings
 from app.graph.runner import GraphSession, graph_session
 from app.jobs.poll import announce_telegram
-from app.store.ledger import MessageLedger, MessageStatus
+
+WAIT_SECONDS = 180
+"""Long enough for an edit's re-extraction and review, with a retry."""
+
+POLL_EVERY = 2.0
 
 
-def _awaiting(session: GraphSession) -> list[str]:
-    rows = session.conn.execute(
-        "SELECT gmail_message_id FROM processed_messages WHERE status = %s ORDER BY created_at",
-        (MessageStatus.AWAITING_APPROVAL.value,),
-    ).fetchall()
-    return [message_id for (message_id,) in rows]
+def current_revision(conn: psycopg.Connection, message_id: str) -> int | None:
+    row = conn.execute(
+        "SELECT revision FROM proposals WHERE message_id = %s", (message_id,)
+    ).fetchone()
+    return None if row is None else int(row[0])
 
 
-def sweep_all(session: GraphSession) -> int:
-    """End every parked proposal with a `sweep` decision. Returns how many.
+def decide_current(
+    conn: psycopg.Connection, message_id: str, *, action: Action, correction: str = ""
+) -> DecisionResult:
+    """Record a decision on the revision the proposal is showing now.
 
-    Only threads with a live interrupt are resumed. Resuming a thread that is
-    not parked would start a fresh run of it rather than end it, so a ledger
-    row that has drifted from its checkpoint is left for `--list` to show.
+    The operator names a message, not a revision; the revision read here is
+    what `decide()` then holds the claim to, so a proposal that moves in the
+    meantime is refused as stale rather than decided blind.
     """
-    swept = 0
-    for message_id in _awaiting(session):
-        if session.pending(message_id) is None:
-            continue
-        session.resume(message_id, {"action": "sweep"})
-        swept += 1
-    return swept
+    revision = current_revision(conn, message_id)
+    if revision is None:
+        return DecisionResult("not_found", detail="no proposal for this message")
+    return decide(
+        conn, message_id, action=action, revision=revision, correction=correction, via="cli"
+    )
 
 
-def list_pending(session: GraphSession) -> int:
-    rows = _awaiting(session)
+def sweep_all(conn: psycopg.Connection) -> list[int]:
+    """Queue a sweep for every pending proposal. Returns the decisions queued.
 
-    for message_id in rows:
-        pending = session.pending(message_id)
-        if pending is None:
-            # Ledger says waiting but no checkpoint is parked -- the two have
-            # drifted, which is worth seeing rather than hiding.
-            print(f"  {message_id}  (no live interrupt; ledger may be stale)")
-            continue
-        proposed = pending["proposed"]
-        conflicts = pending.get("conflicts") or []
-        print(f"  {message_id}  {proposed.get('title')}")
-        print(f"      {proposed.get('start_utc')} -> {proposed.get('end_utc')} UTC")
-        print(f"      attendees: {', '.join(proposed.get('attendees') or []) or '(none)'}")
-        # Proposals parked before M15 carry no record of it.
-        print(f"      dry_run when proposed: {pending.get('dry_run', 'unknown')}")
+    A proposal already being decided keeps that decision.
+    """
+    rows = conn.execute(
+        "SELECT message_id, revision FROM proposals WHERE status = 'pending' ORDER BY parked_at"
+    ).fetchall()
+    queued: list[int] = []
+    for message_id, revision in rows:
+        result = decide(conn, message_id, action="sweep", revision=revision, via="sweep")
+        if result.status == "queued" and result.decision_id is not None:
+            queued.append(result.decision_id)
+    return queued
+
+
+def outcome_of(conn: psycopg.Connection, decision_id: int) -> str | None:
+    row = conn.execute("SELECT outcome FROM decisions WHERE id = %s", (decision_id,)).fetchone()
+    return None if row is None else row[0]
+
+
+def still_open(conn: psycopg.Connection, decision_ids: list[int]) -> int:
+    row = conn.execute(
+        "SELECT count(*) FROM decisions WHERE id = ANY(%s) AND outcome IS NULL",
+        (decision_ids,),
+    ).fetchone()
+    return 0 if row is None else int(row[0])
+
+
+def wait_for(
+    read: Callable[[], str | None],
+    *,
+    timeout: float,
+    poll_every: float = POLL_EVERY,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> str | None:
+    """Poll `read` until it answers or `timeout` seconds pass. None on timeout."""
+    deadline = clock() + timeout
+    while True:
+        answer = read()
+        if answer is not None:
+            return answer
+        if clock() >= deadline:
+            return None
+        sleep(poll_every)
+
+
+def list_pending(conn: psycopg.Connection) -> int:
+    """Print the proposals waiting for a decision or being decided."""
+    rows = conn.execute(
+        """
+        SELECT message_id, revision, status, dry_run, payload
+          FROM proposals
+         WHERE status IN ('pending', 'deciding')
+         ORDER BY parked_at
+        """
+    ).fetchall()
+
+    for message_id, revision, status, dry_run, payload in rows:
+        card = payload or {}
+        conflicts = card.get("conflicts") or []
+        print(f"  {message_id}  r{revision}  {status}  {card.get('title')}")
+        print(f"      {card.get('start_utc')} -> {card.get('end_utc')} UTC")
+        print(f"      attendees: {', '.join(card.get('attendees') or []) or '(none)'}")
+        print(f"      dry_run when proposed: {dry_run}")
         if conflicts:
             print(f"      !! {conflicts[0]}")
-
     return len(rows)
 
 
@@ -83,7 +145,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Approve, edit, or cancel a proposal.")
     parser.add_argument("--list", action="store_true", help="Show proposals awaiting a decision.")
     parser.add_argument(
-        "--sweep-all", action="store_true", help="End every parked proposal as swept."
+        "--sweep-all", action="store_true", help="End every pending proposal as swept."
     )
     parser.add_argument(
         "--reconcile",
@@ -96,32 +158,58 @@ def main() -> None:
         "--action", choices=("confirm", "cancel", "edit", "sweep"), default="confirm"
     )
     parser.add_argument("--correction", default="", help="Free text, used with --action edit.")
+    parser.add_argument(
+        "--wait",
+        type=int,
+        default=WAIT_SECONDS,
+        help="Seconds to wait for the worker to apply the decision.",
+    )
     args = parser.parse_args()
+    settings = get_settings()
 
-    with graph_session(get_settings()) as session:
+    if args.reconcile or args.sweep_all:
+        # A sweep must reach every parked thread, including one whose row is
+        # missing, so reconciliation runs first.
+        with graph_session(settings) as session:
+            print(reconcile_now(session))
+        if args.reconcile:
+            return
+
+    # Autocommit: the worker, in another process, must see each decision the
+    # moment it is recorded, while this one waits for the outcome.
+    with psycopg.connect(settings.database_url, autocommit=True) as conn:
         if args.list:
-            count = list_pending(session)
-            print(f"\n{count} awaiting approval.")
+            print(f"\n{list_pending(conn)} awaiting or being decided.")
             return
 
         if args.sweep_all:
-            print(f"Swept {sweep_all(session)} parked proposal(s).")
-            return
-
-        if args.reconcile:
-            print(reconcile_now(session))
+            queued = sweep_all(conn)
+            print(f"Queued {len(queued)} sweep(s).")
+            remaining = wait_for(
+                lambda: "done" if still_open(conn, queued) == 0 else None, timeout=args.wait
+            )
+            if remaining is None:
+                print(f"{still_open(conn, queued)} still open after {args.wait}s.")
             return
 
         if not args.message_id:
-            raise SystemExit("--message-id is required unless --list is given.")
+            raise SystemExit("--message-id is required unless --list or --sweep-all is given.")
 
-        session.resume(args.message_id, {"action": args.action, "correction": args.correction})
+        result = decide_current(
+            conn, args.message_id, action=args.action, correction=args.correction
+        )
+        if result.status != "queued" or result.decision_id is None:
+            raise SystemExit(f"{args.message_id}: {result.status}: {result.detail}")
 
-        entry = MessageLedger(session.conn).get(args.message_id)
-        if entry is None:
-            print("No ledger row.")
+        decision_id = result.decision_id
+        outcome = wait_for(lambda: outcome_of(conn, decision_id), timeout=args.wait)
+        if outcome is None:
+            print(
+                f"{args.message_id}: queued, but not applied within {args.wait}s. "
+                "Is the app running? The worker applies it at its next tick."
+            )
         else:
-            print(f"{args.message_id}: {entry.status}  event={entry.calendar_event_id or '-'}")
+            print(f"{args.message_id}: {outcome}")
 
 
 if __name__ == "__main__":
