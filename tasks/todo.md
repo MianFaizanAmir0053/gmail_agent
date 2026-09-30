@@ -672,10 +672,11 @@ A settle is one transaction of conditional writes.
 - It runs at boot after `fail_stranded`, hourly with the purge, and on `approve --reconcile`.
 
 **Acceptance criteria:**
-- [ ] A live interrupt with no row gets one, whichever of the three ledger statuses it has.
-- [ ] A legacy park gets its revision from state and `pipeline_version` `pre-m16`.
-- [ ] A `deciding` proposal is untouched.
-- [ ] It runs at boot and hourly, and `approve --reconcile` prints what it did.
+- [x] A live interrupt with no row gets one, whichever of the three ledger statuses it has (11 tests on Neon).
+- [x] A legacy park gets its revision from state and `pipeline_version` `pre-m16`.
+- [x] A `deciding` proposal is untouched. A proposal whose thread is still parked is not closed, even beside a final ledger.
+- [x] It runs when the scheduler starts, which comes after boot's `fail_stranded`, and hourly after that. `approve --reconcile` prints what it did.
+- A `claimed` row younger than 10 minutes is skipped, because a poll may be parking it right now.
 
 **Verification:** `uv run pytest tests/test_reconcile.py tests/test_scheduler.py`; the integration tests on Neon; `.\tasks.ps1 check`.
 

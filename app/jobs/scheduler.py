@@ -17,11 +17,12 @@ from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.channel.reconcile import reconcile
 from app.config import Settings
 from app.google.auth import token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
-from app.jobs.poll import STOPPING, poll_once
+from app.jobs.poll import STOPPING, announce_telegram, poll_once
 from app.jobs.purge import PurgeResult, purge
 from app.obs.liveness import LIVENESS
 from app.store.db import connect
@@ -88,6 +89,25 @@ def run_poll(settings: Settings) -> None:
 def run_ingest(settings: Settings) -> None:
     started_at = datetime.now(UTC)
     record_tick(settings, "ingest", started_at, ok=scheduled_ingest(settings))
+
+
+def run_reconcile(settings: Settings) -> None:
+    """D3: record parked threads that have no row, close rows whose message is final."""
+    started_at = datetime.now(UTC)
+    try:
+        with graph_session(settings) as session:
+            result = reconcile(session, announce=announce_telegram)
+    except Exception as exc:
+        log.exception("reconcile failed")
+        record_tick(settings, "reconcile", started_at, ok=False, error=type(exc).__name__)
+        return
+    record_tick(
+        settings,
+        "reconcile",
+        started_at,
+        ok=result.errors == 0,
+        error=None if result.errors == 0 else f"{result.errors} thread(s) could not be reconciled",
+    )
 
 
 def purge_once(settings: Settings) -> PurgeResult:
@@ -184,6 +204,20 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         id="token_health",
         max_instances=1,
         coalesce=True,
+    )
+
+    # At start, then hourly. A parked thread without a row is invisible to the
+    # owner, so the first pass after a deploy should not wait an hour. By the
+    # time this runs, boot has already failed stranded claims.
+    scheduler.add_job(
+        run_reconcile,
+        "interval",
+        hours=1,
+        args=[settings],
+        id="reconcile",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(UTC),
     )
 
     if settings.ingest_enabled:

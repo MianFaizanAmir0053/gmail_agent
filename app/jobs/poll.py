@@ -96,12 +96,7 @@ def poll_once(
         else:
             # The ledger mark and the proposal row, together.
             try:
-                record_park(
-                    session,
-                    message_id,
-                    pending,
-                    announce=lambda parked_id, payload: _notify(payload, parked_id),
-                )
+                record_park(session, message_id, pending, announce=announce_telegram)
             except Exception as exc:
                 # The thread is still parked, and reconciliation records it.
                 # The rest of the batch should not wait an interval for that.
@@ -117,6 +112,11 @@ def poll_once(
         # behind it, and moving it forward would skip that mail for good.
         SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
     return PollResult(seen=len(message_ids), started=started, failed=failed)
+
+
+def announce_telegram(message_id: str, pending: dict[str, Any]) -> None:
+    """The park step's announcement, until the channels of 16.13 replace it."""
+    _notify(pending, message_id)
 
 
 def _notify(pending: dict[str, Any], message_id: str) -> None:

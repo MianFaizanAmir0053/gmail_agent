@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from app.channel.reconcile import ReconcileResult
 from app.config import Settings
 from app.jobs.ingest_job import incremental_query, scheduled_ingest
 from app.jobs.poll import PollResult
@@ -20,6 +21,7 @@ from app.jobs.scheduler import (
     run_ingest,
     run_poll,
     run_purge,
+    run_reconcile,
 )
 
 
@@ -34,7 +36,66 @@ def _settings(**overrides: Any) -> Settings:
 
 def test_the_standing_jobs_are_registered() -> None:
     scheduler = build_scheduler(_settings())
-    assert {job.id for job in scheduler.get_jobs()} == {"poll", "purge", "token_health"}
+    assert {job.id for job in scheduler.get_jobs()} == {
+        "poll",
+        "purge",
+        "token_health",
+        "reconcile",
+    }
+
+
+def test_reconciliation_runs_when_the_scheduler_starts_and_hourly_after() -> None:
+    """A parked thread with no row is invisible to the owner, so the first
+    pass after a deploy should not wait an hour."""
+    before = datetime.now(UTC)
+    job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "reconcile")
+
+    assert "1:00:00" in str(job.trigger)
+    assert before <= job.next_run_time <= datetime.now(UTC)
+    assert job.max_instances == 1
+
+
+def test_a_reconcile_tick_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.reconcile",
+        lambda session, **kwargs: ReconcileResult(recorded=2, closed=1, errors=0),
+    )
+
+    run_reconcile(_settings())
+
+    assert recorded == [{"job": "reconcile", "ok": True, "error": None}]
+
+
+def test_a_thread_that_could_not_be_reconciled_marks_the_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.reconcile",
+        lambda session, **kwargs: ReconcileResult(recorded=0, closed=0, errors=1),
+    )
+
+    run_reconcile(_settings())
+
+    assert recorded == [
+        {"job": "reconcile", "ok": False, "error": "1 thread(s) could not be reconciled"}
+    ]
+
+
+def test_a_failing_reconcile_does_not_escape_the_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _capture(monkeypatch)
+
+    def _explode(settings: Settings) -> Any:
+        raise RuntimeError("checkpointer unavailable")
+
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _explode)
+
+    run_reconcile(_settings())  # must not raise
+
+    assert recorded == [{"job": "reconcile", "ok": False, "error": "RuntimeError"}]
 
 
 def test_ingestion_is_not_scheduled_unless_asked_for() -> None:

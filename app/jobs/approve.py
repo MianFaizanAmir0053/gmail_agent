@@ -4,6 +4,7 @@
     python -m app.jobs.approve --message-id 18c0f2a --action confirm
     python -m app.jobs.approve --message-id 18c0f2a --action edit --correction "4pm not 3pm"
     python -m app.jobs.approve --sweep-all        # end observe mode (M15)
+    python -m app.jobs.approve --reconcile        # repair missing proposal rows now (M16)
 
 This is a *separate process* from the poller on purpose. It is the M05 exit
 criterion in CLI form: the run that produced the proposal has exited, and the
@@ -15,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 
+from app.channel.reconcile import reconcile
 from app.config import get_settings
 from app.graph.runner import GraphSession, graph_session
+from app.jobs.poll import announce_telegram
 from app.store.ledger import MessageLedger, MessageStatus
 
 
@@ -67,11 +70,26 @@ def list_pending(session: GraphSession) -> int:
     return len(rows)
 
 
+def reconcile_now(session: GraphSession) -> str:
+    """Run reconciliation (M16, D3) at once, rather than at the next hourly pass."""
+    result = reconcile(session, announce=announce_telegram)
+    return (
+        f"Recorded {result.recorded} parked thread(s); closed {result.closed} row(s); "
+        f"{result.errors} error(s)."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Approve, edit, or cancel a proposal.")
     parser.add_argument("--list", action="store_true", help="Show proposals awaiting a decision.")
     parser.add_argument(
         "--sweep-all", action="store_true", help="End every parked proposal as swept."
+    )
+    parser.add_argument(
+        "--reconcile",
+        action="store_true",
+        help="Record parked threads that have no proposal row, and close rows whose "
+        "message is final.",
     )
     parser.add_argument("--message-id")
     parser.add_argument(
@@ -88,6 +106,10 @@ def main() -> None:
 
         if args.sweep_all:
             print(f"Swept {sweep_all(session)} parked proposal(s).")
+            return
+
+        if args.reconcile:
+            print(reconcile_now(session))
             return
 
         if not args.message_id:
