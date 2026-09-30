@@ -16,9 +16,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import random
 import re
+import secrets
 import subprocess
+import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import getaddresses
@@ -133,6 +138,56 @@ def _is_ask(message: MessageMeta, owners: frozenset[str], excluded: frozenset[st
     return any(address in owners for address in recipients)
 
 
+@dataclass(frozen=True, slots=True)
+class _Verdict:
+    flagged: MessageMeta | None
+    """The thread's first qualifying ask, if it went unanswered for 48 hours."""
+
+    answered_later: bool
+    human: MessageMeta | None
+    """The thread's first human message in the Primary tab, in the window --
+    what the owner is shown when checking for asks the proxy missed."""
+
+
+def _judge(
+    messages: list[MessageMeta],
+    window: MailWindow,
+    owners: frozenset[str],
+    excluded: frozenset[str],
+) -> _Verdict:
+    """One thread's verdict. `messages` are sorted, with drafts removed."""
+    human = next(
+        (
+            m
+            for m in messages
+            if window.contains(m.internal_date)
+            and "SENT" not in m.label_ids
+            and PRIMARY in m.label_ids
+            and not is_automated(m, excluded=excluded)
+        ),
+        None,
+    )
+    ask = next(
+        (m for m in messages if window.contains(m.internal_date) and _is_ask(m, owners, excluded)),
+        None,
+    )
+    if ask is None:
+        return _Verdict(flagged=None, answered_later=False, human=human)
+
+    replies = [
+        m.internal_date
+        for m in messages
+        if "SENT" in m.label_ids and m.internal_date > ask.internal_date
+    ]
+    if any(reply <= ask.internal_date + JUDGE_AFTER for reply in replies):
+        return _Verdict(flagged=None, answered_later=False, human=human)
+    return _Verdict(flagged=ask, answered_later=bool(replies), human=human)
+
+
+def _without_drafts(thread: list[MessageMeta]) -> list[MessageMeta]:
+    return sorted((m for m in thread if "DRAFT" not in m.label_ids), key=lambda m: m.internal_date)
+
+
 def _age_bucket(age: timedelta) -> str:
     if age < timedelta(days=7):
         return "2-7 days"
@@ -159,9 +214,7 @@ def summarise_mail(
 
     for thread in threads:
         # Drafts are not replies, and not mail anyone received.
-        messages = sorted(
-            (m for m in thread if "DRAFT" not in m.label_ids), key=lambda m: m.internal_date
-        )
+        messages = _without_drafts(thread)
 
         for message in messages:
             if not window.contains(message.internal_date):
@@ -181,23 +234,10 @@ def summarise_mail(
             if is_automated(message, excluded=excluded):
                 split["automated"] += 1
 
-        ask = next(
-            (
-                m
-                for m in messages
-                if window.contains(m.internal_date) and _is_ask(m, owners, excluded)
-            ),
-            None,
-        )
-        if ask is not None:
-            replies = [
-                m.internal_date
-                for m in messages
-                if "SENT" in m.label_ids and m.internal_date > ask.internal_date
-            ]
-            if not any(reply <= ask.internal_date + JUDGE_AFTER for reply in replies):
-                flagged += 1
-                answered_later += bool(replies)
+        verdict = _judge(messages, window, owners, excluded)
+        if verdict.flagged is not None:
+            flagged += 1
+            answered_later += verdict.answered_later
 
         before_end = [m for m in messages if m.internal_date < window.until]
         if before_end:
@@ -233,6 +273,136 @@ def summarise_mail(
     }
 
 
+# --- the owner's labelling --------------------------------------------------
+
+FLAGGED_SAMPLE = 40
+UNFLAGGED_SAMPLE = 20
+
+LOOSE_ENDS_GO_PER_WEEK = 5.0
+"""The committed threshold (M15 spec, B4): go if the lower bound of the
+corrected weekly rate reaches it."""
+
+
+def wilson(successes: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a proportion. Honest at small n and near 0
+    or 1, where the textbook normal approximation claims a certainty it does
+    not have."""
+    if n == 0:
+        return 0.0, 1.0
+    p = successes / n
+    denominator = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denominator
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denominator
+    return max(0.0, centre - margin), min(1.0, centre + margin)
+
+
+@dataclass(frozen=True, slots=True)
+class Sample:
+    flagged: list[MessageMeta]
+    unflagged: list[MessageMeta]
+    seed: int
+
+
+def sample_for_labelling(
+    threads: list[list[MessageMeta]],
+    window: MailWindow,
+    *,
+    owners: frozenset[str],
+    excluded: frozenset[str],
+    seed: int,
+) -> Sample:
+    """Random threads to label, reproducible from `seed`: flagged ones measure
+    precision, and unflagged human ones measure what the proxy misses."""
+    owners = frozenset(normalise_address(owner) for owner in owners)
+    flagged: list[MessageMeta] = []
+    unflagged: list[MessageMeta] = []
+    for thread in threads:
+        verdict = _judge(_without_drafts(thread), window, owners, excluded)
+        if verdict.flagged is not None:
+            flagged.append(verdict.flagged)
+        elif verdict.human is not None:
+            unflagged.append(verdict.human)
+
+    rng = random.Random(seed)
+    return Sample(
+        flagged=rng.sample(flagged, min(FLAGGED_SAMPLE, len(flagged))),
+        unflagged=rng.sample(unflagged, min(UNFLAGGED_SAMPLE, len(unflagged))),
+        seed=seed,
+    )
+
+
+def require_terminal() -> None:
+    """Labelling shows senders and subjects. On the owner's own screen, that
+    is the point. Piped into a file, or run by an agent whose output becomes a
+    transcript on disk, it would be a leak."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise SystemExit(
+            "--label is interactive and for the owner only: run it in your own terminal."
+        )
+
+
+def _yes(ask: Callable[[str], str], show: Callable[[str], None], prompt: str) -> bool:
+    while True:
+        answer = ask(prompt).strip().lower()
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        show("Please answer y or n.")
+
+
+def _describe(message: MessageMeta, timezone: ZoneInfo) -> str:
+    when = message.internal_date.astimezone(timezone)
+    sender = message.headers.get("From", "?")
+    return f"{when:%Y-%m-%d %H:%M}  {sender}  {message.headers.get('Subject', '')}"
+
+
+def label(
+    sample: Sample,
+    timezone: ZoneInfo,
+    *,
+    ask: Callable[[str], str],
+    show: Callable[[str], None],
+) -> dict[str, Any]:
+    """The owner's answers, reduced to counts. What was shown is not kept."""
+    precise = 0
+    for number, message in enumerate(sample.flagged, 1):
+        show(f"\nFlagged {number}/{len(sample.flagged)}  {_describe(message, timezone)}")
+        if _yes(ask, show, "Did it need a reply from you? [y/n] ") and _yes(
+            ask, show, "Was it still unanswered, by any channel, 48 hours later? [y/n] "
+        ):
+            precise += 1
+
+    missed = 0
+    for number, message in enumerate(sample.unflagged, 1):
+        show(f"\nNot flagged {number}/{len(sample.unflagged)}  {_describe(message, timezone)}")
+        if _yes(ask, show, "Was this an ask you left unanswered for 48 hours? [y/n] "):
+            missed += 1
+
+    precision = wilson(precise, len(sample.flagged))
+    misses = wilson(missed, len(sample.unflagged))
+    return {
+        "seed": sample.seed,
+        "precision_yes": precise,
+        "precision_of": len(sample.flagged),
+        "precision_interval": [round(bound, 3) for bound in precision],
+        "misses_yes": missed,
+        "misses_of": len(sample.unflagged),
+        "miss_interval": [round(bound, 3) for bound in misses],
+    }
+
+
+def decide(summary: dict[str, Any], labelling: dict[str, Any]) -> dict[str, Any]:
+    """The committed loose-ends decision: the flagged weekly rate, times the
+    precision's lower bound, must reach the threshold."""
+    corrected = summary["flagged_per_week"] * labelling["precision_interval"][0]
+    return {
+        "threshold_per_week": LOOSE_ENDS_GO_PER_WEEK,
+        "corrected_per_week_lower_bound": round(corrected, 2),
+        "loose_ends_go": corrected >= LOOSE_ENDS_GO_PER_WEEK,
+    }
+
+
 def to_markdown(summary: dict[str, Any]) -> str:
     window = summary["window"]
     snapshot = summary["snapshot_open_at_window_end"]
@@ -263,6 +433,21 @@ def to_markdown(summary: dict[str, Any]) -> str:
         "",
         *[f"- {bias}" for bias in summary["biases"]],
     ]
+    if "labelling" in summary:
+        labelled = summary["labelling"]
+        decision = summary["decision"]
+        verdict = "go" if decision["loose_ends_go"] else "no-go"
+        lines += [
+            "",
+            f"Labelled by the owner (seed {labelled['seed']}):",
+            "",
+            f"- Precision: {labelled['precision_yes']} of {labelled['precision_of']} flagged "
+            f"threads were unanswered asks; 95% interval {labelled['precision_interval']}.",
+            f"- Misses: {labelled['misses_yes']} of {labelled['misses_of']} unflagged human "
+            f"threads were unanswered asks; 95% interval {labelled['miss_interval']}.",
+            f"- Corrected weekly rate, lower bound: {decision['corrected_per_week_lower_bound']} "
+            f"against a threshold of {decision['threshold_per_week']}: **{verdict}**.",
+        ]
     if "run" in summary:
         run = summary["run"]
         lines += [
@@ -317,6 +502,13 @@ def _run_mail(args: argparse.Namespace) -> None:
     threads = [gmail.thread_metadata(thread_id) for thread_id in gmail.thread_ids(query)]
 
     summary = summarise_mail(threads, window, owners=owners, excluded=excluded, now=now)
+    if args.label:
+        require_terminal()
+        seed = args.seed if args.seed is not None else secrets.randbelow(1_000_000)
+        sample = sample_for_labelling(threads, window, owners=owners, excluded=excluded, seed=seed)
+        labelling = label(sample, window.timezone, ask=input, show=print)
+        summary["labelling"] = labelling
+        summary["decision"] = decide(summary, labelling)
     summary["run"] = {
         "commit": _git_head(),
         "thresholds_commit": THRESHOLDS_COMMIT,
@@ -342,6 +534,12 @@ def main(argv: list[str] | None = None) -> None:
     mail.add_argument("--until", required=True, type=_utc_date, help="YYYY-MM-DD, UTC")
     mail.add_argument("--timezone", help="IANA zone for day buckets; defaults to USER_TIMEZONE")
     mail.add_argument("--out-dir", default="results")
+    mail.add_argument(
+        "--label",
+        action="store_true",
+        help="Owner only, in your own terminal: label a random sample to measure the proxy.",
+    )
+    mail.add_argument("--seed", type=int, help="Reproduce an earlier labelling sample.")
 
     args = parser.parse_args(argv)
     if args.command == "mail":

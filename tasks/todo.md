@@ -379,9 +379,9 @@ returning typed metadata records. No bodies.
 - It writes only counts.
 
 **Acceptance criteria:**
-- [ ] The TTY guard refuses non-interactive runs.
-- [ ] The Wilson computation is tested against known values.
-- [ ] Nothing but counts is written.
+- [x] The TTY guard refuses non-interactive runs (stdin and stdout must both be a terminal).
+- [x] The Wilson computation is tested against known values; the go/no-go uses the precision lower bound.
+- [x] Nothing but counts is written. What the owner sees on screen is not kept.
 
 **Verification:** `uv run pytest tests/test_measure.py`; `.\tasks.ps1 check`. The labelling run itself is task 18, done by the owner.
 

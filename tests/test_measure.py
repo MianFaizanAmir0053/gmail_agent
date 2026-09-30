@@ -244,3 +244,109 @@ def test_the_default_utc_zone_is_refused_without_an_explicit_timezone(
 
     with pytest.raises(SystemExit, match="--timezone"):
         measure.main(["mail", "--since", "2026-09-14", "--until", "2026-09-28"])
+
+
+# --- the owner's labelling (task 17) ---------------------------------------
+
+
+def test_wilson_interval_matches_a_known_value() -> None:
+    from app.jobs.measure import wilson
+
+    low, high = wilson(8, 10)
+    assert (round(low, 3), round(high, 3)) == (0.490, 0.943)
+
+
+def test_wilson_interval_of_nothing_is_everything() -> None:
+    from app.jobs.measure import wilson
+
+    assert wilson(0, 0) == (0.0, 1.0)
+
+
+def test_labelling_refuses_to_run_without_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its screen shows senders and subjects; run by an agent, that screen is a
+    transcript on disk."""
+    from app.jobs import measure
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    with pytest.raises(SystemExit, match="your own terminal"):
+        measure.require_terminal()
+
+
+def _flagged(n: int) -> list[list[MessageMeta]]:
+    return [[_ask(f"a{i}", f"t{i}", T + timedelta(hours=i))] for i in range(n)]
+
+
+def test_sampling_is_reproducible_from_its_seed() -> None:
+    from app.jobs.measure import sample_for_labelling
+
+    threads = _flagged(50)
+    first = sample_for_labelling(
+        threads, WINDOW, owners=frozenset({OWNER}), excluded=frozenset(), seed=7
+    )
+    again = sample_for_labelling(
+        threads, WINDOW, owners=frozenset({OWNER}), excluded=frozenset(), seed=7
+    )
+
+    assert [m.id for m in first.flagged] == [m.id for m in again.flagged]
+    assert len(first.flagged) == 40
+
+
+def test_fewer_than_forty_flagged_are_all_labelled() -> None:
+    from app.jobs.measure import sample_for_labelling
+
+    sample = sample_for_labelling(
+        _flagged(12), WINDOW, owners=frozenset({OWNER}), excluded=frozenset(), seed=1
+    )
+    assert len(sample.flagged) == 12
+
+
+def test_unflagged_human_threads_are_sampled_for_misses() -> None:
+    from app.jobs.measure import sample_for_labelling
+
+    answered = [_ask("a", "t", T), _reply("r", "t", T + timedelta(hours=1))]
+    sample = sample_for_labelling(
+        [answered], WINDOW, owners=frozenset({OWNER}), excluded=frozenset(), seed=1
+    )
+    assert [m.id for m in sample.unflagged] == ["a"]
+    assert sample.flagged == []
+
+
+def test_precision_needs_both_answers_to_be_yes() -> None:
+    from app.jobs.measure import Sample, label
+
+    sample = Sample(flagged=[_ask(f"a{i}", f"t{i}", T) for i in range(3)], unflagged=[], seed=1)
+    answers = iter(["y", "y", "y", "n", "n"])  # yes/yes, yes/no, no (second not asked)
+
+    result = label(sample, KARACHI, ask=lambda prompt: next(answers), show=lambda text: None)
+
+    assert (result["precision_yes"], result["precision_of"]) == (1, 3)
+
+
+def test_labelling_results_carry_no_header_values() -> None:
+    from app.jobs.measure import Sample, label
+
+    secret = "ZEBRA-7731"
+    sample = Sample(
+        flagged=[_ask("a", "t", T, from_=f"{secret}@example.com", subject=secret)],
+        unflagged=[_ask("b", "u", T, subject=secret)],
+        seed=3,
+    )
+    shown: list[str] = []
+    answers = iter(["y", "y", "n"])
+
+    result = label(sample, KARACHI, ask=lambda prompt: next(answers), show=shown.append)
+
+    assert any(secret in line for line in shown)  # the owner does see it, on screen
+    assert secret not in json.dumps(result)  # but nothing that is kept carries it
+
+
+@pytest.mark.parametrize(("precision_low", "go"), [(0.6, True), (0.4, False)])
+def test_the_decision_uses_the_lower_bound_of_precision(precision_low: float, go: bool) -> None:
+    """Pre-committed: 10 flagged a week, of which at least 60% were real asks,
+    is 6 real loose ends a week -- over the threshold of 5. At 40% it is 4."""
+    from app.jobs.measure import decide
+
+    decision = decide({"flagged_per_week": 10.0}, {"precision_interval": [precision_low, 0.9]})
+
+    assert decision["loose_ends_go"] is go
