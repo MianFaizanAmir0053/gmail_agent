@@ -521,7 +521,7 @@ Spec: [`docs/plans/M16-web-channel.md`](../docs/plans/M16-web-channel.md) · Pla
 - [x] The owner's verified email is admitted. Another email, an unverified one, and any email while `OWNER_EMAIL` is blank are refused (unit tests, 11 passing).
 - [x] The gate exempts exactly the four listed paths. Unit tests cover it, and a local run confirmed it: gated pages answer 307, and exempt paths answer without a session.
 - [x] `DASHBOARD_TOKEN` is gone from the code and the docs. M09's spec keeps it as history.
-- [ ] Found on the way: `next` 16.3.1 has critical advisories, fixed in 16.3.8. Upgrade before 16.2, once the owner approves.
+- [x] Found on the way: `next` 16.3.1 had critical advisories. With the owner's approval, it is upgraded to 16.3.8, and `sharp` to 0.35.5. `npm audit` now reports 0, and the checks and the local gate probe pass again.
 
 **Verification:** the web checks.
 

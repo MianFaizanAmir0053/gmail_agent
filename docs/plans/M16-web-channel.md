@@ -438,5 +438,5 @@ approved the spec on 2026-09-30.
   - gated pages answer 307 to the sign-in page;
   - the manifest, the icons and `/api/auth/*` answer 200 without a session;
   - a forged session cookie is refused.
-- **`npm audit` found critical advisories in `next` 16.3.1**, which was already pinned before this task. They are fixed in 16.3.8, and the upgrade must land before the app is public in 16.2. It is an existing dependency, so the owner decides.
+- **`npm audit` found critical advisories in `next` 16.3.1**, which was already pinned before this task. The owner approved the upgrade: `next` is now 16.3.8 and `sharp` 0.35.5, and `npm audit` reports none. The checks and the local gate probe pass on the upgraded build.
 - M09's spec still mentions `DASHBOARD_TOKEN`, as a record of what M09 built.
