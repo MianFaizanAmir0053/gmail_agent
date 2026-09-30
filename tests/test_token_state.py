@@ -20,6 +20,13 @@ ISSUED = datetime(2026, 10, 6, tzinfo=UTC)
 LAPSE = ISSUED + timedelta(days=7)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_dead_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_dead_tokens` is per process. Without this, the token one test kills
+    stays dead for every later test minted at the same instant."""
+    monkeypatch.setattr(auth, "_dead_tokens", set())
+
+
 def _meta(minted_under: Any) -> TokenMetadata:
     return TokenMetadata(issued_at=ISSUED, minted_under=minted_under)
 

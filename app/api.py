@@ -20,8 +20,8 @@ from fastapi.responses import JSONResponse
 
 from app.bootstrap import materialise_secrets
 from app.config import Settings, get_settings
-from app.google.auth import observe_refreshes, token_store
-from app.google.tokens import RefreshOutcome, token_state
+from app.google.auth import observe_refreshes, standby_token_store, token_store
+from app.google.tokens import RefreshOutcome, TokenHealth, TokenState, TokenStore, token_state
 from app.graph.runner import graph_session
 from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE, configure_logging
 from app.telegram.client import TelegramClient
@@ -54,35 +54,61 @@ def health() -> JSONResponse:
             problems.append("no successful poll in three intervals")
 
     try:
-        store = token_store(settings)
-        metadata = store.metadata()
-        countdown = store.health()
+        state, countdown = _token_report(token_store(settings))
     except Exception:  # a health check that raises is not a health check
         log.exception("token health check failed")
         problems.append("google token unreadable")
     else:
-        evidence = TOKEN_EVIDENCE.for_token(metadata.issued_at)
-        state = token_state(
-            metadata,
-            now=datetime.now(UTC),
-            last_ok_refresh_at=evidence.last_ok_at,
-            rejected=evidence.rejected,
-        )
         body["token_state"] = state
         if state in ("testing", "production-unconfirmed"):
             # For an unconfirmed production token this is the deadline a
             # Testing token would have had: the moment the claim gets tested.
             body["token_days_remaining"] = round(countdown.days_remaining, 1)
-        if state == "expired":
-            problems.append("google token expired")
-        elif state == "testing" and countdown.needs_reauth_soon:
+        if state == "testing" and countdown.needs_reauth_soon:
             body["warning"] = "Google token expires soon -- run `tasks.ps1 reauth`"
+
+        standby = _standby_state(settings)
+        if standby is not None:
+            body["standby_token_state"] = standby
+        if state != "expired":
+            body["token_in_use"] = "primary"
+        elif standby not in (None, "expired", "unreadable"):
+            # The primary's death is the evidence M15 is gathering; the standby
+            # is what keeps the window from restarting because of it.
+            body["token_in_use"] = "standby"
+        else:
+            problems.append("google token expired")
 
     if problems:
         body["status"] = "degraded"
         body["problems"] = problems
         return JSONResponse(body, status_code=503)
     return JSONResponse(body)
+
+
+def _token_report(store: TokenStore) -> tuple[TokenState, TokenHealth]:
+    metadata = store.metadata()
+    evidence = TOKEN_EVIDENCE.for_token(metadata.issued_at)
+    state = token_state(
+        metadata,
+        now=datetime.now(UTC),
+        last_ok_refresh_at=evidence.last_ok_at,
+        rejected=evidence.rejected,
+    )
+    return state, store.health()
+
+
+def _standby_state(settings: Settings) -> str | None:
+    """The standby token's state; None when none is configured."""
+    store = standby_token_store(settings)
+    if store is None:
+        return None
+    try:
+        state, _ = _token_report(store)
+    except Exception:
+        log.exception("standby token check failed")
+        return "unreadable"
+    return state
 
 
 @router.post("/telegram/webhook")

@@ -260,3 +260,70 @@ def test_invalid_base64_fails_loudly() -> None:
     silently processes no mail."""
     with pytest.raises(SecretDecodeError, match="not valid base64"):
         materialise_secrets({"GOOGLE_TOKEN_B64": "!!!not base64!!!"})
+
+
+# --- standby token (M15) ----------------------------------------------------
+
+
+def _token_stores(
+    monkeypatch: pytest.MonkeyPatch, *, primary_rejected: bool, standby: _Token | None
+) -> None:
+    """Primary minted under production; the evidence says whether Google killed it."""
+    from app.google.tokens import RefreshOutcome
+    from app.obs.liveness import TokenEvidence
+
+    issued = datetime.now(UTC) - timedelta(days=8)
+    evidence = TokenEvidence()
+    if primary_rejected:
+        evidence.record(
+            RefreshOutcome(issued_at=issued, at=datetime.now(UTC), ok=False, rejected=True)
+        )
+    monkeypatch.setattr("app.api.TOKEN_EVIDENCE", evidence)
+    monkeypatch.setattr(
+        "app.api.token_store",
+        lambda settings: _ProductionStore(_Token(days_remaining=-1.0), issued),
+    )
+    monkeypatch.setattr(
+        "app.api.standby_token_store",
+        lambda settings: (
+            None
+            if standby is None
+            else _ProductionStore(standby, datetime.now(UTC) - timedelta(days=4))
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _ProductionStore:
+    token: _Token
+    issued_at: datetime
+
+    def health(self) -> _Token:
+        return self.token
+
+    def metadata(self) -> TokenMetadata:
+        return TokenMetadata(issued_at=self.issued_at, minted_under="production")
+
+
+def test_a_dead_primary_with_a_live_standby_is_healthy(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _token_stores(monkeypatch, primary_rejected=True, standby=_Token(days_remaining=3.0))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_state"] == "expired"
+    assert body["token_in_use"] == "standby"
+
+
+def test_a_dead_primary_without_a_standby_is_a_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _token_stores(monkeypatch, primary_rejected=True, standby=None)
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["problems"] == ["google token expired"]

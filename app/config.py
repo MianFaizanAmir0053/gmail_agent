@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     # --- Google (M01) -------------------------------------------------------
     google_client_secrets_path: str | None = None
     google_token_path: str | None = None
+    google_token_standby_path: str | None = None
+    """A second token, minted a few days after the primary (M15).
+
+    If Google rejects the primary, polling carries on with this one, so the
+    unattended window survives the primary's death. That death is still
+    recorded, because it is the evidence being gathered."""
     test_calendar_id: str | None = None
     fernet_key: SecretStr | None = None
 

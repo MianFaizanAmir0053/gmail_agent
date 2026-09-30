@@ -242,9 +242,9 @@ retry plumbing, and rebase onto their merge if both land.
 - `/health` returns 503 only when no token is usable.
 
 **Acceptance criteria:**
-- [ ] With a failing primary and a valid standby, polling continues, and health shows the primary `expired` and the standby in use.
-- [ ] With both failing, `/health` returns 503.
-- [ ] Without a standby configured, behaviour is unchanged.
+- [x] With a failing primary and a valid standby, polling continues, and health shows the primary `expired` and the standby in use. The dead primary is not retried every poll.
+- [x] With both failing, loading credentials raises and `/health` returns 503.
+- [x] Without a standby configured, behaviour is unchanged.
 
 **Verification:** token, bootstrap and API tests with fakes; `.\tasks.ps1 check`.
 
