@@ -490,3 +490,493 @@ returning typed metadata records. No bodies.
 
 Run `.\tasks.ps1 eval --extractor gemini_reviewed` on the paid tier, outside
 the unattended window. Publish the result and close M13, whatever it shows.
+
+---
+---
+
+# M16 · Web channel — tasks
+
+Spec: [`docs/plans/M16-web-channel.md`](../docs/plans/M16-web-channel.md) · Plan: [`plan.md`](plan.md), second half
+
+- **M15's conventions at the top of this file apply:** test first, `.\tasks.ps1 check` green before committing, **[owner]** marks, S and M sizes, and integration tests on Neon with `uv run --env-file .env.test pytest -m integration`.
+- **Web checks:** `cd dashboard && npm run typecheck && npm run build && npm test`. Tests run with Node 24's `node --test`; no test framework is added.
+- **`DRY_RUN` stays `true` throughout.**
+
+---
+
+## Phase 1 · Prove the risky parts
+
+### Task 16.1: Owner-only sign-in slice
+
+**Description:**
+- First, check whether Next 16.3 expects `proxy.ts` rather than `middleware.ts`, and where it runs on Vercel. If that differs from D5's region note, correct the spec.
+- Replace the shared-token gate with Auth.js v5 (`next-auth@5.0.0-beta.32`, pinned exactly) and Google sign-in.
+- Admit only a verified email equal to `OWNER_EMAIL`. A blank `OWNER_EMAIL` admits nobody.
+- Exempt exactly `/manifest.webmanifest`, `/sw.js`, `/icons/*` and `/api/auth/*`.
+- Add a manifest and icons, so iPhone installs a real web app rather than a bookmark.
+- Add `/me`, which shows the signed-in email and needs no database.
+- Keep the allow-list and the exempt-path rule in a module with no framework imports.
+
+**Acceptance criteria:**
+- [ ] The owner's verified email is admitted. Another email, an unverified one, and any email while `OWNER_EMAIL` is blank are refused (unit tests).
+- [ ] The gate exempts exactly the four listed paths (unit test).
+- [ ] `DASHBOARD_TOKEN` is gone from the code and the docs.
+
+**Verification:** the web checks.
+
+**Dependencies:** none · **Files:** `dashboard/package.json` (and lock), `dashboard/src/auth.ts`, `dashboard/src/middleware.ts`, `dashboard/src/lib/access.ts` (and its test), the manifest and `/me` · **Scope:** M
+
+### Task 16.2: Day-1 phone test [owner + agent]
+
+**Description:**
+- **[owner]** Create the sign-in Google Cloud project, separate from the Gmail project. Publish it "In production" with only `openid email profile`, and create a web OAuth client for the Vercel URL.
+- **[owner]** Create the Vercel Hobby project with `dashboard/` as its root. Set `AUTH_SECRET`, `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET` and `OWNER_EMAIL`.
+- **Agent:** add `dashboard/vercel.json` with `"regions": ["sin1"]`, and deploy.
+- **[owner]** Sign in with Android Chrome and inside the installed iPhone app. Then try a second Google account.
+
+Pages that read the database may fail until 16.23. Only sign-in is under test.
+
+**Acceptance criteria:**
+- [ ] `/me` shows the owner signed in on Android and inside the installed iPhone app. Otherwise the iPhone failure is recorded, and 16.24 is scheduled.
+- [ ] A second Google account is refused by the allow-list, not by Google, because the sign-in project is in production.
+- [ ] The results are in the M16 running notes.
+
+**Verification:** the owner's report, recorded in the running notes.
+
+**Dependencies:** 16.1 · **Files:** `dashboard/vercel.json`, the running notes · **Scope:** S
+
+### Checkpoint: sign-in proven
+
+- [ ] The web checks pass.
+- [ ] Whether pairing is needed is recorded.
+
+### Task 16.3: Payload additions, pipeline version and the thread's revision
+
+**Description:**
+- `await_approval` adds `review_issues`, `action_type` and `pipeline_version` to the payload at every park.
+- `graph_session` computes `pipeline_version` once and carries it in `Deps`. It hashes the extraction and classify models, `reviewer_enabled`, `reviewer_model`, `search_context_enabled`, and the extraction, classify, search and reviewer prompts.
+- `GraphSession` gains:
+  - `revision(message_id)`: `revisions + 1`, read from the thread's state;
+  - `redrive(message_id)`: runs `invoke(None)` through the tracer.
+
+**Acceptance criteria:**
+- [ ] Toggling the reviewer, or changing any listed model or prompt, changes `pipeline_version`. Nothing else does.
+- [ ] An edit that adds a guest turns `calendar_hold` into `calendar_invite` at the re-park.
+- [ ] The revision is 1 at the first park and 2 after an edit, including for a payload without the new fields.
+- [ ] `redrive` re-runs a node that failed after an edit.
+
+**Verification:** `uv run pytest tests/test_graph.py tests/test_versioning.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** none · **Files:** `app/graph/nodes.py`, `app/graph/runner.py`, `app/graph/versioning.py`, `tests/test_graph.py`, `tests/test_versioning.py` · **Scope:** M
+
+### Task 16.4: Migration 007 and the park step
+
+**Description:**
+- `007_proposals.sql` creates `proposals`, `decisions`, `alerts_sent`, `push_subscriptions` and `pairing_codes`. A partial unique index allows one open decision per message.
+- `app/channel/park.py` works in one transaction. It writes the `proposals` row and marks the ledger `awaiting_approval`, conditional on the non-final status it read. Then it calls an announce hook.
+- Poll uses the park step instead of its own `mark` and `_notify`. The hook keeps today's Telegram notify until 16.13.
+
+**Acceptance criteria:**
+- [ ] 007 applies and re-runs on Neon.
+- [ ] A park writes both rows or neither: a failure injected between the two writes leaves neither.
+- [ ] The ledger write never overwrites a final status.
+- [ ] Poll's tests pass, and a parked message has a `proposals` row with the thread's revision.
+
+**Verification:** `uv run pytest tests/test_park.py tests/test_poll.py`; the integration tests on Neon; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.3 · **Files:** `migrations/007_proposals.sql`, `app/channel/park.py`, `app/jobs/poll.py`, `tests/test_park.py`, `tests/test_poll.py` · **Scope:** M
+
+### Task 16.5: `decide()` records and enqueues
+
+**Description:** `app/channel/decide.py`, as D1 describes:
+- Validate: an edit needs a correction, there is no edit at revision 3, and a message with no `proposals` row is refused as not found.
+- Then, in one transaction on the caller's own connection:
+  - claim the proposal (`pending` at the given revision becomes `deciding`);
+  - insert the `decisions` row with `outcome = NULL`, copying `action_type` and `pipeline_version` and computing latency from `parked_at`.
+- It never touches the graph. It returns queued, stale, not found or invalid.
+
+**Acceptance criteria:**
+- [ ] Each action enqueues exactly one decision.
+- [ ] A stale revision is refused, and nothing is enqueued.
+- [ ] **Two concurrent decisions on one revision: one wins, and the other is refused**, on Neon.
+- [ ] An empty correction, an edit at revision 3 and a missing row are refused.
+- [ ] Each decision records its `via`, `action_type` and `pipeline_version`.
+
+**Verification:** `uv run pytest tests/test_decide.py`; the integration tests on Neon; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.4 · **Files:** `app/channel/decide.py`, `tests/test_decide.py` · **Scope:** S
+
+### Task 16.6: The worker moves decisions from stored state
+
+**Description:** `app/channel/worker.py`, `apply_open(session)`. It takes each open decision whose retry time has come and moves it through D1's table:
+- parked at the decision's revision: resume;
+- parked at the next revision: settle `reparked` through the park step, in the same transaction;
+- ledger final: settle `decided`;
+- mid-graph without `act` next: re-drive;
+- `act` next: settle failed, reason `act interrupted`;
+- anything else: settle failed.
+
+A settle is one transaction of conditional writes.
+
+**Acceptance criteria:**
+- [ ] Every row of D1's table has a test that seeds that stored state.
+- [ ] `act` in `next` is never re-driven.
+- [ ] A late failed settle never overwrites a final ledger status, and an outcome is written only once.
+- [ ] A re-park carries the new revision and is announced.
+
+**Verification:** `uv run pytest tests/test_worker.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.5 · **Files:** `app/channel/worker.py`, `app/graph/runner.py`, `tests/test_worker.py` · **Scope:** M
+
+### Task 16.7: Worker retries, lease and crash convergence
+
+**Description:**
+- **Retries.** A resume or re-drive that raises costs one attempt. The next attempt waits 1 minute, then 10. The third failure settles: `no_effect` if the thread is still parked at the decision's revision, failed otherwise.
+- **Lease.** Each decision is leased for 10 minutes by a conditional `UPDATE`.
+- **Proof.** Inject a failure after each step: after the lease, after the resume, inside the settle, and after the settle. The next tick must finish the job, and nothing may be applied twice.
+
+**Acceptance criteria:**
+- [ ] A failure after each step converges on the next tick. The fake graph counts exactly one application.
+- [ ] Attempts wait 1 and 10 minutes, and the third failure settles.
+- [ ] A second worker skips a leased decision, and an expired lease is taken over.
+
+**Verification:** `uv run pytest tests/test_worker.py`; the lease test on Neon; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.6 · **Files:** `app/channel/worker.py`, `tests/test_worker.py`, and `migrations/007_proposals.sql` only if a column is missing (007 is not yet deployed) · **Scope:** S
+
+### Checkpoint: the queue works
+
+- [ ] `.\tasks.ps1 check` is green, and the integration tests pass on Neon, apart from the known failure.
+- [ ] With a fake graph, a proposal goes park, `decide`, worker, settled, for confirm, edit and cancel.
+- [ ] The owner reviews before the queue is wired in.
+
+---
+
+## Phase 2 · Put every path on the queue
+
+### Task 16.8: Reconciliation
+
+**Description:** `app/channel/reconcile.py`, as D3 describes.
+- It reads the thread of every ledger row that is `claimed`, `awaiting_approval`, or FAILED within seven days. A live interrupt with no `proposals` row gets the park step.
+- Legacy payloads get their action type from their attendees, and `pipeline_version` `pre-m16`.
+- A `pending` or `failed` proposal whose thread is gone and whose ledger is final becomes `decided`.
+- A `deciding` proposal is never touched.
+- It runs at boot after `fail_stranded`, hourly with the purge, and on `approve --reconcile`.
+
+**Acceptance criteria:**
+- [ ] A live interrupt with no row gets one, whichever of the three ledger statuses it has.
+- [ ] A legacy park gets its revision from state and `pipeline_version` `pre-m16`.
+- [ ] A `deciding` proposal is untouched.
+- [ ] It runs at boot and hourly, and `approve --reconcile` prints what it did.
+
+**Verification:** `uv run pytest tests/test_reconcile.py tests/test_scheduler.py`; the integration tests on Neon; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.4 · **Files:** `app/channel/reconcile.py`, `app/api.py`, `app/jobs/scheduler.py`, `app/jobs/approve.py`, `tests/test_reconcile.py` · **Scope:** M
+
+### Task 16.9: The `decisions` job, wake-up and health
+
+**Description:**
+- The scheduler runs the worker as the `decisions` job: every 15 seconds, `max_instances=1`. It starts no new decision once `STOPPING` is set.
+- In the web process, a recorded decision wakes the job with `modify_job(next_run_time=now)`.
+- `/health` reports the oldest open decision's age and returns 503 past one hour. It reads an in-memory record, which the job refreshes each tick and a new decision also updates, so a wedged job still shows.
+
+**Acceptance criteria:**
+- [ ] The job is registered next to poll, purge and token_health, with `max_instances=1`.
+- [ ] A wake runs the job at once.
+- [ ] `/health` returns 503 for a decision open over an hour, with no database call per request.
+- [ ] After a shutdown signal, the worker starts no new decision.
+
+**Verification:** `uv run pytest tests/test_scheduler.py tests/test_api.py tests/test_liveness.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.7 · **Files:** `app/jobs/scheduler.py`, `app/obs/liveness.py`, `app/api.py`, `tests/test_scheduler.py`, `tests/test_api.py` · **Scope:** M
+
+### Task 16.10: `approve.py` onto the queue
+
+**Description:**
+- Decisions go through `decide(via="cli")`. The CLI then waits for the outcome and prints it, or says the worker did not answer in time.
+- `--sweep-all` enqueues a `sweep` for every pending proposal and waits for the queue to drain.
+- `--list` shows each proposal's revision, status and `dry_run`.
+
+**Acceptance criteria:**
+- [ ] Confirm, edit, cancel and sweep all go through `decide`, and the CLI never resumes a thread itself.
+- [ ] The outcome is printed, or the time-out is stated.
+- [ ] `--sweep-all` ends every pending proposal as swept.
+
+**Verification:** `uv run pytest tests/test_approve.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.9 · **Files:** `app/jobs/approve.py`, `tests/test_approve.py` · **Scope:** S
+
+### Task 16.11: Telegram onto the queue
+
+**Description:**
+- Telegram's button data gains the revision. A card from before M16, without one, is refused with a pointer to the web app.
+- The handler records the decision through `decide(via="telegram")` and answers "Queued".
+- The webhook becomes a plain `def` handler.
+
+**Acceptance criteria:**
+- [ ] A stale Telegram card is refused.
+- [ ] The handler never resumes a thread.
+- [ ] The webhook handler is not a coroutine function.
+
+**Verification:** `uv run pytest tests/test_telegram.py tests/test_api.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.5 · **Files:** `app/telegram/cards.py`, `app/telegram/handler.py`, `app/api.py`, `tests/test_telegram.py` · **Scope:** M
+
+### Checkpoint: one path
+
+- [ ] `.\tasks.ps1 check` is green, and the integration tests pass on Neon.
+- [ ] `GraphSession.resume` is called only from `app/channel/worker.py`, checked with a search.
+- [ ] End to end on Neon: a planted email parks, `approve` confirms it, and the ledger, `proposals` and `decisions` agree. This needs the dev Google token; without it, run a fake graph and say so.
+
+---
+
+## Phase 3 · API, push and alerts
+
+### Task 16.12: The web API on Fly
+
+**Description:**
+- Routes:
+  - `POST /api/decisions` (202 queued, 409 stale, 404 not found, 422 invalid);
+  - `POST /api/push-subscriptions` and `DELETE /api/push-subscriptions` (upsert by endpoint).
+- Auth is `Authorization: Bearer <WEB_API_SECRET>`, compared with `compare_digest`. An unset or blank secret means 503.
+- `WEB_API_SECRET` and `VAPID_PRIVATE_KEY` join `_blank_secret_is_unset`.
+- The handlers are plain `def`, and each opens its own connection.
+
+**Acceptance criteria:**
+- [ ] A missing or wrong secret gets 401; an unset or blank secret gets 503.
+- [ ] The handlers are sync.
+- [ ] A decision request returns without waiting on the graph, and wakes the worker.
+- [ ] A subscription is stored once per endpoint and can be removed.
+
+**Verification:** `uv run pytest tests/test_web_api.py tests/test_config.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.5, 16.9 · **Files:** `app/web_api.py`, `app/api.py`, `app/config.py`, `tests/test_web_api.py`, `tests/test_config.py` · **Scope:** M
+
+### Task 16.13: The `Channel` protocol
+
+**Description:**
+- `Channel` has `announce_proposal(message_id)` and `alert(code)`.
+- `TelegramChannel` wraps today's notify code.
+- The park step and the scheduler announce through every configured channel. Exceptions and time-outs are isolated per channel.
+
+**Acceptance criteria:**
+- [ ] A failing or hanging channel does not stop the others (fake channels).
+- [ ] With Telegram unconfigured, nothing breaks.
+- [ ] Poll no longer calls Telegram directly.
+
+**Verification:** `uv run pytest tests/test_channels.py tests/test_poll.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.4 · **Files:** `app/channel/channels.py`, `app/telegram/notify.py`, `app/channel/park.py`, `app/jobs/poll.py`, `tests/test_channels.py` · **Scope:** M
+
+### Task 16.14: Web push
+
+**Description:**
+- Add `pywebpush`, which was approved with the spec.
+- `WebPushChannel` sends a generic payload to every subscription: "A proposal needs you" or "Google sign-in needs attention".
+- Each send uses `timeout=10`, a `ttl` of 24 hours and `Urgency: high`. The VAPID `sub` is the app's URL.
+- A 404 or 410 deletes the subscription.
+- `.\tasks.ps1 vapid` generates the key pair.
+
+**Acceptance criteria:**
+- [ ] No payload carries proposal content: seeded strings never appear.
+- [ ] `webpush` is called with the timeout, the `ttl` and the urgency.
+- [ ] A 410 deletes the subscription.
+- [ ] `uv lock --check` passes, and only `pywebpush` and its dependencies were added.
+
+**Verification:** `uv run pytest tests/test_webpush.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.12, 16.13 · **Files:** `pyproject.toml` (and `uv.lock`), `app/channel/webpush.py`, `tasks.ps1`, `tests/test_webpush.py` · **Scope:** M
+
+### Task 16.15: Token alerts, once per state change
+
+**Description:**
+- **`check_token` fix.** It alerts from `token_state`, as `/health` reads it. Today a production token would get the countdown alert every 12 hours from day five.
+- **Alerts:** a Testing token within two days of expiry, a token turning `expired`, and failover to the standby.
+- **Delivery.** An `alerts_sent` row is written only after at least one push service returns 2xx. With no subscriptions, or a failed send, the next check retries.
+- **Health.** `/health` shows the subscription count, refreshed hourly into memory.
+
+**Acceptance criteria:**
+- [ ] A production token never triggers the countdown alert.
+- [ ] Each alert code goes out once per state change, including across a restart.
+- [ ] With no subscriptions, nothing is recorded, and the next check retries.
+- [ ] `/health` shows the subscription count.
+
+**Verification:** `uv run pytest tests/test_alerts.py tests/test_scheduler.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.13, 16.14 · **Files:** `app/jobs/scheduler.py`, `app/channel/alerts.py`, `app/api.py`, `tests/test_alerts.py`, `tests/test_scheduler.py` · **Scope:** M
+
+### Checkpoint: the backend is done
+
+- [ ] `.\tasks.ps1 check` is green, and the integration tests pass on Neon.
+- [ ] The owner reviews before the web app is built.
+
+---
+
+## Phase 4 · The web app
+
+### Task 16.16: The read-only role
+
+**Description:**
+- `008_web_reader.sql` creates `web_reader` `NOLOGIN` inside a `DO` block, and grants `SELECT` on the tables the app shows.
+- The test gets the role with `GRANT web_reader TO CURRENT_USER` and `SET ROLE`, so no password is involved.
+- **[owner]** Sets the `LOGIN PASSWORD` in Supabase's SQL editor at deploy (16.23).
+
+**Acceptance criteria:**
+- [ ] 008 applies and re-runs on Neon.
+- [ ] As `web_reader`, `SELECT` works and `INSERT` fails.
+
+**Verification:** the integration tests on Neon.
+
+**Dependencies:** 16.4 · **Files:** `migrations/008_web_reader.sql`, `tests/test_web_reader.py` · **Scope:** S
+
+### Task 16.17: The timeline
+
+**Description:**
+- `/` becomes the timeline: pending proposals first, then recent decisions.
+- A card shows the title, the time in the owner's zone, attendees, conflicts, reviewer issues, a `dry run` badge and the revision.
+- A `deciding` card shows "Applying…", and the page re-reads every 3 seconds while any decision is open.
+- The current overview moves to `/analytics`, behind the same sign-in.
+
+**Acceptance criteria:**
+- [ ] Pending, deciding, decided and failed proposals render from seeded rows.
+- [ ] The page re-reads only while a decision is open.
+
+**Verification:** the web checks; a local run against Neon.
+
+**Dependencies:** 16.1, 16.16 · **Files:** `dashboard/src/app/page.tsx`, `dashboard/src/app/analytics/page.tsx`, `dashboard/src/components/ProposalCard.tsx`, `dashboard/src/lib/proposals.ts`, `dashboard/src/app/layout.tsx` · **Scope:** M
+
+### Task 16.18: Deciding from the card
+
+**Description:**
+- Server actions for **Confirm**, **Edit** (with a correction box, hidden at revision 3) and **Cancel**.
+- Each action calls `auth()` and requires the owner. It then posts to Fly's `/api/decisions` with the Bearer secret from the server environment.
+- A stale answer shows the latest version.
+
+**Acceptance criteria:**
+- [ ] Every action checks the owner first. The check lives in `access.ts` and is tested.
+- [ ] `WEB_API_SECRET` never appears in the browser bundle: a search of the build output finds nothing.
+- [ ] Against a local API on Neon, confirm, edit and cancel each end with records that agree, and a stale card is refused.
+
+**Verification:** the web checks; the local run.
+
+**Dependencies:** 16.12, 16.17 · **Files:** `dashboard/src/app/actions.ts`, `dashboard/src/lib/fly.ts`, `dashboard/src/components/ProposalCard.tsx`, `dashboard/src/components/EditForm.tsx` · **Scope:** M
+
+### Task 16.19: Push in the web app
+
+**Description:**
+- **Service worker.** It caches static assets only. A push shows a generic notification, and a tap opens `/`.
+- **Subscription.** The app asks for permission and subscribes with the VAPID public key. It re-posts the subscription through a server action every time it opens, and `pushsubscriptionchange` re-subscribes.
+- **iPhone.** In Safari, outside the installed app, the page explains "Add to Home Screen".
+
+**Acceptance criteria:**
+- [ ] The caching rule admits only static assets (node test).
+- [ ] The subscription is re-posted on every open.
+- [ ] A push from a local API reaches a desktop browser, and a tap opens `/`.
+
+**Verification:** the web checks; the local run.
+
+**Dependencies:** 16.14, 16.18 · **Files:** `dashboard/public/sw.js`, `dashboard/public/sw-rules.js` (and its test), `dashboard/src/components/PushSetup.tsx`, `dashboard/src/app/actions.ts` · **Scope:** M
+
+### Task 16.20: Web checks in CI
+
+**Description:** A CI job runs `npm ci`, `npm run typecheck`, `npm run build` and `npm test` in `dashboard/` on Node 24.
+
+**Acceptance criteria:**
+- [ ] The job runs on every push, and it is green.
+
+**Verification:** the CI run on the pushed branch.
+
+**Dependencies:** 16.1 · **Files:** `.github/workflows/ci.yml`, `dashboard/package.json` · **Scope:** XS
+
+### Checkpoint: ready to deploy
+
+- [ ] The Python and web checks are green, locally and in CI.
+- [ ] Locally: sign in, see a planted proposal, decide it, and receive a push in a desktop browser.
+- [ ] The owner reviews before the deploy.
+
+---
+
+## Phase 5 · Retention, runbook, deploy and exit
+
+### Task 16.21: Retention for the new records
+
+**Description:**
+- The purge clears `proposals.payload` and `decisions.correction` 7 days after the ledger row reaches a final status or FAILED. The clock is the ledger's.
+- `action_type`, `pipeline_version`, `via`, `revision`, `outcome` and the timings stay.
+- Expired pairing codes are deleted.
+
+**Acceptance criteria:**
+- [ ] Content is cleared on day 7 and not before, for final and FAILED rows. An open proposal is never cleared.
+- [ ] M24's columns survive.
+
+**Verification:** `uv run pytest tests/test_purge.py`; the integration tests on Neon; `.\tasks.ps1 check`.
+
+**Dependencies:** 16.4 · **Files:** `app/jobs/purge.py`, `tests/test_purge.py` · **Scope:** S
+
+### Task 16.22: Runbook and environment
+
+**Description:**
+- A DEPLOY.md section covering:
+  - Vercel;
+  - the separate sign-in project;
+  - the `web_reader` password step;
+  - VAPID keys and `WEB_API_SECRET`;
+  - revoking a device by rotating `AUTH_SECRET`, which signs out every device.
+- `.env.example` entries for both apps.
+
+**Acceptance criteria:**
+- [ ] Following the section needs no step outside it. Checked by a read-through against the spec.
+
+**Verification:** the read-through, recorded in the running notes.
+
+**Dependencies:** 16.12–16.19 · **Files:** `docs/DEPLOY.md`, `.env.example`, `dashboard/.env.example` · **Scope:** S
+
+### Task 16.23: Deploy [owner + agent]
+
+**Description:** After M15 closes (task 21), unless the owner decides otherwise:
+- Apply 007 and 008 on Supabase.
+- **[owner]** Set the `web_reader` password.
+- Set the Fly secrets (`WEB_API_SECRET` and the VAPID keys), and deploy with `fly deploy --ha=false`.
+- Point Vercel at the Fly API and the `web_reader` URL, and deploy.
+- **[owner]** Open the app on both phones and allow notifications.
+
+**Acceptance criteria:**
+- [ ] `/health` returns 200, with at least two subscriptions and no open decision.
+- [ ] The timeline shows the proposals D3 created at boot.
+
+**Verification:** `curl -i` on `/health`; the owner's phones.
+
+**Dependencies:** 16.21, 16.22, M15 task 21 · **Files:** the running notes · **Scope:** S
+
+### Task 16.24: Pairing — only if 16.2 failed on iPhone
+
+**Description:**
+- `POST /api/pairing/codes` gives a signed-in session a 6-digit code. The code lasts 5 minutes and is stored as its SHA-256.
+- `POST /api/pairing/redeem` allows 5 attempts, after which the code is dead.
+- A successful redeem returns a single-use grant, which the installed app turns into its own session.
+
+**Acceptance criteria:**
+- [ ] A code dies after 5 attempts, and after 5 minutes.
+- [ ] A grant works once.
+- [ ] The owner signs in inside the installed iPhone app through pairing.
+
+**Verification:** `uv run pytest tests/test_pairing.py`; the web checks; the owner's iPhone.
+
+**Dependencies:** 16.2, 16.12 · **Files:** `app/channel/pairing.py`, `app/web_api.py`, `dashboard/src/app/pair/page.tsx`, `tests/test_pairing.py` · **Scope:** M
+
+### Task 16.25: Exit evidence [owner + agent]
+
+**Description:** Run the spec's five exit criteria on both phones in dry run, and record each one with its evidence in the running notes. Then update INDEX.
+
+**Acceptance criteria:**
+- [ ] All five exit criteria hold, each with linked evidence.
+- [ ] No decision stays open for more than an hour during the run.
+
+**Verification:** re-read the exit criterion against the running notes. The owner reviews before M16 is marked done.
+
+**Dependencies:** 16.23, and 16.24 if it was built · **Files:** `docs/plans/M16-web-channel.md`, `docs/plans/INDEX.md` · **Scope:** XS
+
+### Checkpoint: M16 complete
+
+- [ ] Exit criteria 1–5 are met.
+- [ ] The owner has signed off.

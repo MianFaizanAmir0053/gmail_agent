@@ -27,7 +27,7 @@ depends on Telegram.
 
 **In:**
 - one decision queue shared by every channel, applied by a single worker;
-- `proposals`, `decisions`, `alerts_sent` and `pairing_codes` records;
+- `proposals`, `decisions`, `alerts_sent`, `push_subscriptions` and `pairing_codes` records;
 - an authenticated API on Fly;
 - the Next.js app with owner-only Google sign-in, the timeline and cards;
 - a PWA with web push;
@@ -162,6 +162,9 @@ A clean approval, for M24, is a `confirm` on revision 1 whose outcome is
 
 **`alerts_sent`**: `(code, subject, sent_at)`, unique on `(code, subject)`.
 It is written only after delivery (D6).
+
+**`push_subscriptions`**: one row per browser (D6): the endpoint (unique),
+its keys, and when it was created and last re-posted.
 
 **`pairing_codes`**: the iPhone fallback (D4), used only if needed. It
 stores the code's SHA-256, the expiry, the attempts, and the id of the session
