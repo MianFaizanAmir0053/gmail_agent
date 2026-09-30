@@ -17,6 +17,7 @@ from typing import Any, NamedTuple
 
 import psycopg
 
+from app.channel.park import record_park
 from app.config import get_settings
 from app.graph.runner import GraphSession, graph_session
 from app.store.db import connect
@@ -92,11 +93,17 @@ def poll_once(
             entry = ledger.get(message_id)
             print(f"  {message_id}  {entry.status if entry else '?'}")
         else:
-            ledger.mark(message_id, MessageStatus.AWAITING_APPROVAL)
+            # The ledger mark and the proposal row, together. If this fails,
+            # the thread is still parked, and reconciliation finds it.
+            record_park(
+                session,
+                message_id,
+                pending,
+                announce=lambda parked_id, payload: _notify(payload, parked_id),
+            )
             proposed = pending["proposed"]
             title = proposed.get("title") if show_titles else ""
             print(f"  {message_id}  AWAITING APPROVAL  {title}".rstrip())
-            _notify(pending, message_id)
 
     if not stopped:
         # Left where it was on an early stop: unprocessed mail is still

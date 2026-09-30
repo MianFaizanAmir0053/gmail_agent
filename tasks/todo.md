@@ -578,10 +578,11 @@ Pages that read the database may fail until 16.23. Only sign-in is under test.
 - Poll uses the park step instead of its own `mark` and `_notify`. The hook keeps today's Telegram notify until 16.13.
 
 **Acceptance criteria:**
-- [ ] 007 applies and re-runs on Neon.
-- [ ] A park writes both rows or neither: a failure injected between the two writes leaves neither.
-- [ ] The ledger write never overwrites a final status.
-- [ ] Poll's tests pass, and a parked message has a `proposals` row with the thread's revision.
+- [x] 007 applies and re-runs on Neon.
+- [x] A park writes both rows or neither: a failure injected between the two writes leaves neither.
+- [x] The ledger write never overwrites a final status, and a park never reopens a decided proposal.
+- [x] Poll's tests pass, and a parked message has a `proposals` row with the thread's revision. On Neon, 76 integration tests pass; the one failure is the known one.
+- Until 16.10 and 16.11, an edit made through the CLI or Telegram re-parks without updating the `proposals` row. Nothing is deployed in between.
 
 **Verification:** `uv run pytest tests/test_park.py tests/test_poll.py`; the integration tests on Neon; `.\tasks.ps1 check`.
 

@@ -180,7 +180,7 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
             # Recomputed at every park, so an edit that adds a guest turns a
             # hold into an invite. The revision is not here: it is read from
             # the thread's state, which proposals parked before M16 also have.
-            "action_type": action_type(state["extraction"]),
+            "action_type": action_type(state["extraction"].attendees),
             "pipeline_version": deps.pipeline_version,
         }
     )

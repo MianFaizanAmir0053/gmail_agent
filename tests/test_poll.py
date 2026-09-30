@@ -91,6 +91,31 @@ def cursor(monkeypatch: pytest.MonkeyPatch) -> FakeCursor:
     return fake
 
 
+@dataclass
+class Parks:
+    recorded: list[str] = field(default_factory=list)
+    announced: list[str] = field(default_factory=list)
+
+
+@pytest.fixture
+def parks(monkeypatch: pytest.MonkeyPatch) -> Parks:
+    """Stands in for the park step, whose writes are tested on Postgres."""
+    fake = Parks()
+
+    def record_park(
+        session: Any, message_id: str, pending: dict[str, Any], *, announce: Any = None
+    ) -> None:
+        fake.recorded.append(message_id)
+        if announce is not None:
+            announce(message_id, pending)
+
+    monkeypatch.setattr(poll, "record_park", record_park)
+    monkeypatch.setattr(
+        poll, "_notify", lambda pending, message_id: fake.announced.append(message_id)
+    )
+    return fake
+
+
 def test_a_normal_pass_claims_every_unread_message(ledger: FakeLedger, cursor: FakeCursor) -> None:
     session = FakeSession(unread=["a", "b", "c"])
 
@@ -122,14 +147,25 @@ def test_a_stopped_pass_does_not_advance_the_cursor(ledger: FakeLedger, cursor: 
     assert cursor.values == []
 
 
+def test_a_parked_message_goes_through_the_park_step(
+    ledger: FakeLedger, cursor: FakeCursor, parks: Parks
+) -> None:
+    """The ledger mark and the proposal row are written together (M16, D2)."""
+    session = FakeSession(unread=["a", "b"], parked={"b": "Design review"})
+
+    poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
+
+    assert parks.recorded == ["b"]
+    assert parks.announced == ["b"]
+
+
 def test_production_output_names_no_titles(
     ledger: FakeLedger,
     cursor: FakeCursor,
-    monkeypatch: pytest.MonkeyPatch,
+    parks: Parks,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Hosted logs sit outside the database's controls: ids and statuses only."""
-    monkeypatch.setattr(poll, "_notify", lambda pending, message_id: None)
     session = FakeSession(unread=["a"], parked={"a": "Salary review with HR"})
 
     poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event(), show_titles=False)

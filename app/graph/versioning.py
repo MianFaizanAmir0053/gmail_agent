@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from typing import Any, Literal
 
 from app.config import Settings
-from app.contracts import ExtractionResult
 
 ActionType = Literal["calendar_hold", "calendar_invite"]
 
@@ -76,7 +76,7 @@ def pipeline_version(settings: Settings) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
-def action_type(extraction: ExtractionResult) -> ActionType:
+def action_type(attendees: Sequence[str]) -> ActionType:
     """Guests make it an invite. The owner is never among the attendees:
     extraction removes their address (`app/extraction/payloads.py`)."""
-    return "calendar_invite" if extraction.attendees else "calendar_hold"
+    return "calendar_invite" if attendees else "calendar_hold"

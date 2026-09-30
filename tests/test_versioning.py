@@ -7,18 +7,14 @@ pool approvals of two different pipelines. Both directions are tested.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from app.agents import reviewer
 from app.config import Settings
-from app.contracts import ExtractionResult
 from app.extraction import prompts
 from app.graph.versioning import action_type, pipeline_version
-
-START = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -113,22 +109,9 @@ def test_the_version_is_short_and_never_the_legacy_tag() -> None:
     assert version != "pre-m16"
 
 
-def _meeting(attendees: list[str]) -> ExtractionResult:
-    return ExtractionResult(
-        is_meeting=True,
-        title="Design review",
-        start_utc=START,
-        end_utc=START + timedelta(hours=1),
-        timezone="UTC",
-        attendees=attendees,
-        confidence=0.9,
-        reasoning="",
-    )
-
-
 def test_an_event_with_no_guests_is_a_hold() -> None:
-    assert action_type(_meeting([])) == "calendar_hold"
+    assert action_type([]) == "calendar_hold"
 
 
 def test_an_event_with_guests_is_an_invite() -> None:
-    assert action_type(_meeting(["sara@example.com"])) == "calendar_invite"
+    assert action_type(["sara@example.com"]) == "calendar_invite"
