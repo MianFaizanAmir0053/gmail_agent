@@ -60,7 +60,7 @@ M15 ─┬─► M16 ─────────────────┬─�
 
 | # | Module | Est. | Status |
 |---|---|---|---|
-| [M15](M15-go-live.md) | Go live and measure | 5d + 8d unattended | ◐ spec written, awaiting sign-off |
+| [M15](M15-go-live.md) | Go live and measure | 5d + 8d unattended | ◐ code complete; waiting on day 0 (deploy) |
 | M16 | Web channel | 5d | ☐ not specified |
 | M17 | Action policy | 4d | ☐ not specified |
 | M18 | Untrusted input | 4d | ☐ not specified |

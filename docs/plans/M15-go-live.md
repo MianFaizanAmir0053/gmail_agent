@@ -415,3 +415,31 @@ Singapore**, about $4–7 a month.
 - no automatic backups, so the M15 evidence tables could be lost;
 - read-only past 500 MB, which the purge and ingestion-off keep well clear of;
 - pausing after a week of inactivity. Whether ten-minute polls count as activity is unverified; the uptime monitor would catch a pause.
+
+### 2026-09-30 · Code complete; waiting on day 0
+
+Tasks 2-13 and 15-18 are built test-first on `v2-plan`. The deploy, the
+unattended window and the owner's labelling remain.
+
+**v1 bugs fixed along the way:**
+- An *Edit* followed by *Cancel* or *Confirm* looped back to extraction.
+- The image ignored `uv.lock`.
+- A redeploy stranded `claimed` rows.
+- `/health` could not fail.
+- Retries were invisible.
+- The hourly token refresh erased token metadata.
+- Mail bodies were never deleted.
+- `record_tick` connected with no timeout, so an unreachable database held the scheduler for minutes.
+
+**Verified:**
+- 575 unit tests pass in about 10 seconds.
+- On the Neon test database, 60 integration tests pass. The one failure is the known `test_vector_mode_cannot_reach_a_keyword_only_match`, fixed on an unmerged branch in another session.
+- A stalled poller turned `/health` into a 503 after three intervals, recording one `ok = false` tick per interval.
+- CI built the Docker image.
+
+**Merged `origin/main`**, which brings the verified price table and cached-token fix (PR #1) and the gateway triage (PR #2).
+
+**Found, still open:**
+- `gemini-embedding-001` is not on Google's pricing page as of today. Embedding cost is estimated at Gemini Embedding 2's $0.20 per million tokens, and M18 must check the model's status before re-enabling ingestion.
+- The owner's local `.env` sets `EXTRACTION_MODEL=gemini-2.5-pro`, which the price table leaves out because it has tiered pricing. Production keeps the priced default (`gemini-3.6-flash`), or `measure cost` refuses to run.
+- The Neon test database's password was pasted into the session chat. The owner resets it.
