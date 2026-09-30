@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from pydantic import SecretStr
 
+from app.channel.alerts import TokenAlert
 from app.channel.reconcile import ReconcileResult
 from app.config import Settings
+from app.google.tokens import TokenHealth, TokenMetadata
 from app.jobs.ingest_job import incremental_query, scheduled_ingest
 from app.jobs.poll import STOPPING, PollResult
 from app.jobs.scheduler import (
@@ -25,7 +27,7 @@ from app.jobs.scheduler import (
     run_reconcile,
     wake_decisions,
 )
-from app.obs.liveness import Liveness
+from app.obs.liveness import Liveness, TokenEvidence
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -315,70 +317,88 @@ def test_a_failing_poll_does_not_escape_the_job(monkeypatch: pytest.MonkeyPatch)
     run_poll(_settings())  # must not raise
 
 
-def test_token_check_survives_an_unreadable_token() -> None:
+def test_token_check_survives_an_unreadable_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.jobs.scheduler._count_subscriptions", lambda settings: None)
     check_token(_settings())  # no FERNET_KEY configured; must not raise
 
 
-def test_token_warning_needs_an_alert_channel(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no bot token or allowlist there is nowhere to send the warning --
-    that must degrade to a log line, not a crash in a background thread."""
-
-    class _Health:
-        days_remaining = 1.0
-        needs_reauth_soon = True
-
-    monkeypatch.setattr(
-        "app.jobs.scheduler.token_store",
-        lambda settings: type("S", (), {"health": lambda self: _Health()})(),
-    )
-
-    check_token(_settings(allowed_chat_ids=[], telegram_bot_token=None))
+def test_the_token_check_runs_hourly() -> None:
+    """Hourly rather than twice a day: an alert no channel delivered is
+    retried at the next check."""
+    job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "token_health")
+    assert "1:00:00" in str(job.trigger)
 
 
-def test_token_warning_is_sent_when_a_channel_exists(monkeypatch: pytest.MonkeyPatch) -> None:
-    sent: list[str] = []
+@dataclass(frozen=True)
+class _Store:
+    issued_at: datetime
+    minted_under: str
+    days_remaining: float
 
-    class _Health:
-        days_remaining = 1.5
-        needs_reauth_soon = True
+    def health(self) -> TokenHealth:
+        return TokenHealth(
+            issued_at=self.issued_at,
+            expires_at=self.issued_at + timedelta(days=7),
+            days_remaining=self.days_remaining,
+        )
 
-    monkeypatch.setattr(
-        "app.jobs.scheduler.token_store",
-        lambda settings: type("S", (), {"health": lambda self: _Health()})(),
-    )
-    monkeypatch.setattr(
-        "app.jobs.scheduler.TelegramClient",
-        lambda token: type(
-            "C", (), {"send_message": lambda self, chat, text, **kw: sent.append(text)}
-        )(),
-    )
-
-    check_token(_settings(allowed_chat_ids=[4242], telegram_bot_token=SecretStr("123:abc")))
-
-    assert sent and "1.5 days" in sent[0]
+    def metadata(self) -> TokenMetadata:
+        return TokenMetadata(issued_at=self.issued_at, minted_under=self.minted_under)  # type: ignore[arg-type]
 
 
-def test_healthy_token_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    sent: list[str] = []
+def _token_check(monkeypatch: pytest.MonkeyPatch, store: _Store) -> list[list[TokenAlert]]:
+    sent: list[list[TokenAlert]] = []
+    monkeypatch.setattr("app.jobs.scheduler._count_subscriptions", lambda settings: None)
+    monkeypatch.setattr("app.jobs.scheduler.token_store", lambda settings: store)
+    monkeypatch.setattr("app.jobs.scheduler.standby_token_store", lambda settings: None)
+    monkeypatch.setattr("app.jobs.scheduler.TOKEN_EVIDENCE", TokenEvidence())
+    monkeypatch.setattr("app.jobs.scheduler.connect", lambda url, **kw: nullcontext(object()))
 
-    class _Health:
-        days_remaining = 6.0
-        needs_reauth_soon = False
+    def _send(conn: Any, channels: Any, alerts: list[TokenAlert]) -> list[str]:
+        sent.append(alerts)
+        return []
 
-    monkeypatch.setattr(
-        "app.jobs.scheduler.token_store",
-        lambda settings: type("S", (), {"health": lambda self: _Health()})(),
-    )
-    monkeypatch.setattr(
-        "app.jobs.scheduler.TelegramClient",
-        lambda token: type(
-            "C", (), {"send_message": lambda self, chat, text, **kw: sent.append(text)}
-        )(),
-    )
+    monkeypatch.setattr("app.jobs.scheduler.send_token_alerts", _send)
+    return sent
 
-    check_token(_settings(allowed_chat_ids=[4242], telegram_bot_token=SecretStr("123:abc")))
+
+def test_a_testing_token_near_expiry_is_alerted_through_the_channels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issued = datetime.now(UTC) - timedelta(days=6)
+    sent = _token_check(monkeypatch, _Store(issued, "testing", days_remaining=1.0))
+
+    check_token(_settings())
+
+    assert sent == [[TokenAlert("token_expiring", issued.isoformat())]]
+
+
+def test_a_production_token_is_not_counted_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The countdown belongs to Testing tokens. A production token that dies
+    is alerted as expired instead."""
+    issued = datetime.now(UTC) - timedelta(days=6)
+    sent = _token_check(monkeypatch, _Store(issued, "production", days_remaining=1.0))
+
+    check_token(_settings())
 
     assert sent == []
+
+
+def test_the_token_check_refreshes_the_subscription_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = _liveness(monkeypatch)
+
+    class _Conn:
+        def execute(self, sql: str) -> Any:
+            return type("R", (), {"fetchone": lambda self: (2,)})()
+
+    monkeypatch.setattr("app.jobs.scheduler.connect", lambda url, **kw: nullcontext(_Conn()))
+    monkeypatch.setattr("app.jobs.scheduler.token_store", lambda settings: 1 / 0)
+
+    check_token(_settings())
+
+    assert live.push_subscriptions == 2
 
 
 # --- tick records (M15) ----------------------------------------------------

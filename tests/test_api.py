@@ -268,6 +268,20 @@ def test_a_decision_open_for_over_an_hour_is_a_503(
     assert response.json()["oldest_open_decision_seconds"] >= 3660
 
 
+def test_health_shows_how_many_browsers_would_hear_a_push(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero is visible, not a failure: before the first phone subscribes there
+    is simply nobody to push to."""
+    live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    live.subscriptions_counted(0)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["push_subscriptions"] == 0
+
+
 def test_a_recent_open_decision_is_reported_but_healthy(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

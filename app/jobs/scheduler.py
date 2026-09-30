@@ -19,20 +19,20 @@ import psycopg
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.channel.alerts import send_token_alerts, token_alerts
 from app.channel.channels import configured_channels
 from app.channel.reconcile import reconcile
 from app.channel.worker import apply_open
 from app.config import Settings
-from app.google.auth import token_store
+from app.google.auth import standby_token_store, token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
 from app.jobs.poll import STOPPING, poll_once
 from app.jobs.purge import PurgeResult, purge
-from app.obs.liveness import LIVENESS
+from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE
+from app.obs.token_report import standby_state, token_report
 from app.store.db import connect
 from app.store.job_runs import JobRuns
-from app.telegram.client import TelegramClient
-from app.telegram.notify import admin_chat_id
 
 log = logging.getLogger(__name__)
 
@@ -241,38 +241,44 @@ def run_purge(settings: Settings) -> None:
 
 
 def check_token(settings: Settings) -> None:
-    """Warn before the seven-day refresh token expires, not after.
+    """Hourly: alert on a token state that needs the owner, once per change.
 
-    Google gives no signal that this is coming, and the failure mode is silence
-    -- the agent simply stops processing mail. Being told two days early is the
-    difference between a known limitation and a week of unexplained downtime.
+    Google gives no signal before a Testing token expires, and the failure
+    mode is silence -- the agent simply stops processing mail. The state is
+    read exactly as `/health` reads it, and each alert is recorded only once a
+    channel delivered it (`app/channel/alerts.py`). The same pass refreshes
+    the push-subscription count `/health` shows, so zero subscriptions is
+    visible rather than silent.
     """
+    _count_subscriptions(settings)
     try:
-        health = token_store(settings).health()
+        primary = token_store(settings)
+        state, health = token_report(primary, TOKEN_EVIDENCE)
+        issued_at = primary.metadata().issued_at
+        standby = standby_state(standby_token_store(settings), TOKEN_EVIDENCE)
     except Exception:
         log.exception("token health check failed")
         return
 
-    log.info("google token: %.1f days remaining", health.days_remaining)
-    if not health.needs_reauth_soon:
+    log.info("google token: %s, %.1f days on the Testing clock", state, health.days_remaining)
+    alerts = token_alerts(issued_at, state, health, standby=standby)
+    if not alerts:
         return
-
-    chat_id = admin_chat_id(settings.allowed_chat_ids)
-    if chat_id is None or settings.telegram_bot_token is None:
-        log.warning(
-            "google token expires in %.1f days and no alert channel is configured",
-            health.days_remaining,
-        )
-        return
-
     try:
-        TelegramClient(settings.telegram_bot_token.get_secret_value()).send_message(
-            chat_id,
-            f"⚠️ Google token expires in {health.days_remaining:.1f} days.\n"
-            "Run <code>python -m app.google.reauth</code> or mail stops being processed.",
-        )
+        with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
+            send_token_alerts(conn, configured_channels(settings), alerts)
     except Exception:
-        log.exception("could not send token expiry alert")
+        log.exception("could not send token alerts")
+
+
+def _count_subscriptions(settings: Settings) -> None:
+    try:
+        with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
+            row = conn.execute("SELECT count(*) FROM push_subscriptions").fetchone()
+    except Exception:
+        log.exception("could not count push subscriptions")
+        return
+    LIVENESS.subscriptions_counted(int(row[0]) if row else 0)
 
 
 def build_scheduler(settings: Settings) -> BackgroundScheduler:
@@ -307,7 +313,7 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
     scheduler.add_job(
         check_token,
         "interval",
-        hours=12,
+        hours=1,
         args=[settings],
         id="token_health",
         max_instances=1,

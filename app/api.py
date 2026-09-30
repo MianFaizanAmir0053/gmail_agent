@@ -22,9 +22,10 @@ from fastapi.responses import JSONResponse
 from app.bootstrap import materialise_secrets
 from app.config import Settings, get_settings
 from app.google.auth import observe_refreshes, standby_token_store, token_store
-from app.google.tokens import RefreshOutcome, TokenHealth, TokenState, TokenStore, token_state
+from app.google.tokens import RefreshOutcome
 from app.jobs.scheduler import decision_recorded
 from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE, configure_logging
+from app.obs.token_report import UNUSABLE_STANDBY, standby_state, token_report
 from app.store.db import connect_autocommit
 from app.telegram.client import TelegramClient
 from app.telegram.handler import NotAllowedError, TelegramHandler
@@ -64,8 +65,12 @@ def health() -> JSONResponse:
         if LIVENESS.decision_stuck(now):
             problems.append("a decision has been open for over an hour")
 
+        # Visible, not a failure: before the first phone subscribes there is
+        # simply nobody to push to.
+        body["push_subscriptions"] = LIVENESS.push_subscriptions
+
     try:
-        state, countdown = _token_report(token_store(settings))
+        state, countdown = token_report(token_store(settings), TOKEN_EVIDENCE)
     except Exception:  # a health check that raises is not a health check
         log.exception("token health check failed")
         problems.append("google token unreadable")
@@ -78,12 +83,12 @@ def health() -> JSONResponse:
         if state == "testing" and countdown.needs_reauth_soon:
             body["warning"] = "Google token expires soon -- run `tasks.ps1 reauth`"
 
-        standby = _standby_state(settings)
+        standby = standby_state(standby_token_store(settings), TOKEN_EVIDENCE)
         if standby is not None:
             body["standby_token_state"] = standby
         if state != "expired":
             body["token_in_use"] = "primary"
-        elif standby not in (None, "expired", "unreadable"):
+        elif standby not in UNUSABLE_STANDBY:
             # The primary's death is the evidence M15 is gathering; the standby
             # is what keeps the window from restarting because of it.
             body["token_in_use"] = "standby"
@@ -95,31 +100,6 @@ def health() -> JSONResponse:
         body["problems"] = problems
         return JSONResponse(body, status_code=503)
     return JSONResponse(body)
-
-
-def _token_report(store: TokenStore) -> tuple[TokenState, TokenHealth]:
-    metadata = store.metadata()
-    evidence = TOKEN_EVIDENCE.for_token(metadata.issued_at)
-    state = token_state(
-        metadata,
-        now=datetime.now(UTC),
-        last_ok_refresh_at=evidence.last_ok_at,
-        rejected=evidence.rejected,
-    )
-    return state, store.health()
-
-
-def _standby_state(settings: Settings) -> str | None:
-    """The standby token's state; None when none is configured."""
-    store = standby_token_store(settings)
-    if store is None:
-        return None
-    try:
-        state, _ = _token_report(store)
-    except Exception:
-        log.exception("standby token check failed")
-        return "unreadable"
-    return state
 
 
 @router.post("/telegram/webhook")

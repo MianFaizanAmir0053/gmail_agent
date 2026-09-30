@@ -811,10 +811,11 @@ A settle is one transaction of conditional writes.
 - **Health.** `/health` shows the subscription count, refreshed hourly into memory.
 
 **Acceptance criteria:**
-- [ ] A production token never triggers the countdown alert.
-- [ ] Each alert code goes out once per state change, including across a restart.
-- [ ] With no subscriptions, nothing is recorded, and the next check retries.
-- [ ] `/health` shows the subscription count.
+- [x] A production token never triggers the countdown alert. The state is read exactly as `/health` reads it: the helpers moved to `app/obs/token_report.py`, and `/health` behaves the same.
+- [x] Each alert code goes out once per state change, including across a restart. `alerts_sent` is keyed by the code and the token's `issued_at`, so a new token alerts afresh (tested on Neon).
+- [x] With no subscriptions, nothing is recorded, and the next check retries. The check now runs hourly instead of every 12 hours, so a retry is not half a day away.
+- [x] `/health` shows the subscription count, refreshed by the hourly check. `null` means not yet counted, and zero is visible without being a failure.
+- An expired token with a usable standby sends `standby_in_use` (mail still flows) rather than `token_expired` (mail stopped).
 
 **Verification:** `uv run pytest tests/test_alerts.py tests/test_scheduler.py`; `.\tasks.ps1 check`.
 

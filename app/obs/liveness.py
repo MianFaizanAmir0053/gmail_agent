@@ -35,6 +35,13 @@ class Liveness:
     it. A decision recorded in this process sets it too, if the job saw none:
     a job that hangs stops refreshing it, and the hang then ages into a 503."""
 
+    push_subscriptions: int | None = None
+    """Browsers subscribed to push, as the hourly token check last counted.
+    None until the first count; zero means nobody would hear a push."""
+
+    def subscriptions_counted(self, count: int) -> None:
+        self.push_subscriptions = count
+
     def decisions_checked(self, oldest_open: datetime | None) -> None:
         self.oldest_open_decision_at = oldest_open
 

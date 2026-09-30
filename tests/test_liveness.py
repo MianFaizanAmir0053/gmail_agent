@@ -66,6 +66,15 @@ def test_a_decision_recorded_here_starts_the_clock_even_if_the_job_is_wedged() -
     assert live.decision_stuck(BOOT + timedelta(minutes=61))
 
 
+def test_the_subscription_count_is_unknown_until_counted() -> None:
+    live = Liveness(booted_at=BOOT)
+    assert live.push_subscriptions is None
+
+    live.subscriptions_counted(0)
+
+    assert live.push_subscriptions == 0
+
+
 def test_logging_makes_the_apps_info_lines_visible() -> None:
     """Under uvicorn nothing configures the root logger, so without this the
     scheduler's INFO lines -- the record of every poll -- went nowhere."""
