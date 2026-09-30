@@ -402,7 +402,9 @@ returning typed metadata records. No bodies.
 (about 20 minutes).
 
 **Acceptance criteria:**
-- [ ] The cost tests from the spec's Testing section pass.
+- [x] The cost tests from the spec's Testing section pass (12 tests; span loading checked on Neon). With no classifications there is no decision. Found while testing:
+  - `gemini-embedding-001` is not on the pricing page (2026-09-30), so embeddings are estimated at Gemini Embedding 2's $0.20 per million tokens. M18 must check that model's status.
+  - The local `.env` sets `EXTRACTION_MODEL=gemini-2.5-pro`, which is unpriced (tiered pricing). Production keeps the priced default, or cost cannot be measured.
 - [ ] The labelling counts are recorded.
 - [ ] The corrected rate is computed.
 

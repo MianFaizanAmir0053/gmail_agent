@@ -541,9 +541,67 @@ def main(argv: list[str] | None = None) -> None:
     )
     mail.add_argument("--seed", type=int, help="Reproduce an earlier labelling sample.")
 
+    cost = commands.add_parser(
+        "cost", help="The unattended window's cost, from raw span tokens. On the instance."
+    )
+    cost.add_argument("--since", required=True, type=_utc_date, help="YYYY-MM-DD, UTC")
+    cost.add_argument("--until", required=True, type=_utc_date, help="YYYY-MM-DD, UTC")
+    cost.add_argument(
+        "--inbound-per-day", required=True, type=float, help="From `measure mail`'s result."
+    )
+    cost.add_argument(
+        "--embed-messages-per-day",
+        required=True,
+        type=float,
+        help="Mail ingestion's query would embed per day: Primary + untabbed inbound + sent.",
+    )
+    cost.add_argument("--hosting-usd", required=True, type=float, help="List price per month.")
+    cost.add_argument("--database-usd", required=True, type=float, help="List price per month.")
+    cost.add_argument(
+        "--billed-gemini-usd", type=float, help="Cloud Billing's Gemini charge for the window."
+    )
+    cost.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "mail":
         _run_mail(args)
+    elif args.command == "cost":
+        _run_cost(args)
+
+
+def _run_cost(args: argparse.Namespace) -> None:
+    from app.config import get_settings
+    from app.jobs.measure_cost import (
+        EmbeddingEstimate,
+        UnpricedModelError,
+        cost_report,
+        load_spans,
+        refuse_local_database,
+    )
+    from app.jobs.measure_cost import to_markdown as cost_markdown
+    from app.store.db import connect
+
+    settings = get_settings()
+    refuse_local_database(settings.database_url)
+    with connect(settings.database_url) as conn:
+        spans = load_spans(conn, args.since, args.until)
+
+    try:
+        report = cost_report(
+            spans,
+            inbound_per_day=args.inbound_per_day,
+            hosting_usd=args.hosting_usd,
+            database_usd=args.database_usd,
+            embeddings=EmbeddingEstimate(messages_per_day=args.embed_messages_per_day),
+            billed_gemini_usd=args.billed_gemini_usd,
+            extraction_model=settings.extraction_model,
+        )
+    except UnpricedModelError as exc:
+        raise SystemExit(f"{exc}. A cost that cannot be priced is not reported as zero.") from exc
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(cost_markdown(report, since=args.since, until=args.until))
 
 
 if __name__ == "__main__":
