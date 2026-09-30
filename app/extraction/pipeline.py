@@ -16,6 +16,12 @@ from typing import Any, cast
 
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction import prompts
+from app.extraction.evaluation import (
+    EVALUATION_MODELS,
+    Evaluator,
+    GatewayEvaluator,
+    classify_by_evaluation,
+)
 from app.extraction.llm import GenaiLike, LlmError, Usage, structured_call
 from app.extraction.payloads import (
     ClassifyPayload,
@@ -82,6 +88,9 @@ class ExtractionPipeline:
     what makes "before retrieval" and "after retrieval" comparable numbers
     rather than two different systems.
     """
+    evaluator: Evaluator | None = None
+    """Answers `classify` when `classify_model` is an evaluation model served by
+    Vercel AI Gateway, such as `typesafe-ai/jev`. Unused for a Gemini model."""
     stats: RunStats = field(default_factory=RunStats)
 
     def classify(
@@ -89,18 +98,29 @@ class ExtractionPipeline:
     ) -> ClassifyPayload:
         """Cheap triage. Exposed separately so M05's graph can make it its own
         node, which M08 then gets per-stage timings and costs for."""
-        triage = structured_call(
-            self.client,
-            model=self.classify_model,
-            system=prompts.CLASSIFY_SYSTEM,
-            user=self._user(email, now_utc, user_timezone, extra),
-            schema=ClassifyPayload,
-            thinking_level=self.classify_thinking_level,
-            max_output_tokens=1024,
-        )
+        user = self._user(email, now_utc, user_timezone, extra)
+        if self.classify_model in EVALUATION_MODELS:
+            if self.evaluator is None:
+                raise RuntimeError(
+                    f"{self.classify_model} runs on Vercel AI Gateway; set AI_GATEWAY_API_KEY"
+                )
+            verdict, usage = classify_by_evaluation(
+                self.evaluator, model=self.classify_model, state=user
+            )
+        else:
+            triage = structured_call(
+                self.client,
+                model=self.classify_model,
+                system=prompts.CLASSIFY_SYSTEM,
+                user=user,
+                schema=ClassifyPayload,
+                thinking_level=self.classify_thinking_level,
+                max_output_tokens=1024,
+            )
+            verdict, usage = triage.parsed, triage.usage
         self.stats.classify_calls += 1
-        self.stats.record(triage.usage)
-        return triage.parsed
+        self.stats.record(usage)
+        return verdict
 
     def extract(
         self, email: EmailMessage, *, now_utc: datetime, user_timezone: str, extra: str = ""
@@ -174,12 +194,18 @@ def build_pipeline(owner_email: str = "", searcher: Searcher | None = None) -> E
 
     settings = get_settings()
     client = cast(GenaiLike, genai.Client(api_key=settings.gemini_api_key.get_secret_value()))
+    gateway_key = settings.ai_gateway_api_key
     return ExtractionPipeline(
         client=client,
         classify_model=settings.classify_model,
         extraction_model=settings.extraction_model,
         owner_email=owner_email,
         searcher=searcher,
+        evaluator=(
+            GatewayEvaluator(api_key=gateway_key.get_secret_value())
+            if gateway_key is not None
+            else None
+        ),
     )
 
 

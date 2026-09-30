@@ -79,6 +79,10 @@ RATES: dict[str, tuple[Rate, ...]] = {
         Rate(Decimal("0.75"), Decimal("3.75"), Decimal("0.075")),
         Rate(Decimal("1.50"), Decimal("7.50"), Decimal("0.15"), effective_from=_FLASH_PRICE_RISE),
     ),
+    # TypeSafe's evaluation model, at Vercel AI Gateway's published price
+    # (https://ai-gateway.vercel.sh/v1/models) on PRICING_CHECKED_ON. It bills
+    # input only: output is published at zero, which is a rate, not a gap.
+    "typesafe-ai/jev": (Rate(Decimal("0.042"), Decimal("0")),),
 }
 
 MILLION = Decimal(1_000_000)
