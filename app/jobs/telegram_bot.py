@@ -16,7 +16,7 @@ import argparse
 import time
 
 from app.config import Settings, get_settings
-from app.graph.runner import graph_session
+from app.store.db import connect_autocommit
 from app.telegram.client import TelegramClient
 from app.telegram.handler import NotAllowedError, TelegramHandler
 
@@ -67,12 +67,12 @@ def poll(settings: Settings, bot: TelegramClient, seconds: int) -> None:
 
         offset = max(int(u["update_id"]) for u in updates) + 1
 
-        with graph_session(settings) as session:
+        # Decisions only: a running app's worker applies them.
+        with connect_autocommit(settings.database_url) as conn:
             handler = TelegramHandler(
-                session=session,
+                conn=conn,
                 bot=bot,
                 allowed_chat_ids=frozenset(settings.allowed_chat_ids),
-                user_timezone=settings.user_timezone,
             )
             for update in updates:
                 try:

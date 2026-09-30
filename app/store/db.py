@@ -37,6 +37,16 @@ def connect(
             yield conn
 
 
+def connect_autocommit(database_url: str) -> psycopg.Connection:
+    """A connection on which each statement commits as it runs.
+
+    For recording decisions: the worker, often in another process, must see
+    one the moment it is recorded. A caller holding a transaction open while
+    it waits would hide its own decision from the worker it is waiting for.
+    """
+    return psycopg.connect(database_url, autocommit=True)
+
+
 def _ensure_registry(conn: psycopg.Connection) -> None:
     conn.execute(
         """

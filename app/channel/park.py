@@ -27,8 +27,12 @@ from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
 log = logging.getLogger(__name__)
 
-Announce = Callable[[str, dict[str, Any]], None]
-"""Tells the owner a proposal needs them: `(message_id, interrupt payload)`."""
+Announce = Callable[["ProposalRecord"], None]
+"""Tells the owner a proposal needs them.
+
+It gets the stored record -- the card's fields, the revision, the mode --
+never the raw interrupt payload, which carries the model's reasoning and can
+quote the email."""
 
 
 class ParkConflictError(RuntimeError):
@@ -124,7 +128,7 @@ def record_park(
 
     if announce is not None:
         try:
-            announce(message_id, pending)
+            announce(record)
         except Exception:
             # The proposal is durably recorded and the timeline shows it; a
             # channel being down must not undo that.

@@ -725,10 +725,11 @@ A settle is one transaction of conditional writes.
 - The webhook becomes a plain `def` handler.
 
 **Acceptance criteria:**
-- [ ] A stale Telegram card is refused.
-- [ ] The handler never resumes a thread.
-- [ ] The webhook handler is not a coroutine function.
-- [ ] A test fails if any module other than `app/channel/worker.py` calls `resume` or `redrive`. This enforces D1's rule automatically rather than by a search at a checkpoint (review of the queue, finding 1).
+- [x] A stale Telegram card is refused. So is a card or an edit prompt from before M16, with a pointer to the web app.
+- [x] The handler never resumes a thread. It records the decision, answers "Queued", and wakes the worker.
+- [x] ~~The webhook handler is not a coroutine function.~~ **Changed:** the webhook stays `async` and runs its database work in the thread pool. A plain `def` handler would parse the body before the secret check, because FastAPI reads a body parameter before the handler runs. It needs no graph session now.
+- [x] A test fails if any module other than `app/channel/worker.py` calls `resume` or `redrive` (`tests/test_one_resumer.py`). This enforces D1's rule automatically rather than by a search at a checkpoint (review of the queue, finding 1).
+- The announce hook now gets the stored record, not the raw payload. Telegram needs the revision for its buttons, and the record also keeps the model's reasoning out of the chat: review finding 8, done here rather than in 16.13.
 
 **Verification:** `uv run pytest tests/test_telegram.py tests/test_api.py`; `.\tasks.ps1 check`.
 
@@ -775,7 +776,7 @@ A settle is one transaction of conditional writes.
 - [ ] A failing or hanging channel does not stop the others (fake channels).
 - [ ] With Telegram unconfigured, nothing breaks.
 - [ ] Poll no longer calls Telegram directly.
-- [ ] Channels receive only the message id, as D7 specifies. The raw interrupt payload, which carries the model's reasoning, never leaves the park step, and Telegram's card reads the stored payload instead (review of the queue, finding 8).
+- [x] Channels receive the stored record, never the raw interrupt payload (review of the queue, finding 8). Done in 16.11, because Telegram's buttons needed the revision.
 
 **Verification:** `uv run pytest tests/test_channels.py tests/test_poll.py`; `.\tasks.ps1 check`.
 

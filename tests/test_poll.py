@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from app.channel.park import proposal_from
 from app.graph.runner import GraphSession
 from app.jobs import poll
 
@@ -107,12 +108,10 @@ def parks(monkeypatch: pytest.MonkeyPatch) -> Parks:
     ) -> None:
         fake.recorded.append(message_id)
         if announce is not None:
-            announce(message_id, pending)
+            announce(proposal_from(message_id, pending, 1))
 
     monkeypatch.setattr(poll, "record_park", record_park)
-    monkeypatch.setattr(
-        poll, "_notify", lambda pending, message_id: fake.announced.append(message_id)
-    )
+    monkeypatch.setattr(poll, "_notify", lambda record: fake.announced.append(record.message_id))
     return fake
 
 

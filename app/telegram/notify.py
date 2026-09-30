@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+from app.channel.park import ProposalRecord
 from app.telegram import cards
 from app.telegram.client import Sender
 
 
-def send_approval_card(
-    bot: Sender, chat_id: int, message_id: str, payload: dict[str, Any], *, zone: str
-) -> None:
+def send_approval_card(bot: Sender, chat_id: int, record: ProposalRecord, *, zone: str) -> None:
     bot.send_message(
         chat_id,
-        cards.approval_card(payload, zone=zone),
-        keyboard=cards.keyboard(message_id),
+        cards.approval_card(record, zone=zone),
+        keyboard=cards.keyboard(record.message_id, record.revision),
     )
 
 

@@ -18,7 +18,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.channel import worker
 from app.channel.decide import decide
-from app.channel.park import record_park
+from app.channel.park import ProposalRecord, record_park
 from app.channel.worker import (
     ACT_INTERRUPTED,
     ATTEMPTS_EXHAUSTED,
@@ -224,7 +224,7 @@ def test_a_confirm_in_dry_run_settles_as_skipped(conn: psycopg.Connection) -> No
     _parked(conn, session)
     decide(conn, "m1", action="confirm", revision=1, via="web")
 
-    apply_open(session, announce=lambda mid, _: announced.append(mid))
+    apply_open(session, announce=lambda record: announced.append(record.message_id))
 
     assert _ledger(conn) is MessageStatus.SKIPPED
     assert _proposal(conn) == ("decided", 1, "skipped")
@@ -251,7 +251,7 @@ def test_an_edit_reparks_at_the_next_revision_and_is_announced(conn: psycopg.Con
     _parked(conn, session)
     decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
 
-    apply_open(session, announce=lambda mid, _: announced.append(mid))
+    apply_open(session, announce=lambda record: announced.append(record.message_id))
 
     assert _proposal(conn) == ("pending", 2, None)
     assert _outcomes(conn) == [("reparked", None, True)]
@@ -561,7 +561,7 @@ def test_a_crash_after_the_settle_applies_nothing_twice(conn: psycopg.Connection
     _parked(conn, session)
     decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
 
-    def dies(message_id: str, payload: dict[str, Any]) -> None:
+    def dies(record: ProposalRecord) -> None:
         raise Crash
 
     with pytest.raises(Crash):
@@ -586,7 +586,7 @@ def test_a_thread_moved_behind_the_workers_back_is_shown_again(conn: psycopg.Con
     GraphSession.resume(session, "m1", {"action": "edit", "correction": "make it 5pm"})
     announced: list[str] = []
 
-    assert apply_open(session, announce=lambda mid, _: announced.append(mid)) == [
+    assert apply_open(session, announce=lambda record: announced.append(record.message_id)) == [
         ("m1", "no_effect")
     ]
 

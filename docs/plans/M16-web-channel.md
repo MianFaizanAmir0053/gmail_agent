@@ -268,12 +268,14 @@ only the session cookie, so no proposal content is handled outside `sin1`.
 
 ### D7. Channels
 
-A `Channel` protocol with `announce_proposal(message_id)` and `alert(code)`:
+A `Channel` protocol with `announce_proposal(record)` and `alert(code)`. The
+record is the stored proposal: the card's fields, the revision and the mode,
+never the raw interrupt payload, which carries the model's reasoning.
 
 - **Implementations:** `WebPushChannel`, and `TelegramChannel` (the existing code, optional).
-  - Telegram's button data gains the revision, so `decide` can refuse a stale card on that path too.
+  - Telegram's button data gains the revision, so `decide` can refuse a stale card on that path too. Cards and edit prompts sent before M16 carry none, and are refused with a pointer to the web app.
   - The handler records the decision and answers "Queued". Outcomes show in the web app.
-  - The Telegram webhook becomes a plain `def` handler, because its database calls are synchronous.
+  - The Telegram webhook checks its secret before reading the body, then does its database work in the thread pool, so it never blocks the event loop.
 - **Callers:** `poll` and the scheduler go through every configured channel.
 - **Isolation:** exceptions and time-outs are isolated per channel.
 
@@ -446,9 +448,10 @@ It found eight issues, and seven were fixed at once:
 6. a park that could not be recorded stopped poll's pass;
 7. a late settle could reach a newer decision's proposal. Settles are now scoped to their own decision, and the lease is 30 minutes.
 
-The rest lands where its callers change:
-- **16.11:** a test that only the worker resumes. Until then, the M15 CLI and Telegram still resume directly (the other half of issue 1). Nothing is deployed before they move.
-- **16.13:** channels receive only a message id (issue 8).
+The rest landed in 16.10 and 16.11, where their callers changed:
+- the CLI and Telegram record decisions and never resume;
+- `tests/test_one_resumer.py` fails if anything but the worker resumes or re-drives a thread (the other half of issue 1);
+- channels receive the stored record, never the raw payload (issue 8).
 
 ## Running notes
 

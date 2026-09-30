@@ -10,7 +10,7 @@ import psycopg
 import pytest
 
 from app.channel import park
-from app.channel.park import ParkConflictError, proposal_from, record_park
+from app.channel.park import ParkConflictError, ProposalRecord, proposal_from, record_park
 from app.graph.runner import GraphSession
 from app.store.ledger import MessageLedger, MessageStatus
 
@@ -115,7 +115,9 @@ def test_a_park_writes_the_proposal_and_marks_the_ledger(conn: psycopg.Connectio
     ledger.claim("m1", "m1")
     announced: list[str] = []
 
-    record_park(_session(conn), "m1", PENDING, announce=lambda mid, _: announced.append(mid))
+    record_park(
+        _session(conn), "m1", PENDING, announce=lambda record: announced.append(record.message_id)
+    )
 
     entry = ledger.get("m1")
     assert entry is not None
@@ -166,7 +168,7 @@ def test_a_failed_announcement_keeps_the_park(conn: psycopg.Connection) -> None:
     """The proposal is durably parked; telling the owner is best effort."""
     MessageLedger(conn).claim("m1", "m1")
 
-    def failing(message_id: str, pending: dict[str, Any]) -> None:
+    def failing(record: ProposalRecord) -> None:
         raise RuntimeError("push service down")
 
     record_park(_session(conn), "m1", PENDING, announce=failing)

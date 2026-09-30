@@ -54,7 +54,9 @@ def _session(conn: psycopg.Connection) -> FakeSession:
 
 def _run(session: FakeSession, announced: list[str] | None = None) -> Any:
     sink = announced if announced is not None else []
-    return reconcile(cast(GraphSession, session), announce=lambda mid, _: sink.append(mid))
+    return reconcile(
+        cast(GraphSession, session), announce=lambda record: sink.append(record.message_id)
+    )
 
 
 def _ledger_row(conn: psycopg.Connection, message_id: str, status: MessageStatus, age: str) -> None:

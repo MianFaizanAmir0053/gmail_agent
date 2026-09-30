@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import argparse
 import threading
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import psycopg
 
-from app.channel.park import record_park
+from app.channel.park import ProposalRecord, record_park
 from app.config import get_settings
 from app.graph.runner import GraphSession, graph_session
 from app.store.db import connect
@@ -114,12 +114,12 @@ def poll_once(
     return PollResult(seen=len(message_ids), started=started, failed=failed)
 
 
-def announce_telegram(message_id: str, pending: dict[str, Any]) -> None:
+def announce_telegram(record: ProposalRecord) -> None:
     """The park step's announcement, until the channels of 16.13 replace it."""
-    _notify(pending, message_id)
+    _notify(record)
 
 
-def _notify(pending: dict[str, Any], message_id: str) -> None:
+def _notify(record: ProposalRecord) -> None:
     """Push the card to Telegram, if configured.
 
     Failing to notify must not fail the run: the proposal is already durably
@@ -134,8 +134,7 @@ def _notify(pending: dict[str, Any], message_id: str) -> None:
         send_approval_card(
             TelegramClient(settings.telegram_bot_token.get_secret_value()),
             chat_id,
-            message_id,
-            pending,
+            record,
             zone=settings.user_timezone,
         )
     except Exception as exc:

@@ -26,11 +26,17 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Literal
 
 import psycopg
 
-from app.channel.park import Announce, proposal_from, require_transaction, write_park
+from app.channel.park import (
+    Announce,
+    ProposalRecord,
+    proposal_from,
+    require_transaction,
+    write_park,
+)
 from app.graph.runner import GraphSession, ThreadView
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
@@ -297,17 +303,15 @@ def _settle(
     shows_again = step.outcome in ("reparked", "resync")
     outcome = "no_effect" if step.outcome == "resync" else step.outcome
     assert outcome is not None
+    record = None
 
     with conn.transaction():
         if shows_again:
             assert view.payload is not None and ledger_status is not None
             if not _close(conn, decision.id, outcome, reason=step.reason):
                 return "already settled"
-            write_park(
-                conn,
-                proposal_from(decision.message_id, view.payload, view.revision),
-                ledger_status=ledger_status,
-            )
+            record = proposal_from(decision.message_id, view.payload, view.revision)
+            write_park(conn, record, ledger_status=ledger_status)
         elif outcome == "failed":
             if not settle_failed(
                 conn, decision.id, decision.message_id, reason=step.reason or NO_OUTCOME
@@ -320,9 +324,8 @@ def _settle(
             ):
                 return "already settled"
 
-    if shows_again and announce is not None:
-        assert view.payload is not None
-        _announce(announce, decision.message_id, view.payload)
+    if record is not None and announce is not None:
+        _announce(announce, record)
     return outcome
 
 
@@ -359,12 +362,12 @@ def _mark_failed(conn: psycopg.Connection, message_id: str, reason: str) -> None
     )
 
 
-def _announce(announce: Announce, message_id: str, payload: dict[str, Any]) -> None:
+def _announce(announce: Announce, record: ProposalRecord) -> None:
     try:
-        announce(message_id, payload)
+        announce(record)
     except Exception:
         # The re-park is recorded, and the timeline shows it.
-        log.exception("could not announce %s", message_id)
+        log.exception("could not announce %s", record.message_id)
 
 
 def _close(conn: psycopg.Connection, decision_id: int, outcome: str, *, reason: str | None) -> bool:

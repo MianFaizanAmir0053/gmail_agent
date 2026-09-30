@@ -1,16 +1,21 @@
-"""Turning a Telegram update into a graph decision.
+"""Turning a Telegram update into a recorded decision.
 
 Written as a pure-ish function over an update dict rather than a framework
 handler, so the same code path serves the production webhook and the
 development poller, and tests drive it with plain dictionaries.
+
+Since M16 this records decisions through `decide()` and answers "Queued"; it
+never resumes a thread. The worker applies the decision, and a re-park after
+an edit comes back as a new card through the park step's announcement.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
 
-from app.store.ledger import MessageLedger, MessageStatus
+from app.channel.decide import Action, decide
 from app.telegram import cards
 from app.telegram.client import Sender
 
@@ -19,27 +24,20 @@ class NotAllowedError(PermissionError):
     """An update arrived from a chat that is not on the allowlist."""
 
 
-class SessionLike(Protocol):
-    """The slice of `GraphSession` this handler uses.
-
-    A Protocol rather than the concrete class so tests can drive the whole flow
-    without Postgres, Gmail, or Gemini -- `GraphSession` satisfies it
-    structurally.
-    """
-
-    conn: Any
-
-    def pending(self, message_id: str) -> dict[str, Any] | None: ...
-
-    def resume(self, message_id: str, decision: dict[str, Any]) -> dict[str, Any]: ...
+def _nothing() -> None:
+    return None
 
 
 @dataclass(slots=True)
 class TelegramHandler:
-    session: SessionLike
+    conn: Any
+    """A connection that commits each statement: the worker must see the
+    decision at once (`app.store.db.connect_autocommit`)."""
+
     bot: Sender
     allowed_chat_ids: frozenset[int]
-    user_timezone: str
+    on_queued: Callable[[], None] = field(default=_nothing)
+    """Called after a decision is recorded -- to wake the worker in this process."""
 
     def _check(self, chat_id: int) -> None:
         """Anyone who finds the bot username can message it, and this bot reads
@@ -62,20 +60,27 @@ class TelegramHandler:
         chat_id = int((message.get("chat") or {}).get("id", 0))
         self._check(chat_id)
 
-        action, message_id = cards.parse_callback(query.get("data", ""))
+        action, revision, message_id = cards.parse_callback(query.get("data", ""))
 
         # Answer first. Telegram re-delivers an unanswered callback, which shows
         # up as a phantom second tap on a button that books calendar events.
         self.bot.answer_callback(query.get("id", ""))
 
-        if action == cards.EDIT:
-            self.bot.send_message(chat_id, cards.edit_prompt(message_id), force_reply=True)
-            return f"{message_id}: awaiting correction"
-
-        if action not in (cards.CONFIRM, cards.CANCEL):
+        if action not in (cards.CONFIRM, cards.CANCEL, cards.EDIT):
             return f"ignored: unknown action {action!r}"
 
-        return self._resume(chat_id, message_id, {"action": action})
+        if revision is None:
+            # Without a revision there is no telling which version it approves.
+            self.bot.send_message(chat_id, cards.FROM_BEFORE_M16)
+            return f"{message_id}: card without a revision refused"
+
+        if action == cards.EDIT:
+            self.bot.send_message(
+                chat_id, cards.edit_prompt(message_id, revision), force_reply=True
+            )
+            return f"{message_id}: awaiting correction"
+
+        return self._decide(chat_id, message_id, action, revision)
 
     # --- free-text replies ------------------------------------------------
 
@@ -84,54 +89,52 @@ class TelegramHandler:
         self._check(chat_id)
 
         replied_to = (message.get("reply_to_message") or {}).get("text", "")
-        message_id = cards.message_id_from_edit_prompt(replied_to)
-        if message_id is None:
+        target = cards.edit_target(replied_to)
+        if target is None:
             self.bot.send_message(
                 chat_id, "Nothing to do. Proposals arrive here with buttons attached."
             )
             return "ignored: not a correction reply"
 
+        message_id, revision = target
+        if revision is None:
+            self.bot.send_message(chat_id, cards.FROM_BEFORE_M16)
+            return f"{message_id}: correction to a card without a revision refused"
+
         correction = (message.get("text") or "").strip()
         if not correction:
             return f"{message_id}: empty correction ignored"
 
-        return self._resume(chat_id, message_id, {"action": cards.EDIT, "correction": correction})
+        return self._decide(chat_id, message_id, cards.EDIT, revision, correction)
 
-    # --- graph ------------------------------------------------------------
+    # --- the queue --------------------------------------------------------
 
-    def _resume(self, chat_id: int, message_id: str, decision: dict[str, Any]) -> str:
-        if self.session.pending(message_id) is None:
-            self.bot.send_message(chat_id, "That proposal is no longer waiting for a decision.")
-            return f"{message_id}: nothing pending"
-
-        self.session.resume(message_id, decision)
-
-        # An edit re-runs extraction and parks again, so send the new card
-        # rather than an outcome.
-        pending = self.session.pending(message_id)
-        if pending is not None:
-            self.bot.send_message(
-                chat_id,
-                cards.approval_card(pending, zone=self.user_timezone),
-                keyboard=cards.keyboard(message_id),
-            )
-            return f"{message_id}: revised, awaiting approval"
-
-        entry = MessageLedger(self.session.conn).get(message_id)
-        status = entry.status if entry else MessageStatus.FAILED
-        event_id = entry.calendar_event_id if entry else None
-
-        self.bot.send_message(chat_id, cards.outcome_text(_to_action(status), event_id=event_id))
-        return f"{message_id}: {status}"
+    def _decide(
+        self, chat_id: int, message_id: str, action: str, revision: int, correction: str = ""
+    ) -> str:
+        result = decide(
+            self.conn,
+            message_id,
+            action=_action(action),
+            revision=revision,
+            correction=correction,
+            via="telegram",
+        )
+        match result.status:
+            case "queued":
+                self.on_queued()
+                self.bot.send_message(chat_id, cards.QUEUED)
+            case "stale":
+                self.bot.send_message(chat_id, cards.STALE)
+            case "not_found":
+                self.bot.send_message(chat_id, cards.GONE)
+            case _:
+                self.bot.send_message(chat_id, f"Not accepted: {result.detail}.")
+        return f"{message_id}: {result.status}"
 
 
-def _to_action(status: MessageStatus) -> str:
-    match status:
-        case MessageStatus.CREATED:
-            return "created"
-        case MessageStatus.REJECTED:
-            return "rejected"
-        case MessageStatus.SKIPPED:
-            return "dry_run"
-        case _:
-            return "failed"
+def _action(value: str) -> Action:
+    match value:
+        case "confirm" | "cancel" | "edit":
+            return value
+    raise ValueError(f"not a Telegram action: {value!r}")

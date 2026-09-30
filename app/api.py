@@ -16,14 +16,15 @@ from hmac import compare_digest
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from app.bootstrap import materialise_secrets
 from app.config import Settings, get_settings
 from app.google.auth import observe_refreshes, standby_token_store, token_store
 from app.google.tokens import RefreshOutcome, TokenHealth, TokenState, TokenStore, token_state
-from app.graph.runner import graph_session
 from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE, configure_logging
+from app.store.db import connect_autocommit
 from app.telegram.client import TelegramClient
 from app.telegram.handler import NotAllowedError, TelegramHandler
 
@@ -125,25 +126,44 @@ async def telegram_webhook(
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict[str, str]:
     settings = get_settings()
+    # Checked before the body is read: an unauthenticated caller gets nothing
+    # parsed on its behalf.
     _verify_secret(settings, x_telegram_bot_api_secret_token)
 
     update: dict[str, Any] = await request.json()
 
-    with graph_session(settings) as session:
-        handler = TelegramHandler(
-            session=session,
-            bot=TelegramClient(_require_token(settings)),
-            allowed_chat_ids=frozenset(settings.allowed_chat_ids),
-            user_timezone=settings.user_timezone,
-        )
-        try:
-            outcome = handler.handle(update)
-        except NotAllowedError:
-            # Deliberately 200: a 4xx makes Telegram retry, and there is no
-            # point retrying an unauthorised chat. Logged, then dropped.
-            return {"status": "rejected"}
+    try:
+        # The handler's database work blocks, so it runs in the thread pool
+        # rather than on the event loop that also serves /health.
+        outcome = await run_in_threadpool(_handle_telegram, settings, update)
+    except NotAllowedError:
+        # Deliberately 200: a 4xx makes Telegram retry, and there is no
+        # point retrying an unauthorised chat. Logged, then dropped.
+        return {"status": "rejected"}
 
     return {"status": "ok", "detail": outcome}
+
+
+def _handle_telegram(settings: Settings, update: dict[str, Any]) -> str:
+    """Record what the owner tapped. Since M16 this needs no graph: the worker
+    applies the decision."""
+    with connect_autocommit(settings.database_url) as conn:
+        handler = TelegramHandler(
+            conn=conn,
+            bot=TelegramClient(_require_token(settings)),
+            allowed_chat_ids=frozenset(settings.allowed_chat_ids),
+            on_queued=decision_queued,
+        )
+        return handler.handle(update)
+
+
+def decision_queued() -> None:
+    """A decision was recorded in this process: start the stuck-queue clock
+    and wake the worker, so the tap does not wait for the next tick."""
+    from app.jobs.scheduler import wake_decisions
+
+    LIVENESS.decision_recorded(datetime.now(UTC))
+    wake_decisions()
 
 
 def _verify_secret(settings: Settings, provided: str | None) -> None:

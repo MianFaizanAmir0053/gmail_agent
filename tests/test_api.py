@@ -102,17 +102,20 @@ def test_unconfigured_secret_refuses_rather_than_allowing(
     assert _post(TestClient(app), SECRET).status_code == 503
 
 
+class _Connection:
+    """Stands in for the webhook's database connection."""
+
+    def __enter__(self) -> object:
+        return object()
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
 def test_valid_secret_reaches_the_handler(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class _Session:
-        def __enter__(self) -> object:
-            return object()
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-    monkeypatch.setattr("app.api.graph_session", lambda settings: _Session())
+    monkeypatch.setattr("app.api.connect_autocommit", lambda url: _Connection())
     monkeypatch.setattr("app.api.TelegramClient", lambda token: object())
     monkeypatch.setattr(
         "app.api.TelegramHandler",
@@ -125,23 +128,38 @@ def test_valid_secret_reaches_the_handler(
     assert response.json()["detail"] == "handled"
 
 
+def test_the_webhook_needs_no_graph_and_does_its_database_work_off_the_event_loop(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Since M16 it only records a decision. The worker applies it."""
+    offloaded: list[str] = []
+
+    async def _in_threadpool(fn: Any, *args: Any) -> Any:
+        offloaded.append(fn.__name__)
+        return fn(*args)
+
+    monkeypatch.setattr("app.api.run_in_threadpool", _in_threadpool)
+    monkeypatch.setattr("app.api.connect_autocommit", lambda url: _Connection())
+    monkeypatch.setattr("app.api.TelegramClient", lambda token: object())
+    monkeypatch.setattr(
+        "app.api.TelegramHandler",
+        lambda **kwargs: type("H", (), {"handle": lambda self, u: "handled"})(),
+    )
+
+    assert _post(client, SECRET).status_code == 200
+    assert offloaded == ["_handle_telegram"]
+
+
 def test_unauthorised_chat_gets_200_not_an_error(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A 4xx makes Telegram retry, and retrying a rejected chat is pointless."""
     from app.telegram.handler import NotAllowedError
 
-    class _Session:
-        def __enter__(self) -> object:
-            return object()
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
     def _raise(self: object, update: Any) -> str:
         raise NotAllowedError("nope")
 
-    monkeypatch.setattr("app.api.graph_session", lambda settings: _Session())
+    monkeypatch.setattr("app.api.connect_autocommit", lambda url: _Connection())
     monkeypatch.setattr("app.api.TelegramClient", lambda token: object())
     monkeypatch.setattr(
         "app.api.TelegramHandler", lambda **kwargs: type("H", (), {"handle": _raise})()

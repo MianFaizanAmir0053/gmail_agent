@@ -30,6 +30,7 @@ from app.channel.reconcile import reconcile
 from app.config import get_settings
 from app.graph.runner import GraphSession, graph_session
 from app.jobs.poll import announce_telegram
+from app.store.db import connect_autocommit
 
 WAIT_SECONDS = 180
 """Long enough for an edit's re-extraction and review, with a retry."""
@@ -177,7 +178,7 @@ def main() -> None:
 
     # Autocommit: the worker, in another process, must see each decision the
     # moment it is recorded, while this one waits for the outcome.
-    with psycopg.connect(settings.database_url, autocommit=True) as conn:
+    with connect_autocommit(settings.database_url) as conn:
         if args.list:
             print(f"\n{list_pending(conn)} awaiting or being decided.")
             return
