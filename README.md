@@ -165,8 +165,10 @@ extraction and review double in price; triage's 3.5 Flash-Lite does not change.
 An unpriced model records `NULL`, never `0`: zero is a positive claim that
 something was free, and the dashboard renders it as `unpriced`. Spans written
 before the correction still hold the `cost_usd` they were written with, so the
-dashboard shows the old, understated totals for that period until those rows
-are recomputed from their stored tokens.
+dashboard shows the old, understated totals for that period until
+`.\tasks.ps1 reprice` recomputes those rows from their stored tokens. It
+re-totals finished runs in the same transaction, `--dry-run` shows what it would
+change, and a second run changes nothing.
 
 ---
 
