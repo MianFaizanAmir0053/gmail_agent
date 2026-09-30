@@ -22,6 +22,7 @@ from app.google.auth import token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
 from app.jobs.poll import STOPPING, poll_once
+from app.jobs.purge import PurgeResult, purge
 from app.obs.liveness import LIVENESS
 from app.store.db import connect
 from app.store.job_runs import JobRuns
@@ -29,6 +30,9 @@ from app.telegram.client import TelegramClient
 from app.telegram.notify import admin_chat_id
 
 log = logging.getLogger(__name__)
+
+RECORD_CONNECT_TIMEOUT = 5
+"""Seconds `record_tick` waits for the database before giving up on a record."""
 
 
 def record_tick(settings: Settings, job: str, started_at: datetime, **fields: Any) -> None:
@@ -38,7 +42,9 @@ def record_tick(settings: Settings, job: str, started_at: datetime, **fields: An
     the next tick still fires, and the missing row shows up as a gap.
     """
     try:
-        with connect(settings.database_url) as conn:
+        # Bounded: an unreachable database must cost seconds of the scheduler
+        # thread, not minutes of it.
+        with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
             JobRuns(conn).record(job, started_at, datetime.now(UTC), **fields)
     except Exception:
         log.exception("could not record %s tick", job)
@@ -82,6 +88,28 @@ def run_poll(settings: Settings) -> None:
 def run_ingest(settings: Settings) -> None:
     started_at = datetime.now(UTC)
     record_tick(settings, "ingest", started_at, ok=scheduled_ingest(settings))
+
+
+def purge_once(settings: Settings) -> PurgeResult:
+    with connect(settings.database_url) as conn:
+        return purge(conn, settings.database_url)
+
+
+def run_purge(settings: Settings) -> None:
+    started_at = datetime.now(UTC)
+    try:
+        result = purge_once(settings)
+    except Exception as exc:
+        log.exception("purge failed")
+        record_tick(settings, "purge", started_at, ok=False, error=type(exc).__name__)
+        return
+    if result is not None:
+        log.info(
+            "purge: %d thread(s) cleared, %d reason(s) trimmed",
+            result.threads,
+            result.reasons_cleared,
+        )
+    record_tick(settings, "purge", started_at, ok=True)
 
 
 def check_token(settings: Settings) -> None:
@@ -134,6 +162,18 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=300,
+    )
+
+    # Hourly, so a body read by a poll that ended in `skip` is gone within the
+    # hour rather than kept for as long as the database lives.
+    scheduler.add_job(
+        run_purge,
+        "interval",
+        hours=1,
+        args=[settings],
+        id="purge",
+        max_instances=1,
+        coalesce=True,
     )
 
     scheduler.add_job(
