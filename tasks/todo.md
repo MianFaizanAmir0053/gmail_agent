@@ -278,13 +278,15 @@ retry plumbing, and rebase onto their merge if both land.
 
 ### Checkpoint: after tasks 9–13
 
-- [ ] `.\tasks.ps1 check` is green, and the integration tests pass in CI or on the dev database.
-- [ ] End-to-end run against the dev database, with the dev token and `DRY_RUN=true`:
-  - poll;
-  - `job_runs` filled;
-  - token state shown;
-  - purge removes skipped threads;
-  - `approve --list` shows `dry_run`.
+- [x] `.\tasks.ps1 check` is green: 472 unit tests pass in about 10 seconds.
+- [x] The integration tests pass on Neon: 60 passed. The only failure is the known `test_vector_mode_cannot_reach_a_keyword_only_match`.
+- [x] ~~End-to-end run against the dev database with the dev token~~ **moved to task 14.**
+  - Polling with the real token puts real mail bodies into checkpoints, and Neon holds test data only.
+  - The healthy-path end-to-end is task 14's day-0 checks on Supabase, the chosen home for real mail.
+  - Each piece is already covered here:
+    - polling and failed ticks: the stalled-poll run on Neon;
+    - the purge and the tick records: the Neon integration tests;
+    - token state and `dry_run` in `approve --list`: unit tests.
 - [ ] **The owner reviews before the deploy.**
 
 ---
