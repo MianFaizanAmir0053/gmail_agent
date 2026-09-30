@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Literal
 
 import psycopg
@@ -42,10 +43,24 @@ deterministic event id is what will make a re-run safe."""
 
 UNEXPECTED_REVISION = "unexpected revision"
 NO_OUTCOME = "no outcome recorded"
+ATTEMPTS_EXHAUSTED = "attempts exhausted"
 
 MAX_PASSES = 3
 """Resume or re-drive, then settle, takes two passes. A third means a step
 made no progress, which is reported rather than retried in a loop."""
+
+RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=10))
+"""How long to wait after the first and second failed attempts. Long enough
+for a rate limit or a brief outage to clear, short enough that the owner is
+not left wondering for an afternoon."""
+
+MAX_ATTEMPTS = len(RETRY_DELAYS) + 1
+
+LEASE = timedelta(minutes=10)
+"""How long a worker owns a decision. Only one worker runs (a single machine,
+`max_instances=1`), so the lease guards against a mistake -- a second machine,
+a local run against the production database -- rather than a normal case. A
+worker that dies holding one only delays the decision until it expires."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +117,8 @@ def apply_open(
     for decision in _due(session.conn, limit):
         if stop is not None and stop.is_set():
             break
+        if not _take_lease(session.conn, decision.id):
+            continue  # another worker has it
         applied.append((decision.message_id, apply_one(session, decision, announce=announce)))
     return applied
 
@@ -109,7 +126,25 @@ def apply_open(
 def apply_one(
     session: GraphSession, decision: OpenDecision, *, announce: Announce | None = None
 ) -> str:
-    """Move one decision until it settles. Returns its outcome."""
+    """Move one leased decision as far as it will go. Returns its outcome, or
+    `retrying` when an attempt failed and another is scheduled.
+
+    Any failure costs an attempt, whatever raised it: a model outage, a
+    database error in the settle, a step that made no progress. Counting them
+    all is what bounds the work a broken decision can cause.
+    """
+    if decision.attempts >= MAX_ATTEMPTS:
+        return _give_up(session, decision, announce)
+    try:
+        return _advance(session, decision, announce)
+    except Exception:
+        log.exception("attempt %d on %s failed", decision.attempts + 1, decision.message_id)
+        if _record_failure(session.conn, decision) >= MAX_ATTEMPTS:
+            return _give_up(session, decision, announce)
+        return "retrying"
+
+
+def _advance(session: GraphSession, decision: OpenDecision, announce: Announce | None) -> str:
     for _ in range(MAX_PASSES):
         view = session.thread(decision.message_id)
         entry = MessageLedger(session.conn).get(decision.message_id)
@@ -129,6 +164,69 @@ def apply_one(
             session.redrive(decision.message_id)
 
     raise RuntimeError(f"no progress on {decision.message_id} after {MAX_PASSES} passes")
+
+
+def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce | None) -> str:
+    """No more attempts. Settle from what is stored, as cleanly as it allows.
+
+    A thread still parked at the decision's revision never consumed it: the
+    proposal goes back to the owner (`no_effect`) rather than being lost. A
+    state that settles on its own terms -- a final ledger, a re-park -- settles
+    that way. Only a thread stuck mid-graph fails.
+    """
+    view = session.thread(decision.message_id)
+    entry = MessageLedger(session.conn).get(decision.message_id)
+    ledger_status = entry.status if entry is not None else None
+    step = step_for(view, ledger_status, decision)
+
+    if step.kind == "settle":
+        _settle(session.conn, decision, step, view, ledger_status, announce)
+        assert step.outcome is not None
+        return step.outcome
+
+    conn = session.conn
+    with conn.transaction():
+        if step.kind == "resume":
+            conn.execute(
+                """
+                UPDATE proposals SET status = 'pending', updated_at = now()
+                 WHERE message_id = %s AND status = 'deciding'
+                """,
+                (decision.message_id,),
+            )
+            _close(conn, decision.id, "no_effect", reason=ATTEMPTS_EXHAUSTED)
+            return "no_effect"
+        settle_failed(conn, decision.id, decision.message_id, reason=ATTEMPTS_EXHAUSTED)
+        return "failed"
+
+
+def _record_failure(conn: psycopg.Connection, decision: OpenDecision) -> int:
+    """Count a failed attempt, schedule the next and release the lease.
+    Returns the attempts made so far."""
+    attempts = decision.attempts + 1
+    delay = RETRY_DELAYS[attempts - 1] if attempts <= len(RETRY_DELAYS) else timedelta(0)
+    conn.execute(
+        """
+        UPDATE decisions
+           SET attempts = %s, next_attempt_at = now() + %s, lease_until = NULL
+         WHERE id = %s AND outcome IS NULL
+        """,
+        (attempts, delay, decision.id),
+    )
+    return attempts
+
+
+def _take_lease(conn: psycopg.Connection, decision_id: int) -> bool:
+    row = conn.execute(
+        """
+        UPDATE decisions SET lease_until = now() + %s
+         WHERE id = %s AND outcome IS NULL
+           AND (lease_until IS NULL OR lease_until < now())
+        RETURNING id
+        """,
+        (LEASE, decision_id),
+    ).fetchone()
+    return row is not None
 
 
 def settle_decided(
@@ -229,6 +327,7 @@ def _due(conn: psycopg.Connection, limit: int) -> list[OpenDecision]:
         SELECT id, message_id, revision, action, correction, attempts
           FROM decisions
          WHERE outcome IS NULL AND next_attempt_at <= now()
+           AND (lease_until IS NULL OR lease_until < now())
          ORDER BY decided_at, id
          LIMIT %s
         """,

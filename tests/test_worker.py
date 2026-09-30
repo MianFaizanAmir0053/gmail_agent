@@ -16,9 +16,17 @@ import psycopg
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from app.channel import worker
 from app.channel.decide import decide
 from app.channel.park import record_park
-from app.channel.worker import ACT_INTERRUPTED, OpenDecision, apply_open, settle_failed, step_for
+from app.channel.worker import (
+    ACT_INTERRUPTED,
+    ATTEMPTS_EXHAUSTED,
+    OpenDecision,
+    apply_open,
+    settle_failed,
+    step_for,
+)
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.payloads import ClassifyPayload
 from app.graph.nodes import Deps
@@ -323,3 +331,237 @@ def test_an_outcome_is_written_only_once(conn: psycopg.Connection) -> None:
 
     assert _outcomes(conn) == [("rejected", None, True)]
     assert _proposal(conn) == ("decided", 1, "rejected")
+
+
+# --- retries, the lease, and crashes (16.7) -----------------------------------
+
+
+class Crash(BaseException):
+    """A process dying: not caught by anything that handles `Exception`."""
+
+
+@dataclass(slots=True)
+class CountingSession(GraphSession):
+    """Counts applications. A resume is the decision being applied."""
+
+    resumes: int = 0
+    redrives: int = 0
+    fail_resumes: int = 0
+    """Resumes that fail before reaching the graph, as a lost connection would."""
+
+    def resume(self, message_id: str, decision: dict[str, Any]) -> dict[str, Any]:
+        self.resumes += 1
+        if self.fail_resumes:
+            self.fail_resumes -= 1
+            raise RuntimeError("checkpointer unavailable")
+        return GraphSession.resume(self, message_id, decision)
+
+    def redrive(self, message_id: str) -> dict[str, Any]:
+        self.redrives += 1
+        return GraphSession.redrive(self, message_id)
+
+
+def _counting(
+    conn: psycopg.Connection, *, pipeline: FakePipeline | None = None, fail_resumes: int = 0
+) -> CountingSession:
+    deps = Deps(
+        gmail=cast(Any, FakeGmail()),
+        pipeline=cast(Any, pipeline or FakePipeline()),
+        calendar=cast(Any, FakeCalendar()),
+        ledger=MessageLedger(conn),
+        user_timezone="Asia/Karachi",
+        pipeline_version="0123456789ab",
+    )
+    return CountingSession(
+        deps=deps,
+        conn=conn,
+        checkpointer=InMemorySaver(),
+        trace=False,
+        fail_resumes=fail_resumes,
+    )
+
+
+def _open(conn: psycopg.Connection) -> tuple[int, float, bool] | None:
+    """The open decision's attempts, seconds until its next attempt, and lease."""
+    row = conn.execute(
+        """
+        SELECT attempts, EXTRACT(EPOCH FROM next_attempt_at - now()), lease_until IS NOT NULL
+          FROM decisions WHERE message_id = 'm1' AND outcome IS NULL
+        """
+    ).fetchone()
+    return None if row is None else (row[0], float(row[1]), row[2])
+
+
+def _make_due(conn: psycopg.Connection) -> None:
+    conn.execute("UPDATE decisions SET next_attempt_at = now() WHERE message_id = 'm1'")
+
+
+def _expire_lease(conn: psycopg.Connection) -> None:
+    conn.execute(
+        "UPDATE decisions SET lease_until = now() - interval '1 second' WHERE message_id = 'm1'"
+    )
+
+
+def _crash_once(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    original = getattr(worker, name)
+    calls = {"n": 0}
+
+    def crashing(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Crash
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(worker, name, crashing)
+
+
+@pytest.mark.integration
+def test_failed_attempts_wait_one_then_ten_minutes_then_settle(conn: psycopg.Connection) -> None:
+    session = _counting(conn, pipeline=FakePipeline(failing_calls={2, 3, 4}))
+    _parked(conn, session)
+    decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+
+    assert apply_open(session) == [("m1", "retrying")]
+    assert _open(conn) == (1, 60.0, False)
+    assert apply_open(session) == []  # not due yet
+
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "retrying")]
+    assert _open(conn) == (2, 600.0, False)
+
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "failed")]
+
+    assert _open(conn) is None
+    assert _outcomes(conn) == [("failed", ATTEMPTS_EXHAUSTED, True)]
+    assert _proposal(conn) == ("failed", 1, None)
+    assert _ledger(conn) is MessageStatus.FAILED
+    # The edit was applied once; after that the thread was only re-driven.
+    assert (session.resumes, session.redrives) == (1, 2)
+
+
+@pytest.mark.integration
+def test_a_retry_that_succeeds_still_lands_the_edit(conn: psycopg.Connection) -> None:
+    session = _counting(conn, pipeline=FakePipeline(failing_calls={2}))
+    _parked(conn, session)
+    decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+    apply_open(session)
+
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "reparked")]
+
+    assert _proposal(conn) == ("pending", 2, None)
+    assert session.resumes == 1
+
+
+@pytest.mark.integration
+def test_a_decision_that_never_reaches_the_graph_returns_as_no_effect(
+    conn: psycopg.Connection,
+) -> None:
+    """The owner's card comes back, rather than the proposal being lost."""
+    session = _counting(conn, fail_resumes=3)
+    _parked(conn, session)
+    decide(conn, "m1", action="confirm", revision=1, via="web")
+
+    apply_open(session)
+    _make_due(conn)
+    apply_open(session)
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "no_effect")]
+
+    assert _proposal(conn) == ("pending", 1, None)
+    assert _outcomes(conn) == [("no_effect", ATTEMPTS_EXHAUSTED, True)]
+    assert _ledger(conn) is MessageStatus.AWAITING_APPROVAL
+    assert decide(conn, "m1", action="confirm", revision=1, via="web").status == "queued"
+
+
+@pytest.mark.integration
+def test_a_second_worker_skips_a_leased_decision(conn: psycopg.Connection) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    result = decide(conn, "m1", action="confirm", revision=1, via="web")
+    assert result.decision_id is not None
+    assert worker._take_lease(conn, result.decision_id)
+
+    assert apply_open(session) == []
+
+    assert session.resumes == 0
+    assert _proposal(conn) == ("deciding", 1, None)
+
+
+@pytest.mark.integration
+def test_a_crash_after_taking_the_lease_converges_once_it_expires(
+    conn: psycopg.Connection,
+) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    result = decide(conn, "m1", action="confirm", revision=1, via="web")
+    assert result.decision_id is not None
+    assert worker._take_lease(conn, result.decision_id)  # the worker that died
+
+    _expire_lease(conn)
+    assert apply_open(session) == [("m1", "skipped")]
+
+    assert session.resumes == 1
+
+
+@pytest.mark.integration
+def test_a_crash_after_the_resume_converges_without_resuming_again(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    decide(conn, "m1", action="confirm", revision=1, via="web")
+    _crash_once(monkeypatch, "_settle")
+
+    with pytest.raises(Crash):
+        apply_open(session)
+    assert _ledger(conn) is MessageStatus.SKIPPED
+    assert _proposal(conn) == ("deciding", 1, None)
+
+    _expire_lease(conn)
+    assert apply_open(session) == [("m1", "skipped")]
+
+    assert session.resumes == 1
+    assert _proposal(conn) == ("decided", 1, "skipped")
+
+
+@pytest.mark.integration
+def test_a_crash_inside_the_settle_leaves_nothing_half_written(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    decide(conn, "m1", action="cancel", revision=1, via="web")
+    _crash_once(monkeypatch, "_close")
+
+    with pytest.raises(Crash):
+        apply_open(session)
+    # The proposal update ran before the crash, and was rolled back with it.
+    assert _proposal(conn) == ("deciding", 1, None)
+    assert _open(conn) is not None
+
+    _expire_lease(conn)
+    assert apply_open(session) == [("m1", "rejected")]
+
+    assert session.resumes == 1
+    assert _outcomes(conn) == [("rejected", None, True)]
+
+
+@pytest.mark.integration
+def test_a_crash_after_the_settle_applies_nothing_twice(conn: psycopg.Connection) -> None:
+    pipeline = FakePipeline(extractions=[_meeting(), _meeting("Design review, 5pm")])
+    session = _counting(conn, pipeline=pipeline)
+    _parked(conn, session)
+    decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+
+    def dies(message_id: str, payload: dict[str, Any]) -> None:
+        raise Crash
+
+    with pytest.raises(Crash):
+        apply_open(session, announce=dies)
+
+    assert apply_open(session) == []
+    assert session.resumes == 1
+    assert _proposal(conn) == ("pending", 2, None)
+    assert _outcomes(conn) == [("reparked", None, True)]

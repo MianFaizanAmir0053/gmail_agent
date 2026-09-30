@@ -639,9 +639,14 @@ A settle is one transaction of conditional writes.
 - **Proof.** Inject a failure after each step: after the lease, after the resume, inside the settle, and after the settle. The next tick must finish the job, and nothing may be applied twice.
 
 **Acceptance criteria:**
-- [ ] A failure after each step converges on the next tick. The fake graph counts exactly one application.
-- [ ] Attempts wait 1 and 10 minutes, and the third failure settles.
-- [ ] A second worker skips a leased decision, and an expired lease is taken over.
+- [x] A failure after each step converges on the next tick. The fake graph counts exactly one application. Crashes are simulated with a `BaseException`, so no error handler runs, as when a process dies:
+  - after taking the lease;
+  - after the resume;
+  - inside the settle, which rolls back whole;
+  - after the settle.
+- [x] Attempts wait 1 and 10 minutes, and the third failure settles. A thread still parked at the decision's revision comes back as `no_effect`, and the owner can decide again. A thread stuck mid-graph fails.
+- [x] A second worker skips a leased decision, and an expired lease is taken over.
+- Every failure costs an attempt, including a failed settle or a step that made no progress. That is what bounds the work a broken decision can cause.
 
 **Verification:** `uv run pytest tests/test_worker.py`; the lease test on Neon; `.\tasks.ps1 check`.
 

@@ -446,3 +446,10 @@ approved the spec on 2026-09-30.
 - **`pipeline_version` hashes only what can shape a proposal.** The reviewer's model, prompt and schema count only while the reviewer runs, and the search prompt and tool only while search does. Otherwise a setting that changes nothing would reset M24's evidence.
 - **The response schemas are hashed with the prompts**, because their field descriptions instruct the model too.
 - **`PIPELINE_REVISION` is bumped by hand** for changes the hash cannot see, such as the code that lays out an email for the model.
+
+### Tasks 16.4–16.7: park step, `decide()`, worker (2026-09-30)
+
+- **Every failure costs an attempt, not only a failed resume or re-drive.** A failed settle, or a step that made no progress, counts too. D1 names only the first two; counting every failure is what bounds the work a broken decision can cause.
+- **A thread parked at a revision the decision cannot explain is settled as failed.** For example, a confirm that finds the thread one revision on. D1's table put this under "anything else"; it is now explicit and tested.
+- **Proven on Neon by forcing a crash after each step.** The crash is a `BaseException`, so no error handler runs, as when a process dies. In every case the next tick finished the job, and the fake graph counted exactly one application.
+- **A payload with no recorded mode is stored as a dry run.** This covers proposals parked before M15 recorded one. M17 must never act for real on a proposal whose mode nobody wrote down.
