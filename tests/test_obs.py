@@ -119,17 +119,25 @@ PUBLISHED = [
     ("gemini-3.7-flash", FIRST_NEW_PRICE, "1.50", "7.50", "0.15"),
     ("gemini-3.8-flash", LAST_OLD_PRICE, "0.75", "3.75", "0.075"),
     ("gemini-3.8-flash", FIRST_NEW_PRICE, "1.50", "7.50", "0.15"),
+    # Vercel AI Gateway's list price. Evaluation bills input only, no caching.
+    ("typesafe-ai/jev", AT, "0.042", "0", None),
 ]
 
 
 @pytest.mark.parametrize(("model", "at", "input_", "output", "cached"), PUBLISHED)
 def test_rates_match_the_published_price_list(
-    model: str, at: datetime, input_: str, output: str, cached: str
+    model: str, at: datetime, input_: str, output: str, cached: str | None
 ) -> None:
     rate = rate_at(model, at)
     assert rate is not None
-    published = (Decimal(input_), Decimal(output), Decimal(cached))
+    published = (Decimal(input_), Decimal(output), None if cached is None else Decimal(cached))
     assert (rate.input_, rate.output, rate.cached_input) == published
+
+
+def test_jev_prices_the_gateways_worked_example() -> None:
+    """AI Gateway's docs bill 275 input and 20 output tokens at $0.00001155."""
+    cost = cost_usd("typesafe-ai/jev", at=AT, input_tokens=275, output_tokens=20)
+    assert cost == Decimal("0.000012")  # 0.00001155, at the column's six places
 
 
 def test_every_priced_model_is_in_the_published_list() -> None:

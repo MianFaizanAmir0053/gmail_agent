@@ -31,11 +31,29 @@ def _gemini_reviewed() -> Extractor:
     return build_reviewed(owner_email="me@example.com")
 
 
+def _jev() -> Extractor:
+    """`gemini` with triage moved to TypeSafe's Jev on Vercel AI Gateway.
+
+    Extraction is untouched, so against a `gemini` run on the same settings the
+    two differ in triage alone. Refuses to start without a key rather than
+    scoring fourteen 401s as fourteen "not a meeting" verdicts.
+    """
+    from app.extraction.evaluation import JEV
+    from app.extraction.pipeline import build_pipeline
+
+    pipeline = build_pipeline(owner_email="me@example.com")
+    if pipeline.evaluator is None:
+        raise SystemExit("AI_GATEWAY_API_KEY is not set; Jev runs on Vercel AI Gateway.")
+    pipeline.classify_model = JEV
+    return pipeline
+
+
 EXTRACTORS: dict[str, Callable[[], Extractor]] = {
     "always_no": lambda: baselines.always_no,
     "always_yes": lambda: baselines.always_yes,
     "gemini": _gemini,
     "gemini_reviewed": _gemini_reviewed,
+    "jev": _jev,
 }
 
 

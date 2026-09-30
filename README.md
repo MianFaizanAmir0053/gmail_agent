@@ -131,6 +131,7 @@ only as good as the rates behind it.
 | Stage | Cost | Basis |
 |---|---|---|
 | Triage (classify) | **~$0.081 per 100 emails** | *estimated* — measured tokens × published rates |
+| Triage on Jev (opt-in) | not yet measured | list price only: $0.042 per 1M input tokens, output free |
 | Extraction | not yet measured in production — see below | — |
 | Retrieval ingestion | ~$0.011 for 343 chunks from 272 messages | *estimated* — from a character count |
 
@@ -321,6 +322,7 @@ anything useful.
 ```powershell
 .\tasks.ps1 check              # lint + format + typecheck + test
 .\tasks.ps1 eval               # score the extractor against the golden set
+.\tasks.ps1 eval --extractor jev   # same, triaging on Jev via Vercel AI Gateway
 .\tasks.ps1 poll --limit 5     # process unread mail once
 .\tasks.ps1 serve              # FastAPI: webhook + scheduler
 .\tasks.ps1 ingest             # incremental retrieval ingestion
