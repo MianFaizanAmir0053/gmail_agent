@@ -123,3 +123,25 @@ Nodes
 Three job alerts, correctly triaged, **$0.0008 total** — roughly **$0.027 per 100 emails** at this shape. `extract` never ran, which is the two-stage design paying for itself: the expensive node is only reached by mail that is actually a meeting.
 
 Reconciliation against the provider's billing page is still outstanding, and is the thing that would confirm the rate table rather than merely make it self-consistent.
+
+### Correction, 2026-09-30 — placeholder rates, and cached tokens billed twice
+
+The rates behind the figures above were placeholders, and the table said so in a comment. Checked against the [pricing page](https://ai.google.dev/gemini-api/docs/pricing) (paid, Standard tier, text; USD per million tokens, input / output / cached input):
+
+| Model | Was | Published |
+|---|---|---|
+| `gemini-3.5-flash-lite` | 0.10 / 0.40 / 0.025 | 0.30 / 2.50 / 0.03 |
+| `gemini-3.5-flash` | 0.30 / 2.50 / 0.075 | 1.50 / 9.00 / 0.15 |
+| `gemini-3.6-flash`, `gemini-3.7-flash` | 0.30 / 2.50 / 0.075 | 0.75 / 3.75 / 0.075 through 2026-12-31, then 1.50 / 7.50 / 0.15 |
+| `gemini-2.5-flash` | 0.30 / 2.50 / 0.075 | 0.30 / 2.50 / 0.03 |
+| `gemini-2.5-flash-lite` | 0.10 / 0.40 / 0.025 | 0.10 / 0.40 / 0.01 |
+
+`gemini-3.8-flash` (same schedule as 3.6/3.7) and `gemini-3.1-flash-lite` (0.25 / 1.50 / 0.025) were added.
+
+**The three classify runs above were `gemini-3.5-flash-lite`.** The report has no model column, so this is inferred, but nothing else fits: it was the configured triage model, `gemini-2.5-flash-lite` 404s for this key (M03), and the stored $0.000751 is exactly 6,943 × $0.10 + 141 × $0.40 per million — a rate the old table gave only those two. At the published rate the same tokens cost $0.0024354, which is **~$0.081 per 100 emails**, not $0.025. The database was not reachable when this was corrected, so that figure is recomputed from the counts recorded here rather than re-queried from `spans`.
+
+**Cached tokens were billed twice.** Gemini's `prompt_token_count` already includes `cached_content_token_count`, and `cost_usd` added the cached count on top, so every cached token was charged the full input rate *and* the cached rate. At 3.5 Flash-Lite's published rates, a 1,200-token prompt with 900 of it cached came out at $0.000712 — more than the $0.000685 it costs with nothing cached. It is $0.000442. The cached share is now carved out of the input rather than added to it. The runs above had no cache hits, so their figure was not affected.
+
+**Rates are dated.** A call is priced at the rate in force on the UTC day it ran; the tracer passes the span's start, so repricing a row from its stored `started_at` reproduces its stored cost. UTC, not `started_at.date()`, because psycopg returns TIMESTAMPTZ in the session's zone. The pricing page does not say which timezone its change dates follow; if it means US Pacific, UTC prices the first eight hours of 1 January 2027 at the new rate early — high, which is the safe direction for a rise.
+
+**Still outstanding:** spans already in the database keep the `cost_usd` they were written with, so the dashboard's totals before this date are the understated ones until `.\tasks.ps1 reprice` is run against that database to recompute them from their tokens. `gemini-2.5-pro` stays unpriced (it bills by prompt size, which a flat rate cannot express), and reconciliation against an actual invoice is still the only thing that would confirm any of this.

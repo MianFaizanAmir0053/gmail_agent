@@ -8,7 +8,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('setup', 'lint', 'fmt', 'typecheck', 'test', 'check', 'run', 'up', 'down',
         'eval', 'reauth', 'smoke', 'fernet', 'migrate', 'models',
-        'poll', 'approve', 'telegram', 'serve', 'report',
+        'poll', 'approve', 'telegram', 'serve', 'report', 'reprice',
         'ingest', 'search', 'retrieval-eval', 'publish')]
     [string]$Task = 'check',
 
@@ -52,6 +52,7 @@ switch ($Task) {
     'approve'  { uv run python -m app.jobs.approve @Rest }
     'telegram' { uv run python -m app.jobs.telegram_bot @Rest }
     'report'   { uv run python -m app.jobs.report @Rest }
+    'reprice'  { uv run python -m app.jobs.reprice @Rest }
 
     # Retrieval (M10-M12)
     'ingest'         { uv run python -m app.jobs.ingest_job @Rest }

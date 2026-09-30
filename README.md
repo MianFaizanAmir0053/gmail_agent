@@ -124,17 +124,31 @@ add a document retrieval never returned.
 
 ## Cost
 
-From the `spans` table, not from an estimate:
+Token counts are measured: the API reports them and `spans` stores them raw.
+Dollars are those counts times a hand-entered rate table, so a dollar figure is
+only as good as the rates behind it.
 
-| Stage | Measured |
-|---|---|
-| Triage (classify) | **$0.025 per 100 emails** |
-| Extraction | not yet measured in production — see below |
-| Retrieval ingestion | ~$0.011 for 343 chunks from 272 messages (*estimated*) |
+| Stage | Cost | Basis |
+|---|---|---|
+| Triage (classify) | **~$0.081 per 100 emails** | *estimated* — measured tokens × published rates |
+| Extraction | not yet measured in production — see below | — |
+| Retrieval ingestion | ~$0.011 for 343 chunks from 272 messages | *estimated* — from a character count |
 
-Two caveats, both load-bearing:
+Three caveats, all load-bearing:
 
-**The $0.025 figure is triage-only.** Every traced production run so far has
+**This section used to say $0.025 per 100 emails, from placeholder rates.** The
+token counts behind it were real; the rate table was not. It priced
+`gemini-3.5-flash-lite` at $0.10 in / $0.40 out per million tokens against a
+published $0.30 / $2.50, so triage was understated about 3.2×. The rates are now
+checked against [Google's pricing page](https://ai.google.dev/gemini-api/docs/pricing)
+(2026-09-30). The database holding the traced spans was not reachable when they
+were corrected, so ~$0.081 is recomputed from the token counts recorded when
+those runs were reported — 3 runs, 6,943 input and 141 output tokens, none
+thinking or cached ([M08 notes](docs/plans/M08-observability.md)) — not
+re-queried from `spans`. Nor has it been reconciled against a Google invoice.
+Hence *estimated*.
+
+**The triage figure is triage-only.** Every traced production run so far has
 been a non-meeting, so it stopped after the cheap classify call. Emails that do
 become meetings add an extraction call, and the honest position is that the
 blended number is not yet known.
@@ -145,9 +159,16 @@ generation this can only be derived from a character count. Every field carrying
 it is named `estimated_`.
 
 Token counts are stored raw alongside the dollars, so history can be recomputed
-when rates change. An unpriced model records `NULL`, never `0`: zero is a
-positive claim that something was free, and the dashboard renders it as
-`unpriced`.
+when rates change, and each span is priced at the rate in force on the day it
+ran. That matters on 2027-01-01, when the 3.6 and 3.7 Flash models used for
+extraction and review double in price; triage's 3.5 Flash-Lite does not change.
+An unpriced model records `NULL`, never `0`: zero is a positive claim that
+something was free, and the dashboard renders it as `unpriced`. Spans written
+before the correction still hold the `cost_usd` they were written with, so the
+dashboard shows the old, understated totals for that period until
+`.\tasks.ps1 reprice` recomputes those rows from their stored tokens. It
+re-totals finished runs in the same transaction, `--dry-run` shows what it would
+change, and a second run changes nothing.
 
 ---
 
@@ -224,6 +245,20 @@ counts **documents, not requests**, so batching buys fewer round trips and no
 throughput at all. A 300-message backfill hit the wall a third of the way in and
 — because the whole run was one transaction — discarded every embedding it had
 already paid for. Now paced with a sliding window and committed per batch.
+
+### A "measured" cost was built on placeholder rates
+
+The rate table said in a comment that its numbers were placeholders, and the
+README still quoted what they produced as *measured* — because the token counts
+underneath were. A dollar figure is tokens × rates and inherits the weaker of
+the two. Checked against the pricing page, triage came out 3.2× higher.
+
+Checking the table turned up a second bug. Gemini's `prompt_token_count`
+already includes `cached_content_token_count`, and the cost function added the
+cached count on top — billing every cached token twice, so a cache hit came out
+dearer than a miss. The recorded runs had no cache hits, so the triage figure
+was not affected by it. Rates now carry the day they take effect, and the tests
+restate the published price list, so a typo has to be made twice to ship.
 
 ---
 

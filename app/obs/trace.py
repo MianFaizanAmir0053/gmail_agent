@@ -62,10 +62,12 @@ class SpanUsage:
         self.thinking_tokens += thinking_tokens
         self.calls += 1
 
-    @property
-    def cost(self) -> Decimal | None:
+    def cost_at(self, at: datetime) -> Decimal | None:
+        """Priced at the rate in force at `at`. The tracer passes the span's
+        start, so repricing from the stored `started_at` reproduces the figure."""
         return cost_usd(
             self.model,
+            at=at,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cached_tokens=self.cached_tokens,
@@ -188,7 +190,7 @@ class Tracer:
                 usage.output_tokens,
                 usage.cached_tokens,
                 usage.thinking_tokens,
-                usage.cost,
+                usage.cost_at(started),
                 error,
             ),
         )
