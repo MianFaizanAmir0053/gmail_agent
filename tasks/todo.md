@@ -270,7 +270,7 @@ retry plumbing, and rebase onto their merge if both land.
 
 **Acceptance criteria:**
 - [x] The purge removes only what it should: tests seed each ledger status and a parked thread. 3 tests passed on Neon.
-- [ ] Following DEPLOY.md needs no step outside it.
+- [x] Following DEPLOY.md needs no step outside it: a read-through against the spec on 2026-09-30.
 
 **Verification:** purge tests with the integration marker; `.\tasks.ps1 check`; a read-through of DEPLOY.md against the spec.
 
