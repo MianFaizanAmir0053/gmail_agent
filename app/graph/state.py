@@ -38,6 +38,11 @@ class GraphState(TypedDict, total=False):
     correction: str
     """Free-text correction from a human choosing Edit; fed back into extraction."""
 
+    swept: bool
+    """Ended by an operator clearing parked proposals in bulk, not by a person
+    judging this one. Recorded apart so the ledger never reports a sweep as a
+    human decline."""
+
     revisions: int
     """Human edit rounds so far. Bounded in the graph, never in the prompt."""
 

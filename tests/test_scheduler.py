@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -9,7 +12,15 @@ from pydantic import SecretStr
 
 from app.config import Settings
 from app.jobs.ingest_job import incremental_query, scheduled_ingest
-from app.jobs.scheduler import build_scheduler, check_token, run_poll
+from app.jobs.poll import PollResult
+from app.jobs.scheduler import (
+    build_scheduler,
+    check_token,
+    record_tick,
+    run_ingest,
+    run_poll,
+    run_purge,
+)
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -21,9 +32,9 @@ def _settings(**overrides: Any) -> Settings:
     return Settings(**(base | overrides))
 
 
-def test_both_jobs_are_registered() -> None:
+def test_the_standing_jobs_are_registered() -> None:
     scheduler = build_scheduler(_settings())
-    assert {job.id for job in scheduler.get_jobs()} == {"poll", "token_health"}
+    assert {job.id for job in scheduler.get_jobs()} == {"poll", "purge", "token_health"}
 
 
 def test_ingestion_is_not_scheduled_unless_asked_for() -> None:
@@ -96,6 +107,7 @@ def test_a_failing_poll_does_not_escape_the_job(monkeypatch: pytest.MonkeyPatch)
         raise RuntimeError("gmail is down")
 
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _explode)
+    _capture(monkeypatch)  # recording is not under test here
 
     run_poll(_settings())  # must not raise
 
@@ -164,3 +176,98 @@ def test_healthy_token_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     check_token(_settings(allowed_chat_ids=[4242], telegram_bot_token=SecretStr("123:abc")))
 
     assert sent == []
+
+
+# --- tick records (M15) ----------------------------------------------------
+
+
+@contextmanager
+def _session(settings: Settings) -> Iterator[object]:
+    yield object()
+
+
+def _capture(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    recorded: list[dict[str, Any]] = []
+
+    def _record(settings: Settings, job: str, started_at: Any, **fields: Any) -> None:
+        recorded.append({"job": job, **fields})
+
+    monkeypatch.setattr("app.jobs.scheduler.record_tick", _record)
+    return recorded
+
+
+def test_a_clean_poll_is_recorded_as_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.poll_once", lambda *a, **k: PollResult(seen=3, started=2, failed=0)
+    )
+
+    run_poll(_settings())
+
+    assert recorded == [
+        {"job": "poll", "ok": True, "seen": 3, "started": 2, "failed": 0, "error": None}
+    ]
+
+
+def test_a_poll_that_fails_any_message_is_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Otherwise a dead model path passes: failed messages are never offered again,
+    so every later tick is empty and would look healthy."""
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.poll_once", lambda *a, **k: PollResult(seen=3, started=3, failed=1)
+    )
+
+    run_poll(_settings())
+
+    assert recorded[0]["ok"] is False
+    assert recorded[0]["failed"] == 1
+
+
+def test_a_raising_poll_is_recorded_with_its_error_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _capture(monkeypatch)
+
+    def _explode(settings: Settings) -> Any:
+        raise RuntimeError("gmail is down")
+
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _explode)
+
+    run_poll(_settings())
+
+    assert recorded[0]["ok"] is False
+    assert recorded[0]["error"] == "RuntimeError"
+
+
+def test_an_ingest_tick_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler.scheduled_ingest", lambda settings: False)
+
+    run_ingest(_settings())
+
+    assert recorded == [{"job": "ingest", "ok": False}]
+
+
+def test_recording_never_escapes_the_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A database outage must cost a tick record, not the scheduler."""
+
+    def _no_database(url: str, **kwargs: Any) -> Any:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("app.jobs.scheduler.connect", _no_database)
+
+    record_tick(_settings(), "poll", datetime.now(UTC), ok=True)  # must not raise
+
+
+def test_the_purge_runs_hourly() -> None:
+    job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "purge")
+    assert "1:00:00" in str(job.trigger)
+
+
+def test_a_purge_tick_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler.purge_once", lambda settings: None)
+
+    run_purge(_settings())
+
+    assert recorded == [{"job": "purge", "ok": True}]

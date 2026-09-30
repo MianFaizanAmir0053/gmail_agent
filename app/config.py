@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -117,9 +118,24 @@ class Settings(BaseSettings):
     """The mailbox owner. Stripped from extracted attendee lists -- you are not
     an attendee of your own meeting."""
 
+    owner_aliases: list[str] = Field(default_factory=list)
+    """Other addresses that reach the owner (M15 measurement), as a JSON list.
+    Mail to an alias missing from here is not recognised as an ask, so the
+    loose-ends count undercounts by whatever it misses."""
+
+    measure_exclude_senders: list[str] = Field(default_factory=list)
+    """Senders the M15 measurement ignores, as a JSON list. For the owner's
+    own test mail, such as the planted day-1 meeting."""
+
     # --- Google (M01) -------------------------------------------------------
     google_client_secrets_path: str | None = None
     google_token_path: str | None = None
+    google_token_standby_path: str | None = None
+    """A second token, minted a few days after the primary (M15).
+
+    If Google rejects the primary, polling carries on with this one, so the
+    unattended window survives the primary's death. That death is still
+    recorded, because it is the evidence being gathered."""
     test_calendar_id: str | None = None
     fernet_key: SecretStr | None = None
 
@@ -207,7 +223,49 @@ class Settings(BaseSettings):
         return self
 
 
+def transaction_pooler_problem(url: str) -> str | None:
+    """Why `url` cannot be used, if it points at a transaction-mode pooler.
+
+    A transaction-mode pooler hands each statement to whichever server
+    connection is free, so the prepared statements psycopg creates for
+    LangGraph's checkpointer vanish between calls. Every checkpoint write then
+    fails at runtime, hours after a clean boot. Catching it here moves that
+    failure to startup.
+
+    Only the two poolers this project is likely to be pointed at are
+    recognised. The message never repeats the URL: it carries the password,
+    and startup errors end up in hosted logs.
+    """
+    if "://" not in url:
+        return None  # a libpq key=value DSN; nothing to recognise
+
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if host.endswith(".pooler.supabase.com") and parts.port == 6543:
+        return (
+            "points at Supabase's transaction-mode pooler (port 6543), which breaks the "
+            "prepared statements LangGraph's checkpointer uses. Use the direct connection "
+            "(db.<project>.supabase.co:5432) or the session pooler on port 5432."
+        )
+    if host.endswith(".neon.tech") and "-pooler." in host:
+        return (
+            "points at Neon's pooled endpoint (PgBouncer in transaction mode), which breaks "
+            "the prepared statements LangGraph's checkpointer uses. Use the same host "
+            "without '-pooler'."
+        )
+    return None
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Load and validate settings. Cached; raises ValidationError on bad config."""
-    return Settings()
+    """Load and validate settings. Cached.
+
+    Raises `ValidationError` on bad config, and `RuntimeError` for a database
+    URL no connection in this app can use.
+    """
+    settings = Settings()
+    if problem := transaction_pooler_problem(settings.database_url):
+        # Raised outside pydantic on purpose: a ValidationError would echo the
+        # input value, and this one contains the database password.
+        raise RuntimeError(f"DATABASE_URL {problem}")
+    return settings

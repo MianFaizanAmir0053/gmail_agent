@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 SECRET_FILES = (
     ("GOOGLE_CLIENT_SECRETS_B64", "GOOGLE_CLIENT_SECRETS_PATH", "secrets/client_secret.json"),
     ("GOOGLE_TOKEN_B64", "GOOGLE_TOKEN_PATH", "secrets/token.enc"),
+    ("GOOGLE_TOKEN_STANDBY_B64", "GOOGLE_TOKEN_STANDBY_PATH", "secrets/token-standby.enc"),
 )
 
 

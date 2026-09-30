@@ -20,9 +20,25 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import Any, Final, Literal, cast
 
 from cryptography.fernet import Fernet
+
+MintedUnder = Literal["testing", "production"]
+"""The OAuth app's publishing status when a token was minted (M15).
+
+Whether a refresh token lapses after seven days depends on the status at the
+moment of consent, not on what the app is set to later. So it is recorded
+with the token. A setting would describe the app, not the token, and would
+be wrong for every token minted before a change.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class TokenMetadata:
+    issued_at: datetime
+    minted_under: MintedUnder
+
 
 TESTING_MODE_REFRESH_LIFETIME: Final = timedelta(days=7)
 """How long a refresh token survives while the app is unverified ("Testing").
@@ -49,6 +65,48 @@ class TokenHealth:
         return self.days_remaining <= REAUTH_WARNING_THRESHOLD.days
 
 
+TokenState = Literal["testing", "production-unconfirmed", "production-confirmed", "expired"]
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshOutcome:
+    """One attempt to refresh an access token, and which token it used."""
+
+    issued_at: datetime
+    """Identifies the refresh token. Evidence is always kept per token, so an
+    old token's death is never read as a new one's."""
+
+    at: datetime
+    ok: bool
+    rejected: bool
+    """Google refused the refresh token itself (`invalid_grant`): it is dead,
+    as opposed to a network blip that the next tick will retry."""
+
+
+def token_state(
+    metadata: TokenMetadata,
+    *,
+    now: datetime,
+    last_ok_refresh_at: datetime | None,
+    rejected: bool,
+) -> TokenState:
+    """Where a token stands, from evidence rather than from a setting.
+
+    A Testing token simply counts down. A production token is only
+    *confirmed* once it has been used successfully after the point where a
+    Testing token would have died. Until then, "In production removes the
+    seven-day limit" is a claim, and M15 exists to test it.
+    """
+    if rejected:
+        return "expired"
+    lapse_at = metadata.issued_at + TESTING_MODE_REFRESH_LIFETIME
+    if metadata.minted_under == "testing":
+        return "expired" if now >= lapse_at else "testing"
+    if last_ok_refresh_at is not None and last_ok_refresh_at > lapse_at:
+        return "production-confirmed"
+    return "production-unconfirmed"
+
+
 class TokenNotFoundError(RuntimeError):
     """No stored token. Run the consent flow: `python -m app.google.reauth`."""
 
@@ -72,26 +130,47 @@ class TokenStore:
     def exists(self) -> bool:
         return self._path.exists()
 
-    def save(self, credentials_json: str, *, issued_at: datetime | None = None) -> None:
-        """Persist credentials.
+    def save(
+        self,
+        credentials_json: str,
+        *,
+        issued_at: datetime | None = None,
+        minted_under: MintedUnder | None = None,
+    ) -> None:
+        """Persist credentials, keeping every metadata field already stored.
 
-        `issued_at` defaults to the existing value, so routine access-token
-        refreshes do not silently extend the seven-day window. Pass an explicit
-        value only after a real consent flow.
+        `issued_at` and `minted_under` default to the existing values, so the
+        hourly access-token refresh neither extends the seven-day window nor
+        erases how the token was minted. Pass them only after a real consent
+        flow. Fields this version does not know are carried over too, so an
+        older process refreshing a token cannot strip a newer one's metadata.
         """
-        if issued_at is None:
-            issued_at = self._read_issued_at() or datetime.now(UTC)
+        payload = self._read_payload() or {}
+        payload["credentials"] = credentials_json
+        if issued_at is not None:
+            payload["issued_at"] = issued_at.isoformat()
+        payload.setdefault("issued_at", datetime.now(UTC).isoformat())
+        if minted_under is not None:
+            payload["minted_under"] = minted_under
+        # Every token that predates this field was minted in Testing.
+        payload.setdefault("minted_under", "testing")
 
-        payload = json.dumps({"credentials": credentials_json, "issued_at": issued_at.isoformat()})
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_bytes(self._fernet.encrypt(payload.encode()))
+        self._path.write_bytes(self._fernet.encrypt(json.dumps(payload).encode()))
 
     def load(self) -> tuple[str, datetime]:
         """Return `(credentials_json, issued_at)`."""
-        if not self._path.exists():
-            raise TokenNotFoundError(f"No token at {self._path}. Run: python -m app.google.reauth")
-        payload = json.loads(self._fernet.decrypt(self._path.read_bytes()).decode())
+        payload = self._require_payload()
         return payload["credentials"], datetime.fromisoformat(payload["issued_at"])
+
+    def metadata(self) -> TokenMetadata:
+        payload = self._require_payload()
+        minted_under = payload.get("minted_under")
+        return TokenMetadata(
+            issued_at=datetime.fromisoformat(payload["issued_at"]),
+            # Anything unrecognised is treated as Testing: the cautious reading.
+            minted_under="production" if minted_under == "production" else "testing",
+        )
 
     def health(self, *, now: datetime | None = None) -> TokenHealth:
         _, issued_at = self.load()
@@ -103,7 +182,13 @@ class TokenStore:
             days_remaining=(expires_at - now).total_seconds() / 86400,
         )
 
-    def _read_issued_at(self) -> datetime | None:
+    def _read_payload(self) -> dict[str, Any] | None:
         if not self._path.exists():
             return None
-        return self.load()[1]
+        return cast(dict[str, Any], json.loads(self._fernet.decrypt(self._path.read_bytes())))
+
+    def _require_payload(self) -> dict[str, Any]:
+        payload = self._read_payload()
+        if payload is None:
+            raise TokenNotFoundError(f"No token at {self._path}. Run: python -m app.google.reauth")
+        return payload

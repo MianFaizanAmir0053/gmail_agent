@@ -11,15 +11,19 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from hmac import compare_digest
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from app.bootstrap import materialise_secrets
 from app.config import Settings, get_settings
-from app.google.auth import token_store
+from app.google.auth import observe_refreshes, standby_token_store, token_store
+from app.google.tokens import RefreshOutcome, TokenHealth, TokenState, TokenStore, token_state
 from app.graph.runner import graph_session
+from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE, configure_logging
 from app.telegram.client import TelegramClient
 from app.telegram.handler import NotAllowedError, TelegramHandler
 
@@ -28,23 +32,83 @@ router = APIRouter()
 
 
 @router.get("/health")
-def health() -> dict[str, Any]:
-    """Liveness plus the two things that silently rot: the database and the
-    seven-day Google token."""
+def health() -> JSONResponse:
+    """Whether the process is doing its job, from what it already knows.
+
+    503 when polling has stalled or no Google token is usable, so that the
+    platform and an external uptime monitor both treat it as down. Nothing here
+    touches the database: every successful poll already proves the database
+    works, and this endpoint is public and called every few seconds. Reasons
+    are fixed phrases; exception text stays in the server log, where hosts and
+    paths belong.
+    """
     settings = get_settings()
-    status: dict[str, Any] = {"status": "ok", "dry_run": settings.dry_run}
+    body: dict[str, Any] = {"status": "ok", "dry_run": settings.dry_run}
+    problems: list[str] = []
+
+    if settings.run_scheduler:
+        last_ok = LIVENESS.last_poll_ok_at
+        body["last_poll_ok_at"] = last_ok.isoformat() if last_ok else None
+        interval = timedelta(minutes=settings.poll_interval_minutes)
+        if LIVENESS.poll_overdue(datetime.now(UTC), interval):
+            problems.append("no successful poll in three intervals")
 
     try:
-        health_info = token_store(settings).health()
-        status["token_days_remaining"] = round(health_info.days_remaining, 1)
-        if health_info.needs_reauth_soon:
-            status["status"] = "degraded"
-            status["warning"] = "Google token expires soon -- run `tasks.ps1 reauth`"
-    except Exception as exc:  # a health check that raises is not a health check
-        status["status"] = "degraded"
-        status["token_error"] = str(exc)
+        state, countdown = _token_report(token_store(settings))
+    except Exception:  # a health check that raises is not a health check
+        log.exception("token health check failed")
+        problems.append("google token unreadable")
+    else:
+        body["token_state"] = state
+        if state in ("testing", "production-unconfirmed"):
+            # For an unconfirmed production token this is the deadline a
+            # Testing token would have had: the moment the claim gets tested.
+            body["token_days_remaining"] = round(countdown.days_remaining, 1)
+        if state == "testing" and countdown.needs_reauth_soon:
+            body["warning"] = "Google token expires soon -- run `tasks.ps1 reauth`"
 
-    return status
+        standby = _standby_state(settings)
+        if standby is not None:
+            body["standby_token_state"] = standby
+        if state != "expired":
+            body["token_in_use"] = "primary"
+        elif standby not in (None, "expired", "unreadable"):
+            # The primary's death is the evidence M15 is gathering; the standby
+            # is what keeps the window from restarting because of it.
+            body["token_in_use"] = "standby"
+        else:
+            problems.append("google token expired")
+
+    if problems:
+        body["status"] = "degraded"
+        body["problems"] = problems
+        return JSONResponse(body, status_code=503)
+    return JSONResponse(body)
+
+
+def _token_report(store: TokenStore) -> tuple[TokenState, TokenHealth]:
+    metadata = store.metadata()
+    evidence = TOKEN_EVIDENCE.for_token(metadata.issued_at)
+    state = token_state(
+        metadata,
+        now=datetime.now(UTC),
+        last_ok_refresh_at=evidence.last_ok_at,
+        rejected=evidence.rejected,
+    )
+    return state, store.health()
+
+
+def _standby_state(settings: Settings) -> str | None:
+    """The standby token's state; None when none is configured."""
+    store = standby_token_store(settings)
+    if store is None:
+        return None
+    try:
+        state, _ = _token_report(store)
+    except Exception:
+        log.exception("standby token check failed")
+        return "unreadable"
+    return state
 
 
 @router.post("/telegram/webhook")
@@ -95,8 +159,46 @@ def _require_token(settings: Settings) -> str:
     return settings.telegram_bot_token.get_secret_value()
 
 
+def _record_refresh(settings: Settings, outcome: RefreshOutcome) -> None:
+    """Keep a refresh as evidence: in memory for `/health`, in `job_runs` for
+    the exit criterion and for the next boot."""
+    from app.jobs.scheduler import record_tick
+
+    TOKEN_EVIDENCE.record(outcome)
+    error = None if outcome.ok else ("invalid_grant" if outcome.rejected else "refresh failed")
+    record_tick(
+        settings,
+        "token_refresh",
+        outcome.at,
+        ok=outcome.ok,
+        error=error,
+        token_issued_at=outcome.issued_at,
+    )
+
+
+def _seed_token_evidence(settings: Settings) -> None:
+    """Reload what earlier processes proved about the current token.
+
+    Confirmation takes a week to earn and a redeploy to lose, if it lives only
+    in memory. Never raises: an unreadable token is `/health`'s to report.
+    """
+    from app.store.db import connect
+    from app.store.job_runs import JobRuns
+
+    try:
+        issued_at = token_store(settings).metadata().issued_at
+        with connect(settings.database_url) as conn:
+            last_ok_at, rejected = JobRuns(conn).refresh_evidence(issued_at)
+    except Exception:
+        log.exception("could not load token refresh evidence")
+        return
+    TOKEN_EVIDENCE.seed(issued_at, last_ok_at=last_ok_at, rejected=rejected)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    configure_logging()
+
     # Before settings: `get_settings()` validates paths that only exist once the
     # base64 credential vars have been decoded to disk.
     for path in materialise_secrets():
@@ -114,6 +216,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler = None
     if settings.run_scheduler:
         from app.jobs.scheduler import build_scheduler
+        from app.store.db import connect
+        from app.store.ledger import STRANDED_AFTER, MessageLedger
+
+        # Nothing is in flight in this process yet, so any old claim was left
+        # by a predecessor that died mid-message. Surfaced as FAILED rather
+        # than left `claimed`, where nothing would ever look at it again.
+        with connect(settings.database_url) as conn:
+            recovered = MessageLedger(conn).fail_stranded(STRANDED_AFTER)
+        if recovered:
+            log.warning("marked %d stranded claim(s) as failed", recovered)
+
+        _seed_token_evidence(settings)
+        observe_refreshes(lambda outcome: _record_refresh(settings, outcome))
 
         scheduler = build_scheduler(settings)
         scheduler.start()
@@ -123,8 +238,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         if scheduler is not None:
-            # Without this, a redeploy can leave a poll mid-flight holding a
+            from app.jobs.poll import STOPPING
+
+            # Stop taking new claims first, then wait for the message in hand.
+            # Without both, a redeploy can leave a poll mid-flight holding a
             # claimed message that no longer has a process behind it.
+            STOPPING.set()
             scheduler.shutdown(wait=True)
 
 

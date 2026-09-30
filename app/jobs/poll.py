@@ -12,7 +12,8 @@ the point, not an inconvenience.
 from __future__ import annotations
 
 import argparse
-from typing import Any
+import threading
+from typing import Any, NamedTuple
 
 import psycopg
 
@@ -25,15 +26,50 @@ from app.telegram.notify import admin_chat_id, send_approval_card
 
 CLAIMED_NOT_RUN = "claimed but graph did not complete"
 
+STOPPING = threading.Event()
+"""Set when the process starts shutting down (`app.api.lifespan`).
 
-def poll_once(session: GraphSession, limit: int) -> tuple[int, int]:
-    """Returns `(seen, started)`."""
+A pass in progress finishes the message it holds and claims no more. A claim
+taken after this point could be killed mid-graph at the platform's kill
+timeout, leaving a `claimed` row that nothing ever offers again.
+"""
+
+
+class PollResult(NamedTuple):
+    seen: int
+    """Unread messages the pass looked at."""
+
+    started: int
+    """Messages it claimed and ran through the graph."""
+
+    failed: int
+    """Of those, how many were dead-lettered as FAILED."""
+
+
+def poll_once(
+    session: GraphSession,
+    limit: int,
+    *,
+    stop: threading.Event | None = None,
+    show_titles: bool = True,
+) -> PollResult:
+    """One pass over the newest unread mail.
+
+    `show_titles=False` is for production, where this output lands in hosted
+    logs that sit outside the database's controls: message ids and statuses
+    are enough to trace a run, and an extracted title is mail content.
+    """
     ledger = MessageLedger(session.conn)
 
     message_ids = session.deps.gmail.list_unread(max_results=limit)
     started = 0
+    failed = 0
+    stopped = False
 
     for message_id in ledger.unseen(message_ids):
+        if stop is not None and stop.is_set():
+            stopped = True
+            break
         # `unseen` is only a cheap pre-filter -- another run can insert between
         # that query and this one, so `claim` remains the authority.
         if not ledger.claim(message_id, message_id):
@@ -48,6 +84,7 @@ def poll_once(session: GraphSession, limit: int) -> tuple[int, int]:
             # non-terminal, and the message can be re-run once the cause is fixed.
             ledger.mark(message_id, MessageStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
             print(f"  {message_id}  FAILED  {exc}")
+            failed += 1
             continue
 
         pending = session.pending(message_id)
@@ -57,11 +94,15 @@ def poll_once(session: GraphSession, limit: int) -> tuple[int, int]:
         else:
             ledger.mark(message_id, MessageStatus.AWAITING_APPROVAL)
             proposed = pending["proposed"]
-            print(f"  {message_id}  AWAITING APPROVAL  {proposed.get('title')}")
+            title = proposed.get("title") if show_titles else ""
+            print(f"  {message_id}  AWAITING APPROVAL  {title}".rstrip())
             _notify(pending, message_id)
 
-    SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
-    return len(message_ids), started
+    if not stopped:
+        # Left where it was on an early stop: unprocessed mail is still
+        # behind it, and moving it forward would skip that mail for good.
+        SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
+    return PollResult(seen=len(message_ids), started=started, failed=failed)
 
 
 def _notify(pending: dict[str, Any], message_id: str) -> None:
@@ -109,10 +150,10 @@ def main() -> None:
         return
 
     with graph_session(settings) as session:
-        seen, started = poll_once(session, args.limit)
+        result = poll_once(session, args.limit)
 
-    print(f"\nSaw {seen} unread, started {started} new.")
-    if started == 0 and seen:
+    print(f"\nSaw {result.seen} unread, started {result.started} new, {result.failed} failed.")
+    if result.started == 0 and result.seen:
         print("Nothing new -- idempotency holding.")
 
 

@@ -235,6 +235,71 @@ def test_edit_re_extracts_with_the_correction() -> None:
     assert payload["proposed"]["title"] == "Corrected review"
 
 
+def test_cancel_after_an_edit_ends_the_proposal() -> None:
+    """A correction must not outlive the decision that follows it.
+
+    `correction` stays in state after the re-extraction it asked for. If the
+    next answer does not clear it, `_decision` still sees an edit in progress
+    and routes a Cancel straight back to `extract` -- the proposal parks again
+    instead of ending, and the ledger never hears about it.
+    """
+    from langgraph.types import Command
+
+    calendar = FakeCalendar()
+    ledger = FakeLedger()
+    pipeline = FakePipeline(extractions=[_meeting(), _meeting("Corrected review")])
+    graph, config, _ = _run(_deps(calendar=calendar, ledger=ledger, pipeline=pipeline))
+
+    graph.invoke(Command(resume={"action": "edit", "correction": "4pm not 3pm"}), config)
+    graph.invoke(Command(resume={"action": "cancel"}), config)
+
+    assert _interrupt_payload(graph, config) is None
+    assert len(pipeline.corrections) == 2  # the edit's re-extraction, and no third
+    assert ledger.statuses == [MessageStatus.REJECTED]
+    assert calendar.created == []
+
+
+def test_confirm_after_an_edit_creates_the_corrected_event_once() -> None:
+    from langgraph.types import Command
+
+    calendar = FakeCalendar()
+    ledger = FakeLedger()
+    pipeline = FakePipeline(extractions=[_meeting(), _meeting("Corrected review")])
+    graph, config, _ = _run(_deps(calendar=calendar, ledger=ledger, pipeline=pipeline))
+
+    graph.invoke(Command(resume={"action": "edit", "correction": "4pm not 3pm"}), config)
+    graph.invoke(Command(resume={"action": "confirm"}), config)
+
+    assert _interrupt_payload(graph, config) is None
+    assert len(pipeline.corrections) == 2
+    assert [event["title"] for event in calendar.created] == ["Corrected review"]
+    assert ledger.marks[-1] == ("m1", MessageStatus.CREATED, "evt_123")
+
+
+def test_a_parked_proposal_records_the_dry_run_it_was_made_under() -> None:
+    """M17 refuses to act on a proposal parked under a different DRY_RUN."""
+    graph, config, _ = _run(_deps(calendar=FakeCalendar(dry_run=True)))
+
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None
+    assert payload["dry_run"] is True
+
+
+def test_a_sweep_is_not_recorded_as_a_human_decline() -> None:
+    """M24 counts a human's cancellations against the agent; a sweep is not one."""
+    from langgraph.types import Command
+
+    calendar = FakeCalendar()
+    ledger = FakeLedger()
+    graph, config, _ = _run(_deps(calendar=calendar, ledger=ledger))
+
+    state = graph.invoke(Command(resume={"action": "sweep"}), config)
+
+    assert calendar.created == []
+    assert ledger.statuses == [MessageStatus.REJECTED]
+    assert state["action"].error == "swept: observe mode ended"
+
+
 def test_revision_loop_is_bounded_by_state_not_by_the_prompt() -> None:
     """A prompt instruction is a suggestion; a counter in state is a guarantee."""
     from langgraph.types import Command

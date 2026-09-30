@@ -56,8 +56,11 @@ def run_ingest(settings: Settings, *, backfill: bool = False) -> Stats:
         return ingest(conn, mailbox, client, settings=settings, query=query, limit=limit)
 
 
-def scheduled_ingest(settings: Settings) -> None:
-    """The scheduler's entry point. Never raises; alerts on failure."""
+def scheduled_ingest(settings: Settings) -> bool:
+    """The scheduler's entry point. Never raises; alerts on failure.
+
+    Returns whether the run succeeded, for the tick record.
+    """
     try:
         stats = run_ingest(settings)
     except Exception as exc:
@@ -66,7 +69,7 @@ def scheduled_ingest(settings: Settings) -> None:
             settings,
             f"⚠️ Retrieval ingestion failed.\n<code>{type(exc).__name__}: {exc}</code>",
         )
-        return
+        return False
 
     log.info(
         "ingest: %d messages, %d chunks, %d inserted, ~$%s",
@@ -75,6 +78,7 @@ def scheduled_ingest(settings: Settings) -> None:
         stats.chunks_inserted,
         stats.estimated_cost_usd,
     )
+    return True
 
 
 def _alert(settings: Settings, text: str) -> None:

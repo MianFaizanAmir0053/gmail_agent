@@ -42,6 +42,10 @@ class SpanUsage:
     cached_tokens: int = 0
     thinking_tokens: int = 0
     calls: int = 0
+    retries: int = 0
+    """Transient failures retried inside this node. Without it, a model that
+    needed three attempts per call looked the same as one that answered first
+    time -- until the day it stopped answering at all."""
 
     def add(
         self,
@@ -98,6 +102,14 @@ def record_llm_usage(
         cached_tokens=cached_tokens,
         thinking_tokens=thinking_tokens,
     )
+
+
+def record_retry() -> None:
+    """Called by `call_with_retry` before each re-attempt. A no-op when
+    nothing is tracing, like `record_llm_usage`."""
+    usage = _current_usage.get()
+    if usage is not None:
+        usage.retries += 1
 
 
 @dataclass(slots=True)
@@ -175,8 +187,8 @@ class Tracer:
             INSERT INTO spans (
                 trace_id, node, model, status, started_at, latency_ms,
                 input_redacted, input_tokens, output_tokens, cached_tokens,
-                thinking_tokens, cost_usd, error
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                thinking_tokens, cost_usd, retry_count, error
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 self.trace_id,
@@ -191,6 +203,7 @@ class Tracer:
                 usage.cached_tokens,
                 usage.thinking_tokens,
                 usage.cost_at(started),
+                usage.retries,
                 error,
             ),
         )

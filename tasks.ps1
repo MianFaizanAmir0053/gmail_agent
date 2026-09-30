@@ -8,7 +8,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('setup', 'lint', 'fmt', 'typecheck', 'test', 'check', 'run', 'up', 'down',
         'eval', 'reauth', 'smoke', 'fernet', 'migrate', 'models',
-        'poll', 'approve', 'telegram', 'serve', 'report', 'reprice',
+        'poll', 'approve', 'telegram', 'serve', 'report', 'measure', 'reprice',
         'ingest', 'search', 'retrieval-eval', 'publish')]
     [string]$Task = 'check',
 
@@ -52,6 +52,7 @@ switch ($Task) {
     'approve'  { uv run python -m app.jobs.approve @Rest }
     'telegram' { uv run python -m app.jobs.telegram_bot @Rest }
     'report'   { uv run python -m app.jobs.report @Rest }
+    'measure'  { uv run python -m app.jobs.measure @Rest }
     'reprice'  { uv run python -m app.jobs.reprice @Rest }
 
     # Retrieval (M10-M12)
@@ -63,6 +64,6 @@ switch ($Task) {
 
     # --- M01 -------------------------------------------------------------
     'fernet' { uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" }
-    'reauth' { uv run python -m app.google.reauth }
+    'reauth' { uv run python -m app.google.reauth @Rest }
     'smoke'  { uv run python -m app.google.smoke }
 }

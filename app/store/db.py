@@ -20,10 +20,21 @@ MIGRATIONS_DIR = Path("migrations")
 
 
 @contextmanager
-def connect(database_url: str) -> Iterator[psycopg.Connection]:
-    """A committed-on-success, rolled-back-on-error connection."""
-    with psycopg.connect(database_url) as conn:
-        yield conn
+def connect(
+    database_url: str, *, connect_timeout: int | None = None
+) -> Iterator[psycopg.Connection]:
+    """A committed-on-success, rolled-back-on-error connection.
+
+    `connect_timeout` is in seconds. Without one, an unreachable host can hold
+    the caller for as long as the operating system keeps retrying -- minutes
+    on Windows.
+    """
+    if connect_timeout is None:
+        with psycopg.connect(database_url) as conn:
+            yield conn
+    else:
+        with psycopg.connect(database_url, connect_timeout=connect_timeout) as conn:
+            yield conn
 
 
 def _ensure_registry(conn: psycopg.Connection) -> None:

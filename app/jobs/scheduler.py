@@ -12,6 +12,8 @@ before.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
+from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -19,22 +21,95 @@ from app.config import Settings
 from app.google.auth import token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
-from app.jobs.poll import poll_once
+from app.jobs.poll import STOPPING, poll_once
+from app.jobs.purge import PurgeResult, purge
+from app.obs.liveness import LIVENESS
+from app.store.db import connect
+from app.store.job_runs import JobRuns
 from app.telegram.client import TelegramClient
 from app.telegram.notify import admin_chat_id
 
 log = logging.getLogger(__name__)
 
+RECORD_CONNECT_TIMEOUT = 5
+"""Seconds `record_tick` waits for the database before giving up on a record."""
+
+
+def record_tick(settings: Settings, job: str, started_at: datetime, **fields: Any) -> None:
+    """Write one `job_runs` row. Never raises.
+
+    A database outage should cost the record of a tick, not the scheduler:
+    the next tick still fires, and the missing row shows up as a gap.
+    """
+    try:
+        # Bounded: an unreachable database must cost seconds of the scheduler
+        # thread, not minutes of it.
+        with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
+            JobRuns(conn).record(job, started_at, datetime.now(UTC), **fields)
+    except Exception:
+        log.exception("could not record %s tick", job)
+
 
 def run_poll(settings: Settings) -> None:
+    started_at = datetime.now(UTC)
     try:
         with graph_session(settings) as session:
-            seen, started = poll_once(session, settings.poll_batch_size)
-        log.info("poll: saw %d unread, started %d", seen, started)
-    except Exception:
+            result = poll_once(
+                session,
+                settings.poll_batch_size,
+                stop=STOPPING,
+                show_titles=settings.app_env != "prod",
+            )
+    except Exception as exc:
         # A scheduled job that raises kills nothing but itself, and APScheduler
         # would swallow the traceback. Log it loudly; the next tick retries.
         log.exception("poll failed")
+        LIVENESS.poll_finished(ok=False, at=datetime.now(UTC))
+        # The type only: exception text can carry message content or URLs.
+        record_tick(settings, "poll", started_at, ok=False, error=type(exc).__name__)
+        return
+
+    log.info(
+        "poll: saw %d unread, started %d, failed %d", result.seen, result.started, result.failed
+    )
+    LIVENESS.poll_finished(ok=result.failed == 0, at=datetime.now(UTC))
+    record_tick(
+        settings,
+        "poll",
+        started_at,
+        ok=result.failed == 0,
+        seen=result.seen,
+        started=result.started,
+        failed=result.failed,
+        error=None if result.failed == 0 else f"{result.failed} message(s) failed",
+    )
+
+
+def run_ingest(settings: Settings) -> None:
+    started_at = datetime.now(UTC)
+    record_tick(settings, "ingest", started_at, ok=scheduled_ingest(settings))
+
+
+def purge_once(settings: Settings) -> PurgeResult:
+    with connect(settings.database_url) as conn:
+        return purge(conn, settings.database_url)
+
+
+def run_purge(settings: Settings) -> None:
+    started_at = datetime.now(UTC)
+    try:
+        result = purge_once(settings)
+    except Exception as exc:
+        log.exception("purge failed")
+        record_tick(settings, "purge", started_at, ok=False, error=type(exc).__name__)
+        return
+    if result is not None:
+        log.info(
+            "purge: %d thread(s) cleared, %d reason(s) trimmed",
+            result.threads,
+            result.reasons_cleared,
+        )
+    record_tick(settings, "purge", started_at, ok=True)
 
 
 def check_token(settings: Settings) -> None:
@@ -89,6 +164,18 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         misfire_grace_time=300,
     )
 
+    # Hourly, so a body read by a poll that ended in `skip` is gone within the
+    # hour rather than kept for as long as the database lives.
+    scheduler.add_job(
+        run_purge,
+        "interval",
+        hours=1,
+        args=[settings],
+        id="purge",
+        max_instances=1,
+        coalesce=True,
+    )
+
     scheduler.add_job(
         check_token,
         "interval",
@@ -101,7 +188,7 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
 
     if settings.ingest_enabled:
         scheduler.add_job(
-            scheduled_ingest,
+            run_ingest,
             "interval",
             hours=settings.ingest_interval_hours,
             args=[settings],

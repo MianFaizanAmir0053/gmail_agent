@@ -7,6 +7,8 @@ a calendar write. Its authentication is worth more tests than its happy path.
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,8 @@ from pydantic import SecretStr
 from app.api import router
 from app.bootstrap import SecretDecodeError, materialise_secrets
 from app.config import Settings
+from app.google.tokens import TokenMetadata
+from app.obs.liveness import Liveness
 
 SECRET = "s3cret-token"
 
@@ -157,13 +161,76 @@ def test_health_reports_dry_run_state(client: TestClient) -> None:
     assert body["dry_run"] is True
 
 
-def test_health_degrades_rather_than_raising_when_the_token_is_unreadable(
+def test_an_unreadable_token_is_a_503_that_says_why_without_details(
     client: TestClient,
 ) -> None:
-    """A health check that 500s tells a load balancer nothing useful."""
-    body = client.get("/health").json()
+    """A 500 tells a monitor nothing; a 503 with a reason tells it to page.
+    The exception text stays in the server log: it can name paths and hosts."""
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    body = response.json()
     assert body["status"] == "degraded"
-    assert "token_error" in body
+    assert body["problems"] == ["google token unreadable"]
+    assert "token_error" not in body
+
+
+@dataclass(frozen=True)
+class _Token:
+    days_remaining: float = 5.0
+    expired: bool = False
+    needs_reauth_soon: bool = False
+
+
+@dataclass(frozen=True)
+class _Store:
+    token: _Token
+
+    def health(self) -> _Token:
+        return self.token
+
+    def metadata(self) -> TokenMetadata:
+        return TokenMetadata(
+            issued_at=datetime.now(UTC) - timedelta(days=2), minted_under="testing"
+        )
+
+
+def _scheduler_on(monkeypatch: pytest.MonkeyPatch, booted_ago: timedelta) -> None:
+    monkeypatch.setattr("app.api.token_store", lambda settings: _Store(_Token()))
+    monkeypatch.setattr(
+        "app.api.get_settings",
+        lambda: _settings(run_scheduler=True, poll_interval_minutes=10),
+    )
+    monkeypatch.setattr("app.api.LIVENESS", Liveness(booted_at=datetime.now(UTC) - booted_ago))
+
+
+def test_a_stalled_poller_is_a_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _scheduler_on(monkeypatch, booted_ago=timedelta(hours=2))
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["problems"] == ["no successful poll in three intervals"]
+
+
+def test_a_fresh_process_is_healthy_inside_its_boot_grace(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_polling_is_not_judged_when_the_scheduler_is_off(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scheduler_on(monkeypatch, booted_ago=timedelta(hours=2))
+    monkeypatch.setattr("app.api.get_settings", lambda: _settings(run_scheduler=False))
+
+    assert client.get("/health").status_code == 200
 
 
 # --- secret materialisation ------------------------------------------------
@@ -193,3 +260,70 @@ def test_invalid_base64_fails_loudly() -> None:
     silently processes no mail."""
     with pytest.raises(SecretDecodeError, match="not valid base64"):
         materialise_secrets({"GOOGLE_TOKEN_B64": "!!!not base64!!!"})
+
+
+# --- standby token (M15) ----------------------------------------------------
+
+
+def _token_stores(
+    monkeypatch: pytest.MonkeyPatch, *, primary_rejected: bool, standby: _Token | None
+) -> None:
+    """Primary minted under production; the evidence says whether Google killed it."""
+    from app.google.tokens import RefreshOutcome
+    from app.obs.liveness import TokenEvidence
+
+    issued = datetime.now(UTC) - timedelta(days=8)
+    evidence = TokenEvidence()
+    if primary_rejected:
+        evidence.record(
+            RefreshOutcome(issued_at=issued, at=datetime.now(UTC), ok=False, rejected=True)
+        )
+    monkeypatch.setattr("app.api.TOKEN_EVIDENCE", evidence)
+    monkeypatch.setattr(
+        "app.api.token_store",
+        lambda settings: _ProductionStore(_Token(days_remaining=-1.0), issued),
+    )
+    monkeypatch.setattr(
+        "app.api.standby_token_store",
+        lambda settings: (
+            None
+            if standby is None
+            else _ProductionStore(standby, datetime.now(UTC) - timedelta(days=4))
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _ProductionStore:
+    token: _Token
+    issued_at: datetime
+
+    def health(self) -> _Token:
+        return self.token
+
+    def metadata(self) -> TokenMetadata:
+        return TokenMetadata(issued_at=self.issued_at, minted_under="production")
+
+
+def test_a_dead_primary_with_a_live_standby_is_healthy(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _token_stores(monkeypatch, primary_rejected=True, standby=_Token(days_remaining=3.0))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_state"] == "expired"
+    assert body["token_in_use"] == "standby"
+
+
+def test_a_dead_primary_without_a_standby_is_a_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _token_stores(monkeypatch, primary_rejected=True, standby=None)
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["problems"] == ["google token expired"]
