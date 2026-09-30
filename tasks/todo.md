@@ -598,11 +598,11 @@ Pages that read the database may fail until 16.23. Only sign-in is under test.
 - It never touches the graph. It returns queued, stale, not found or invalid.
 
 **Acceptance criteria:**
-- [ ] Each action enqueues exactly one decision.
-- [ ] A stale revision is refused, and nothing is enqueued.
-- [ ] **Two concurrent decisions on one revision: one wins, and the other is refused**, on Neon.
-- [ ] An empty correction, an edit at revision 3 and a missing row are refused.
-- [ ] Each decision records its `via`, `action_type` and `pipeline_version`.
+- [x] Each action enqueues exactly one decision.
+- [x] A stale revision is refused, and nothing is enqueued. So is a second tap on the same card.
+- [x] **Two concurrent decisions on one revision: one wins, and the other is refused**, on Neon, with two connections released together.
+- [x] An empty correction, an edit at revision 3 and a missing row are refused. So is a correction over 2,000 characters, because it goes into a model prompt.
+- [x] Each decision records its `via`, `action_type` and `pipeline_version`, and its latency from when that revision parked.
 
 **Verification:** `uv run pytest tests/test_decide.py`; the integration tests on Neon; `.\tasks.ps1 check`.
 
