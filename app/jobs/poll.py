@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 import threading
-from typing import Any
+from typing import Any, NamedTuple
 
 import psycopg
 
@@ -35,14 +35,25 @@ timeout, leaving a `claimed` row that nothing ever offers again.
 """
 
 
+class PollResult(NamedTuple):
+    seen: int
+    """Unread messages the pass looked at."""
+
+    started: int
+    """Messages it claimed and ran through the graph."""
+
+    failed: int
+    """Of those, how many were dead-lettered as FAILED."""
+
+
 def poll_once(
     session: GraphSession, limit: int, *, stop: threading.Event | None = None
-) -> tuple[int, int]:
-    """Returns `(seen, started)`."""
+) -> PollResult:
     ledger = MessageLedger(session.conn)
 
     message_ids = session.deps.gmail.list_unread(max_results=limit)
     started = 0
+    failed = 0
     stopped = False
 
     for message_id in ledger.unseen(message_ids):
@@ -63,6 +74,7 @@ def poll_once(
             # non-terminal, and the message can be re-run once the cause is fixed.
             ledger.mark(message_id, MessageStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
             print(f"  {message_id}  FAILED  {exc}")
+            failed += 1
             continue
 
         pending = session.pending(message_id)
@@ -79,7 +91,7 @@ def poll_once(
         # Left where it was on an early stop: unprocessed mail is still
         # behind it, and moving it forward would skip that mail for good.
         SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
-    return len(message_ids), started
+    return PollResult(seen=len(message_ids), started=started, failed=failed)
 
 
 def _notify(pending: dict[str, Any], message_id: str) -> None:
@@ -127,10 +139,10 @@ def main() -> None:
         return
 
     with graph_session(settings) as session:
-        seen, started = poll_once(session, args.limit)
+        result = poll_once(session, args.limit)
 
-    print(f"\nSaw {seen} unread, started {started} new.")
-    if started == 0 and seen:
+    print(f"\nSaw {result.seen} unread, started {result.started} new, {result.failed} failed.")
+    if result.started == 0 and result.seen:
         print("Nothing new -- idempotency holding.")
 
 

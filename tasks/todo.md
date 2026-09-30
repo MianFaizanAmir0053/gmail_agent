@@ -152,9 +152,9 @@ write at runtime instead of at boot.
 - A gap query, including window sentinels, returns the longest stretch without a successful poll.
 
 **Acceptance criteria:**
-- [ ] A tick with one `FAILED` message records `ok = false`.
-- [ ] A raising tick records `ok = false` with the error type, and the scheduler keeps running.
-- [ ] The gap query catches gaps at the start, middle and end of a window.
+- [x] A tick with one `FAILED` message records `ok = false`.
+- [x] A raising tick records `ok = false` with the error type, and the scheduler keeps running. A database outage costs only the record.
+- [ ] The gap query catches gaps at the start, middle and end of a window. *The integration tests are written but have not run: they need `TEST_DATABASE_URL`.*
 
 **Verification:** `.\tasks.ps1 migrate`; tests with the integration marker; `.\tasks.ps1 check`.
 

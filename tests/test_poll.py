@@ -91,9 +91,9 @@ def cursor(monkeypatch: pytest.MonkeyPatch) -> FakeCursor:
 def test_a_normal_pass_claims_every_unread_message(ledger: FakeLedger, cursor: FakeCursor) -> None:
     session = FakeSession(unread=["a", "b", "c"])
 
-    _, started = poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
+    result = poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
 
-    assert started == 3
+    assert result.started == 3
     assert ledger.claimed == ["a", "b", "c"]
     assert cursor.values == ["h42"]
 
@@ -103,9 +103,9 @@ def test_a_shutdown_mid_pass_claims_nothing_further(ledger: FakeLedger, cursor: 
     stop = threading.Event()
     session = FakeSession(unread=["a", "b", "c"], on_start=lambda _: stop.set())
 
-    _, started = poll.poll_once(cast(GraphSession, session), 10, stop=stop)
+    result = poll.poll_once(cast(GraphSession, session), 10, stop=stop)
 
-    assert started == 1
+    assert result.started == 1
     assert ledger.claimed == ["a"]
 
 

@@ -12,6 +12,8 @@ before.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
+from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -20,21 +22,58 @@ from app.google.auth import token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
 from app.jobs.poll import STOPPING, poll_once
+from app.store.db import connect
+from app.store.job_runs import JobRuns
 from app.telegram.client import TelegramClient
 from app.telegram.notify import admin_chat_id
 
 log = logging.getLogger(__name__)
 
 
+def record_tick(settings: Settings, job: str, started_at: datetime, **fields: Any) -> None:
+    """Write one `job_runs` row. Never raises.
+
+    A database outage should cost the record of a tick, not the scheduler:
+    the next tick still fires, and the missing row shows up as a gap.
+    """
+    try:
+        with connect(settings.database_url) as conn:
+            JobRuns(conn).record(job, started_at, datetime.now(UTC), **fields)
+    except Exception:
+        log.exception("could not record %s tick", job)
+
+
 def run_poll(settings: Settings) -> None:
+    started_at = datetime.now(UTC)
     try:
         with graph_session(settings) as session:
-            seen, started = poll_once(session, settings.poll_batch_size, stop=STOPPING)
-        log.info("poll: saw %d unread, started %d", seen, started)
-    except Exception:
+            result = poll_once(session, settings.poll_batch_size, stop=STOPPING)
+    except Exception as exc:
         # A scheduled job that raises kills nothing but itself, and APScheduler
         # would swallow the traceback. Log it loudly; the next tick retries.
         log.exception("poll failed")
+        # The type only: exception text can carry message content or URLs.
+        record_tick(settings, "poll", started_at, ok=False, error=type(exc).__name__)
+        return
+
+    log.info(
+        "poll: saw %d unread, started %d, failed %d", result.seen, result.started, result.failed
+    )
+    record_tick(
+        settings,
+        "poll",
+        started_at,
+        ok=result.failed == 0,
+        seen=result.seen,
+        started=result.started,
+        failed=result.failed,
+        error=None if result.failed == 0 else f"{result.failed} message(s) failed",
+    )
+
+
+def run_ingest(settings: Settings) -> None:
+    started_at = datetime.now(UTC)
+    record_tick(settings, "ingest", started_at, ok=scheduled_ingest(settings))
 
 
 def check_token(settings: Settings) -> None:
@@ -101,7 +140,7 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
 
     if settings.ingest_enabled:
         scheduler.add_job(
-            scheduled_ingest,
+            run_ingest,
             "interval",
             hours=settings.ingest_interval_hours,
             args=[settings],
