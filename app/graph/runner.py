@@ -91,22 +91,43 @@ class GraphSession:
 
     def pending(self, message_id: str) -> dict[str, Any] | None:
         """The interrupt payload for a parked thread, or None if not parked."""
-        snapshot = self._graph().get_state(self.config(message_id))
-        for task in snapshot.tasks:
-            for interrupt_ in task.interrupts:
-                value: dict[str, Any] = interrupt_.value
-                return value
-        return None
+        return self.thread(message_id).payload
 
     def revision(self, message_id: str) -> int:
-        """Which version of the proposal the thread is on: 1 until an edit.
+        """Which version of the proposal the thread is on: 1 until an edit."""
+        return self.thread(message_id).revision
 
-        Read from the graph's own edit counter rather than from the interrupt
-        payload, so proposals parked before the payload carried anything
-        extra get the same answer.
-        """
-        values = self._graph().get_state(self.config(message_id)).values
-        return int(values.get("revisions", 0)) + 1
+    def thread(self, message_id: str) -> ThreadView:
+        """What the checkpoint says about a thread, read once."""
+        snapshot = self._graph().get_state(self.config(message_id))
+        payload: dict[str, Any] | None = next(
+            (interrupt_.value for task in snapshot.tasks for interrupt_ in task.interrupts),
+            None,
+        )
+        return ThreadView(
+            payload=payload,
+            # The graph's own edit counter, not the interrupt payload: proposals
+            # parked before the payload carried anything extra get the same answer.
+            revision=int(snapshot.values.get("revisions", 0)) + 1,
+            next=tuple(snapshot.next),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadView:
+    payload: dict[str, Any] | None
+    """The interrupt payload while parked at `await_approval`; otherwise None."""
+
+    revision: int
+    """1 until an edit, then one more per edit."""
+
+    next: tuple[str, ...]
+    """The nodes the checkpoint would run next. A node that failed stays here,
+    which is how a thread stopped mid-graph is told apart from a finished one."""
+
+    @property
+    def parked(self) -> bool:
+        return self.payload is not None
 
 
 @contextmanager

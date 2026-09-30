@@ -621,10 +621,11 @@ Pages that read the database may fail until 16.23. Only sign-in is under test.
 A settle is one transaction of conditional writes.
 
 **Acceptance criteria:**
-- [ ] Every row of D1's table has a test that seeds that stored state.
-- [ ] `act` in `next` is never re-driven.
-- [ ] A late failed settle never overwrites a final ledger status, and an outcome is written only once.
-- [ ] A re-park carries the new revision and is announced.
+- [x] Every row of D1's table has a test that seeds that stored state: the step rule is a pure function with unit tests, and the paths through a real graph are tested on Neon.
+- [x] `act` in `next` is never re-driven. The graph's ledger counts its marks, and the worker adds none.
+- [x] A late failed settle never overwrites a final ledger status, and an outcome is written only once.
+- [x] A re-park carries the new revision and payload, and is announced.
+- A parked thread at a revision the decision cannot explain is settled as failed rather than guessed at.
 
 **Verification:** `uv run pytest tests/test_worker.py`; `.\tasks.ps1 check`.
 
