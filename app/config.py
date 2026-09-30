@@ -11,7 +11,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # `.\tasks.ps1 models --probe` before changing these.
     extraction_model: str = "gemini-3.6-flash"
     classify_model: str = "gemini-3.5-flash-lite"
+
+    ai_gateway_api_key: SecretStr | None = None
+    """Vercel AI Gateway key. Needed only when `classify_model` is an evaluation
+    model the gateway serves, such as `typesafe-ai/jev`, rather than a Gemini one."""
 
     # --- Retrieval (M10) ----------------------------------------------------
     embedding_model: str = "gemini-embedding-001"
@@ -188,6 +192,7 @@ class Settings(BaseSettings):
         "telegram_bot_token",
         "telegram_webhook_secret",
         "fernet_key",
+        "ai_gateway_api_key",
         mode="before",
     )
     @classmethod
@@ -202,6 +207,20 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def _gateway_classifier_needs_its_key(self) -> Settings:
+        """Fail at boot rather than on the first email, where every triage call
+        would come back 401."""
+        # Imported here so loading settings never drags in the HTTP client.
+        from app.extraction.evaluation import EVALUATION_MODELS
+
+        if self.classify_model in EVALUATION_MODELS and self.ai_gateway_api_key is None:
+            raise ValueError(
+                f"CLASSIFY_MODEL={self.classify_model} runs on Vercel AI Gateway; "
+                "set AI_GATEWAY_API_KEY"
+            )
+        return self
 
 
 def transaction_pooler_problem(url: str) -> str | None:

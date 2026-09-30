@@ -93,8 +93,10 @@ class GenaiLike(Protocol):
 @dataclass(frozen=True, slots=True)
 class Usage:
     input_tokens: int = 0
+    """The whole prompt, as `prompt_token_count` reports it -- cached share included."""
     output_tokens: int = 0
     cached_input_tokens: int = 0
+    """The share of `input_tokens` served from cache, not tokens on top of it."""
     thinking_tokens: int = 0
 
     @property

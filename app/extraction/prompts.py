@@ -78,6 +78,28 @@ calendar, which is worse than missing an ambiguous one.
 Answer only the is_meeting question. Do not extract times.
 """
 
+MEETING_QUESTION = (
+    "Should this email create a calendar event for the recipient? Be strict: a "
+    "wrong calendar entry is worse than missing an ambiguous one."
+)
+"""Triage as one boolean question, for evaluation models such as Jev.
+
+The same test as `CLASSIFY_SYSTEM`. An evaluation model answers a question about
+the state instead of following a system prompt, so the `is_meeting` conventions
+travel in the true and false criteria below rather than as instructions."""
+
+MEETING_CRITERIA = {
+    "true": (
+        "it proposes, confirms, or moves a meeting, call, interview or event to a "
+        "specific date and time the recipient is expected to attend"
+    ),
+    "false": (
+        "it only mentions one: a cancellation, a skipped occurrence of a recurring "
+        "meeting, a newsletter or webinar advert, a job alert, a receipt, a "
+        "notification, or a vague 'let's meet sometime' with no committed time"
+    ),
+}
+
 EXTRACT_SYSTEM = f"""\
 You extract calendar events from email.
 
