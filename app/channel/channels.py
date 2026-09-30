@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from app.channel.park import ProposalRecord
+from app.channel.webpush import DatabaseSubscriptions, WebPushChannel
 from app.config import Settings
 from app.telegram.client import Sender, TelegramClient
 from app.telegram.notify import admin_chat_id, send_approval_card
@@ -110,6 +111,15 @@ def configured_channels(settings: Settings) -> Channels:
     """The channels the settings make possible. None configured is allowed:
     the timeline still shows every proposal."""
     channels: list[Channel] = []
+
+    if settings.vapid_private_key is not None and settings.web_app_url is not None:
+        channels.append(
+            WebPushChannel(
+                subscriptions=DatabaseSubscriptions(settings.database_url),
+                private_key=settings.vapid_private_key.get_secret_value(),
+                subject=settings.web_app_url,
+            )
+        )
 
     chat_id = admin_chat_id(settings.allowed_chat_ids)
     if settings.telegram_bot_token is not None and chat_id is not None:

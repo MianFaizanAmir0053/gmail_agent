@@ -162,6 +162,11 @@ class Settings(BaseSettings):
     vapid_private_key: SecretStr | None = None
     """Signs web pushes. Generate the pair with `.\\tasks.ps1 vapid`."""
 
+    web_app_url: str | None = None
+    """The web app's URL (Vercel). Web push sends it to Apple and Google as the
+    VAPID subject, in place of the owner's email. Push is off until both this
+    and `vapid_private_key` are set."""
+
     # --- Scheduling (M07) ---------------------------------------------------
     run_scheduler: bool = False
     """Start the in-process poller. Off by default so local `serve` and tests

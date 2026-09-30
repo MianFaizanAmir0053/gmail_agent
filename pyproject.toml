@@ -25,6 +25,7 @@ dependencies = [
     # conversion in app.extraction.payloads depends on it -- runtime, not dev.
     "tzdata>=2024.1",
     "uvicorn[standard]>=0.30",
+    "pywebpush>=2.5.0",
 ]
 
 [dependency-groups]
@@ -75,6 +76,8 @@ module = [
     "google_auth_oauthlib.*",
     "google.auth.*",
     "google.oauth2.*",
+    "pywebpush.*",
+    "py_vapid.*",
 ]
 ignore_missing_imports = true
 

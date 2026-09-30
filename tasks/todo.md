@@ -792,10 +792,11 @@ A settle is one transaction of conditional writes.
 - `.\tasks.ps1 vapid` generates the key pair.
 
 **Acceptance criteria:**
-- [ ] No payload carries proposal content: seeded strings never appear.
-- [ ] `webpush` is called with the timeout, the `ttl` and the urgency.
-- [ ] A 410 deletes the subscription.
-- [ ] `uv lock --check` passes, and only `pywebpush` and its dependencies were added.
+- [x] No payload carries proposal content: seeded strings never appear, and the message id does not either.
+- [x] `webpush` is called with the timeout, the `ttl` and the urgency. Each send gets a fresh claims dict, because `webpush` writes the push service's audience into the one it is given (verified in its source).
+- [x] A 404 or 410 deletes the subscription; a passing failure (503) keeps it. Logs name the push service, never the endpoint.
+- [x] `uv lock --check` passes, and only `pywebpush` and its dependencies were added: `py-vapid`, `http-ece`, and `aiohttp` with its stack, which `pywebpush` 2.x requires. `.\tasks.ps1 vapid` prints a pair that `pywebpush` loads and that browsers accept (a 65-byte uncompressed point).
+- Push turns on only when both `VAPID_PRIVATE_KEY` and `WEB_APP_URL` are set. The app's URL is the VAPID subject.
 
 **Verification:** `uv run pytest tests/test_webpush.py`; `.\tasks.ps1 check`.
 
