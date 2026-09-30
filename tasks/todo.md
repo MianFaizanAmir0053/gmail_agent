@@ -122,8 +122,8 @@ alternative. Otherwise a pasted pooler string would fail every checkpoint
 write at runtime instead of at boot.
 
 **Acceptance criteria:**
-- [ ] Both pooler forms are rejected at settings validation, with an actionable message.
-- [ ] Direct, session-mode and localhost URLs are accepted.
+- [x] Both pooler forms are rejected at startup (`get_settings`), with an actionable message that never repeats the URL. `TEST_DATABASE_URL` gets the same check, and skip messages show only the host.
+- [x] Direct, session-mode and localhost URLs are accepted.
 
 **Verification:** `uv run pytest tests/test_config.py`; `.\tasks.ps1 check`.
 

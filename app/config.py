@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -188,7 +189,49 @@ class Settings(BaseSettings):
         return value
 
 
+def transaction_pooler_problem(url: str) -> str | None:
+    """Why `url` cannot be used, if it points at a transaction-mode pooler.
+
+    A transaction-mode pooler hands each statement to whichever server
+    connection is free, so the prepared statements psycopg creates for
+    LangGraph's checkpointer vanish between calls. Every checkpoint write then
+    fails at runtime, hours after a clean boot. Catching it here moves that
+    failure to startup.
+
+    Only the two poolers this project is likely to be pointed at are
+    recognised. The message never repeats the URL: it carries the password,
+    and startup errors end up in hosted logs.
+    """
+    if "://" not in url:
+        return None  # a libpq key=value DSN; nothing to recognise
+
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if host.endswith(".pooler.supabase.com") and parts.port == 6543:
+        return (
+            "points at Supabase's transaction-mode pooler (port 6543), which breaks the "
+            "prepared statements LangGraph's checkpointer uses. Use the direct connection "
+            "(db.<project>.supabase.co:5432) or the session pooler on port 5432."
+        )
+    if host.endswith(".neon.tech") and "-pooler." in host:
+        return (
+            "points at Neon's pooled endpoint (PgBouncer in transaction mode), which breaks "
+            "the prepared statements LangGraph's checkpointer uses. Use the same host "
+            "without '-pooler'."
+        )
+    return None
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Load and validate settings. Cached; raises ValidationError on bad config."""
-    return Settings()
+    """Load and validate settings. Cached.
+
+    Raises `ValidationError` on bad config, and `RuntimeError` for a database
+    URL no connection in this app can use.
+    """
+    settings = Settings()
+    if problem := transaction_pooler_problem(settings.database_url):
+        # Raised outside pydantic on purpose: a ValidationError would echo the
+        # input value, and this one contains the database password.
+        raise RuntimeError(f"DATABASE_URL {problem}")
+    return settings
