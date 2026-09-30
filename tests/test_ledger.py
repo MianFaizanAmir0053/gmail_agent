@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import psycopg
 import pytest
 
 from app.store.ledger import (
+    STRANDED_REASON,
     MessageLedger,
     MessageStatus,
     StatusTransitionError,
@@ -173,3 +176,47 @@ def test_sync_state_cannot_gain_a_second_row(conn: psycopg.Connection) -> None:
     """Two rows would mean two pollers disagreeing about where they are."""
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute("INSERT INTO sync_state (id, last_history_id) VALUES (2, 'x')")
+
+
+# --- stranded claims (M15) -------------------------------------------------
+
+
+def test_boot_recovery_fails_only_stale_claims(
+    ledger: MessageLedger, conn: psycopg.Connection
+) -> None:
+    """A redeploy can kill a poll mid-message. `unseen` never offers that
+    message again, so without recovery its `claimed` row is invisible forever."""
+    ledger.claim("stale", "stale")
+    ledger.claim("fresh", "fresh")
+    ledger.claim("done", "done")
+    ledger.mark("done", MessageStatus.SKIPPED)
+    conn.execute(
+        "UPDATE processed_messages SET updated_at = now() - interval '2 hours'"
+        " WHERE gmail_message_id IN ('stale', 'done')"
+    )
+
+    recovered = ledger.fail_stranded(timedelta(hours=1))
+
+    assert recovered == 1
+    stale = ledger.get("stale")
+    assert stale is not None
+    assert stale.status == MessageStatus.FAILED
+    assert stale.error == STRANDED_REASON
+
+
+def test_boot_recovery_leaves_recent_claims_and_other_statuses_alone(
+    ledger: MessageLedger, conn: psycopg.Connection
+) -> None:
+    ledger.claim("fresh", "fresh")
+    ledger.claim("done", "done")
+    ledger.mark("done", MessageStatus.SKIPPED)
+    conn.execute(
+        "UPDATE processed_messages SET updated_at = now() - interval '2 hours'"
+        " WHERE gmail_message_id = 'done'"
+    )
+
+    ledger.fail_stranded(timedelta(hours=1))
+
+    fresh, done = ledger.get("fresh"), ledger.get("done")
+    assert fresh is not None and fresh.status == MessageStatus.CLAIMED
+    assert done is not None and done.status == MessageStatus.SKIPPED

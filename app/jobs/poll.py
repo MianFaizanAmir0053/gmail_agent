@@ -12,6 +12,7 @@ the point, not an inconvenience.
 from __future__ import annotations
 
 import argparse
+import threading
 from typing import Any
 
 import psycopg
@@ -25,15 +26,29 @@ from app.telegram.notify import admin_chat_id, send_approval_card
 
 CLAIMED_NOT_RUN = "claimed but graph did not complete"
 
+STOPPING = threading.Event()
+"""Set when the process starts shutting down (`app.api.lifespan`).
 
-def poll_once(session: GraphSession, limit: int) -> tuple[int, int]:
+A pass in progress finishes the message it holds and claims no more. A claim
+taken after this point could be killed mid-graph at the platform's kill
+timeout, leaving a `claimed` row that nothing ever offers again.
+"""
+
+
+def poll_once(
+    session: GraphSession, limit: int, *, stop: threading.Event | None = None
+) -> tuple[int, int]:
     """Returns `(seen, started)`."""
     ledger = MessageLedger(session.conn)
 
     message_ids = session.deps.gmail.list_unread(max_results=limit)
     started = 0
+    stopped = False
 
     for message_id in ledger.unseen(message_ids):
+        if stop is not None and stop.is_set():
+            stopped = True
+            break
         # `unseen` is only a cheap pre-filter -- another run can insert between
         # that query and this one, so `claim` remains the authority.
         if not ledger.claim(message_id, message_id):
@@ -60,7 +75,10 @@ def poll_once(session: GraphSession, limit: int) -> tuple[int, int]:
             print(f"  {message_id}  AWAITING APPROVAL  {proposed.get('title')}")
             _notify(pending, message_id)
 
-    SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
+    if not stopped:
+        # Left where it was on an early stop: unprocessed mail is still
+        # behind it, and moving it forward would skip that mail for good.
+        SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
     return len(message_ids), started
 
 

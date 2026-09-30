@@ -13,7 +13,7 @@ would be a textbook race -- both would read "no" before either wrote.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 import psycopg
@@ -60,6 +60,16 @@ class LedgerEntry:
         return self.status in TERMINAL_STATUSES
 
 
+STRANDED_AFTER = timedelta(hours=1)
+"""How old a `claimed` row must be before boot treats it as abandoned.
+
+Far longer than any single message's trip through the graph, so a second
+instance that is still running during a deploy keeps its live claims.
+"""
+
+STRANDED_REASON = "stranded by shutdown"
+
+
 class StatusTransitionError(ValueError):
     """Attempted a status change the schema or the workflow forbids."""
 
@@ -84,6 +94,23 @@ class MessageLedger:
             (gmail_message_id, thread_id, MessageStatus.CLAIMED.value),
         ).fetchone()
         return row is not None
+
+    def fail_stranded(self, older_than: timedelta) -> int:
+        """Turn abandoned claims into visible failures. Returns how many.
+
+        A claim is taken before its graph runs and is replaced by the graph's
+        own outcome. If the process dies in between, the row stays `claimed`
+        for ever: `unseen` never offers it again and nothing lists it. Called
+        at boot, when this process has no run in flight.
+        """
+        return self._conn.execute(
+            """
+            UPDATE processed_messages
+               SET status = %s, error = %s, updated_at = now()
+             WHERE status = %s AND updated_at < now() - %s
+            """,
+            (MessageStatus.FAILED.value, STRANDED_REASON, MessageStatus.CLAIMED.value, older_than),
+        ).rowcount
 
     def mark(
         self,

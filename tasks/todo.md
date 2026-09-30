@@ -136,8 +136,8 @@ write at runtime instead of at boot.
 - At boot, ledger rows still `claimed` after more than one hour become `FAILED`, with the reason "stranded by shutdown".
 
 **Acceptance criteria:**
-- [ ] A shutdown signal mid-tick claims no further messages.
-- [ ] Boot recovery marks only stale `claimed` rows. Fresh claims and other statuses are untouched.
+- [x] A shutdown signal mid-tick claims no further messages, and a stopped pass leaves the sync cursor where it was.
+- [ ] Boot recovery marks only stale `claimed` rows; fresh claims and other statuses are untouched. *The integration tests are written but have not run: they need `TEST_DATABASE_URL` (the Neon project).*
 
 **Verification:** ledger and scheduler tests (integration marker for Postgres); `.\tasks.ps1 check`.
 

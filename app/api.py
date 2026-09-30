@@ -114,6 +114,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler = None
     if settings.run_scheduler:
         from app.jobs.scheduler import build_scheduler
+        from app.store.db import connect
+        from app.store.ledger import STRANDED_AFTER, MessageLedger
+
+        # Nothing is in flight in this process yet, so any old claim was left
+        # by a predecessor that died mid-message. Surfaced as FAILED rather
+        # than left `claimed`, where nothing would ever look at it again.
+        with connect(settings.database_url) as conn:
+            recovered = MessageLedger(conn).fail_stranded(STRANDED_AFTER)
+        if recovered:
+            log.warning("marked %d stranded claim(s) as failed", recovered)
 
         scheduler = build_scheduler(settings)
         scheduler.start()
@@ -123,8 +133,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         if scheduler is not None:
-            # Without this, a redeploy can leave a poll mid-flight holding a
+            from app.jobs.poll import STOPPING
+
+            # Stop taking new claims first, then wait for the message in hand.
+            # Without both, a redeploy can leave a poll mid-flight holding a
             # claimed message that no longer has a process behind it.
+            STOPPING.set()
             scheduler.shutdown(wait=True)
 
 

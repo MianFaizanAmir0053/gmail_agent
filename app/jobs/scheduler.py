@@ -19,7 +19,7 @@ from app.config import Settings
 from app.google.auth import token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
-from app.jobs.poll import poll_once
+from app.jobs.poll import STOPPING, poll_once
 from app.telegram.client import TelegramClient
 from app.telegram.notify import admin_chat_id
 
@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 def run_poll(settings: Settings) -> None:
     try:
         with graph_session(settings) as session:
-            seen, started = poll_once(session, settings.poll_batch_size)
+            seen, started = poll_once(session, settings.poll_batch_size, stop=STOPPING)
         log.info("poll: saw %d unread, started %d", seen, started)
     except Exception:
         # A scheduled job that raises kills nothing but itself, and APScheduler
