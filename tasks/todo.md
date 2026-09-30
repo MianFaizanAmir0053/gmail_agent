@@ -823,7 +823,8 @@ A settle is one transaction of conditional writes.
 
 ### Checkpoint: the backend is done
 
-- [ ] `.\tasks.ps1 check` is green, and the integration tests pass on Neon.
+- [x] `.\tasks.ps1 check` is green, and the integration tests pass on Neon (129 passed on 2026-10-01; the one failure is the known one). After the review fixes: 741 unit tests pass, and the 17 affected integration tests pass on Neon.
+- [x] A fresh-context review read the backend against D3, D4, D6 and D7. It found no HIGH issues and eight smaller ones, all fixed (`cc1623a`, recorded in the spec).
 - [ ] The owner reviews before the web app is built.
 
 ---
