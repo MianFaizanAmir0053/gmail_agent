@@ -14,7 +14,7 @@ from googleapiclient.discovery import build
 
 from app.config import Settings
 from app.google.scopes import SCOPES
-from app.google.tokens import TokenStore
+from app.google.tokens import MintedUnder, TokenStore
 
 
 class GoogleAuthNotConfiguredError(RuntimeError):
@@ -29,10 +29,12 @@ def token_store(settings: Settings) -> TokenStore:
     return TokenStore(Path(settings.google_token_path), settings.fernet_key.get_secret_value())
 
 
-def run_consent_flow(settings: Settings) -> Credentials:
+def run_consent_flow(settings: Settings, *, minted_under: MintedUnder) -> Credentials:
     """Open a browser, complete consent, and store a fresh token.
 
     This is the only path that resets the seven-day refresh-token clock.
+    `minted_under` is the OAuth app's publishing status right now, and is
+    stored with the token as the evidence M15 checks.
     """
     if settings.google_client_secrets_path is None:
         raise GoogleAuthNotConfiguredError(
@@ -47,7 +49,9 @@ def run_consent_flow(settings: Settings) -> Credentials:
         flow.run_local_server(port=0, access_type="offline", prompt="consent"),
     )
 
-    token_store(settings).save(credentials.to_json(), issued_at=datetime.now(UTC))
+    token_store(settings).save(
+        credentials.to_json(), issued_at=datetime.now(UTC), minted_under=minted_under
+    )
     return credentials
 
 

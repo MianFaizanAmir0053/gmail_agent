@@ -210,9 +210,9 @@ retry plumbing, and rebase onto their merge if both land.
 - `TokenStore.save()` preserves every metadata field on routine refreshes.
 
 **Acceptance criteria:**
-- [ ] `reauth` without the flag exits with a usage error.
-- [ ] Metadata survives a routine save.
-- [ ] Existing tokens without `minted_under` load as `testing`.
+- [x] `reauth` without the flag exits with a usage error (exit code 2).
+- [x] Metadata survives a routine save, including fields this version does not know.
+- [x] Existing tokens without `minted_under` load as `testing`.
 
 **Verification:** `uv run pytest tests/test_tokens.py`; `.\tasks.ps1 check`.
 

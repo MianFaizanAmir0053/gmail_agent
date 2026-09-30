@@ -62,6 +62,6 @@ switch ($Task) {
 
     # --- M01 -------------------------------------------------------------
     'fernet' { uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" }
-    'reauth' { uv run python -m app.google.reauth }
+    'reauth' { uv run python -m app.google.reauth @Rest }
     'smoke'  { uv run python -m app.google.smoke }
 }
