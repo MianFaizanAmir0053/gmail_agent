@@ -360,9 +360,10 @@ returning typed metadata records. No bodies.
 - **Settings:** `OWNER_ALIASES` and `MEASURE_EXCLUDE_SENDERS`, plus a `measure` entry in `tasks.ps1`.
 
 **Acceptance criteria:**
-- [ ] Every B2 definition has a test.
-- [ ] No header value appears in any written output, asserted against seeded fixtures.
-- [ ] It refuses to run with the default `UTC` zone.
+- [x] Every B2 definition has a test (26 tests).
+- [x] No header value appears in any written output, asserted against seeded fixtures.
+- [x] It refuses to run with the default `UTC` zone.
+- [ ] One pass on the owner's real mailbox. Pending: the local Google token is unreadable on this machine, so run `.	asks.ps1 reauth` locally first.
 
 **Verification:** `uv run pytest tests/test_measure.py`; `.\tasks.ps1 check`; one agent-run pass on the owner's mailbox, reviewing the counts-only output.
 

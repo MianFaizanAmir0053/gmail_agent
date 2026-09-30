@@ -114,6 +114,15 @@ class Settings(BaseSettings):
     """The mailbox owner. Stripped from extracted attendee lists -- you are not
     an attendee of your own meeting."""
 
+    owner_aliases: list[str] = Field(default_factory=list)
+    """Other addresses that reach the owner (M15 measurement), as a JSON list.
+    Mail to an alias missing from here is not recognised as an ask, so the
+    loose-ends count undercounts by whatever it misses."""
+
+    measure_exclude_senders: list[str] = Field(default_factory=list)
+    """Senders the M15 measurement ignores, as a JSON list. For the owner's
+    own test mail, such as the planted day-1 meeting."""
+
     # --- Google (M01) -------------------------------------------------------
     google_client_secrets_path: str | None = None
     google_token_path: str | None = None
