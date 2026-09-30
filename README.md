@@ -347,7 +347,7 @@ Deployment runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
   bot can read your email; the allowlist is not optional hardening.
 - `REVIEWER_ENABLED` and `INGEST_ENABLED` default to **false**. Both spend money
   without anyone having asked for anything.
-- An unset `DASHBOARD_TOKEN` returns 503 rather than admitting everyone.
+- The dashboard admits one verified Google address, `OWNER_EMAIL`. A blank value admits nobody.
 - Real email lives in gitignored directories. Only anonymised fixtures are
   committed, and the labelled retrieval queries are not committed at all.
 

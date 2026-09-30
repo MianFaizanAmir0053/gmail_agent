@@ -1,4 +1,9 @@
+import { redirect } from "next/navigation";
 import { Pool } from "pg";
+import { cache } from "react";
+
+import { auth } from "@/auth";
+import { isOwnerSession } from "@/lib/access";
 
 /**
  * Server components query Postgres directly.
@@ -9,11 +14,12 @@ import { Pool } from "pg";
  *
  * The pool is cached on globalThis because Next's dev server re-evaluates
  * modules on every hot reload, and a fresh pool per reload exhausts Postgres
- * connections within a few minutes of editing.
+ * connections within a few minutes of editing. It is not exported: every read
+ * goes through `query`, which checks the session.
  */
 const globalForPg = globalThis as unknown as { pool?: Pool };
 
-export const pool =
+const pool =
   globalForPg.pool ??
   new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -23,7 +29,18 @@ export const pool =
 
 if (process.env.NODE_ENV !== "production") globalForPg.pool = pool;
 
+/** One session lookup per request, however many queries a page makes. */
+const currentSession = cache(() => auth());
+
 export async function query<T>(text: string, params: unknown[] = []): Promise<T[]> {
+  // The proxy already gates every page. This check is the one that holds when
+  // the proxy is skipped: Next documents that a matcher change or a moved
+  // Server Function can bypass it, and any read would then be open.
+  const session = await currentSession();
+  if (!isOwnerSession(session?.user?.email, process.env.OWNER_EMAIL)) {
+    redirect("/api/auth/signin");
+  }
+
   const result = await pool.query(text, params);
   return result.rows as T[];
 }

@@ -207,6 +207,7 @@ with `.\tasks.ps1 approve --reconcile`.
 **Sign-in**
 - Auth.js v5 with Google: `next-auth@5.0.0-beta.32`, pinned exactly (the `beta` tag on 2026-09-30). A plain `npm i next-auth` installs 4.24.15, which has no `auth()`.
 - It admits only a verified email equal to `OWNER_EMAIL`, on every route **except** `/manifest.webmanifest`, `/sw.js`, `/icons/*` and `/api/auth/*`. Browsers fetch a manifest without cookies, and iOS needs it to install a real web app rather than a bookmark.
+- Every database read checks the session again, because Next documents that a matcher change or a moved Server Function can skip the proxy.
 - The sign-in client lives in a **separate Google Cloud project**, published "In production", asking only for `openid email profile`. If it shared the Gmail project and that project fell back to Testing, Google would refuse other accounts before the allow-list ever saw them, and exit criterion 1 would prove nothing.
 - **iPhone risk.** Home Screen apps keep their own storage and open Google sign-in in an in-app browser. Sign-in inside the installed app is tested on a real iPhone on day 1; pairing (D4) is the fallback.
 
@@ -233,9 +234,10 @@ with `.\tasks.ps1 approve --reconcile`.
 - On iPhone Safari the page explains "Add to Home Screen".
 
 **Region.** `vercel.json` sets `"regions": ["sin1"]`. Hobby allows exactly one
-function region (Vercel docs, checked 2026-09-30). Routing middleware still
-runs at the edge in every region, but the sign-in gate only reads the session
-cookie, so no proposal content is handled there.
+function region (Vercel docs, checked 2026-09-30). Next 16 renamed middleware
+to `proxy.ts`, which runs on Node.js, and Vercel runs it globally, before the
+cache (Next and Vercel docs, checked 2026-09-30). The sign-in gate there reads
+only the session cookie, so no proposal content is handled outside `sin1`.
 
 ### D6. Push and alerts
 
@@ -427,4 +429,14 @@ approved the spec on 2026-09-30.
 
 ## Running notes
 
-*Not started.*
+### Task 16.1: sign-in slice (2026-09-30)
+
+- **Next 16 renamed middleware to `proxy.ts`.** It runs on Node.js, and Vercel runs it globally. D5's region note is corrected accordingly.
+- **Auth.js** `5.0.0-beta.32` is pinned. Its peer range includes Next 16.
+- **The owner check runs twice.** It runs in the proxy, and again on every database read, following Next's data-security guidance.
+- **Local run with dummy credentials:**
+  - gated pages answer 307 to the sign-in page;
+  - the manifest, the icons and `/api/auth/*` answer 200 without a session;
+  - a forged session cookie is refused.
+- **`npm audit` found critical advisories in `next` 16.3.1**, which was already pinned before this task. They are fixed in 16.3.8, and the upgrade must land before the app is public in 16.2. It is an existing dependency, so the owner decides.
+- M09's spec still mentions `DASHBOARD_TOKEN`, as a record of what M09 built.
