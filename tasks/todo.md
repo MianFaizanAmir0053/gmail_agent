@@ -6,7 +6,11 @@ Spec: [`docs/plans/M15-go-live.md`](../docs/plans/M15-go-live.md) · Plan: [`pla
 - **Owner steps** are marked **[owner]**.
 - **Scope sizes:** S is 1–2 files, M is 3–5 files.
 - **This machine has no working Postgres or Docker.** WSL and Hyper-V are disabled; see the session memory "no-local-postgres". So:
-  - tests marked `integration` skip locally, and run either in CI (the pgvector service in `.github/workflows/ci.yml`) or against the hosted dev database chosen in task 1, via `TEST_DATABASE_URL`;
+  - tests marked `integration` skip under a plain `check`. They run in one of three places:
+    - a local `pgserver` scratch Postgres, following the recipe in that memory. It needs the owner's OK, because it is a download.
+    - CI, using the pgvector service in `.github/workflows/ci.yml`.
+    - the hosted dev database chosen in task 1, via `TEST_DATABASE_URL`.
+  - CI's Test step has been red since August because of `test_rag_search.py::test_vector_mode_cannot_reach_a_keyword_only_match`, which only passes against a populated database. A separate session is fixing it. Check the failing test's name before blaming a change.
   - the image is built by CI's "Build image" step or by Fly's remote builder.
 
 ---
@@ -64,9 +68,9 @@ Non-edit decisions must clear it.
 - `approve.py` accepts `--action sweep`.
 
 **Acceptance criteria:**
-- [ ] The pending payload contains `dry_run`.
-- [ ] `sweep` records the sweep reason, never "declined by user".
-- [ ] `approve --list` shows `dry_run` for each proposal.
+- [x] The pending payload contains `dry_run`.
+- [x] `sweep` records the sweep reason, never "declined by user". `--sweep-all` ends every parked proposal.
+- [x] `approve --list` shows `dry_run` for each proposal.
 
 **Verification:** graph and approve tests, then `.\tasks.ps1 check`.
 

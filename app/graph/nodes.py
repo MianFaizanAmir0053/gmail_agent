@@ -36,6 +36,14 @@ Enforced here rather than in the prompt: an instruction to "only revise twice"
 is a suggestion, a counter in graph state is a guarantee.
 """
 
+SWEEP_REASON = "swept: observe mode ended"
+"""Ledger reason for proposals cleared in bulk (M15).
+
+Kept distinct from "declined by user": M24 counts a person's cancellations
+against the agent when deciding what it may do unattended, and a sweep says
+nothing about whether the proposal was any good.
+"""
+
 MAX_REVIEW_ROUNDS = 2
 """Reviewer-driven re-extractions before the graph stops listening.
 
@@ -158,6 +166,10 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
             "message_id": state["message_id"],
             "proposed": state["extraction"].model_dump(mode="json"),
             "conflicts": state.get("conflicts", []),
+            # `DRY_RUN` is read when a session is built, not stored with the
+            # thread. Recording it here is what lets M17 refuse a proposal that
+            # was parked under a different setting than the one it would run in.
+            "dry_run": deps.calendar.dry_run,
         }
     )
     action = str(decision.get("action", "cancel")).lower()
@@ -170,7 +182,7 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
     # Any other answer ends the edit round. Left in place, the previous
     # correction outlives it: `_decision` would still see an edit in progress
     # and send a Confirm or Cancel straight back to `extract`.
-    return {"approved": action == "confirm", "correction": ""}
+    return {"approved": action == "confirm", "correction": "", "swept": action == "sweep"}
 
 
 def act(deps: Deps, state: GraphState) -> GraphState:
@@ -199,16 +211,18 @@ def skip(deps: Deps, state: GraphState) -> GraphState:
 
 
 def reject(deps: Deps, state: GraphState) -> GraphState:
-    """Reached from two directions: a human declining, or the reviewer rejecting.
+    """Reached from three directions: a human declining, the reviewer
+    rejecting, or an operator sweeping parked proposals.
 
     The reason is recorded rather than assumed, so the failures view does not
-    report an agent's decision as a person's.
+    report an agent's or an operator's decision as a person's.
     """
-    reason = (
-        "; ".join(state.get("review_issues", [])) or "rejected by reviewer"
-        if state.get("review_decision") == "reject"
-        else "declined by user"
-    )
+    if state.get("review_decision") == "reject":
+        reason = "; ".join(state.get("review_issues", [])) or "rejected by reviewer"
+    elif state.get("swept"):
+        reason = SWEEP_REASON
+    else:
+        reason = "declined by user"
     deps.ledger.mark(state["message_id"], MessageStatus.REJECTED, error=reason)
     return {"action": ActionResult(status="rejected", error=reason)}
 
