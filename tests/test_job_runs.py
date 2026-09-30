@@ -81,3 +81,28 @@ def test_other_jobs_do_not_count(runs: JobRuns) -> None:
     gap = runs.longest_gap("poll", T0, T0 + timedelta(minutes=60, seconds=5))
 
     assert gap == timedelta(minutes=60)
+
+
+# --- token refresh evidence (M15) ------------------------------------------
+
+
+def _refresh(
+    runs: JobRuns, issued: datetime, at: datetime, *, ok: bool, error: str | None = None
+) -> None:
+    runs.record("token_refresh", at, at, ok=ok, error=error, token_issued_at=issued)
+
+
+def test_refresh_evidence_is_read_per_token(runs: JobRuns) -> None:
+    old, new = T0, T0 + timedelta(days=4)
+    _refresh(runs, old, T0 + timedelta(days=7), ok=False, error="invalid_grant")
+    _refresh(runs, new, T0 + timedelta(days=8), ok=True)
+
+    assert runs.refresh_evidence(old) == (None, True)
+    assert runs.refresh_evidence(new) == (T0 + timedelta(days=8), False)
+
+
+def test_a_success_after_a_rejection_clears_it(runs: JobRuns) -> None:
+    _refresh(runs, T0, T0 + timedelta(days=7), ok=False, error="invalid_grant")
+    _refresh(runs, T0, T0 + timedelta(days=7, hours=1), ok=True)
+
+    assert runs.refresh_evidence(T0) == (T0 + timedelta(days=7, hours=1), False)

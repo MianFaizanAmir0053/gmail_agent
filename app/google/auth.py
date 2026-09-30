@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -14,7 +17,31 @@ from googleapiclient.discovery import build
 
 from app.config import Settings
 from app.google.scopes import SCOPES
-from app.google.tokens import MintedUnder, TokenStore
+from app.google.tokens import MintedUnder, RefreshOutcome, TokenStore
+
+log = logging.getLogger(__name__)
+
+_refresh_observer: Callable[[RefreshOutcome], None] | None = None
+
+
+def observe_refreshes(observer: Callable[[RefreshOutcome], None] | None) -> None:
+    """Report every access-token refresh to `observer` (M15).
+
+    The web process registers one that records the outcome. The CLI tools,
+    the eval harness and the tests register none, so they need no database.
+    """
+    global _refresh_observer
+    _refresh_observer = observer
+
+
+def _report(outcome: RefreshOutcome) -> None:
+    if _refresh_observer is None:
+        return
+    try:
+        _refresh_observer(outcome)
+    except Exception:
+        # Evidence is worth recording, never worth failing authentication for.
+        log.exception("could not record a token refresh")
 
 
 class GoogleAuthNotConfiguredError(RuntimeError):
@@ -62,14 +89,26 @@ def load_credentials(settings: Settings) -> Credentials:
     refresh token itself is unchanged and its seven-day deadline stands.
     """
     store = token_store(settings)
-    credentials_json, _ = store.load()
+    credentials_json, issued_at = store.load()
     credentials: Credentials = Credentials.from_authorized_user_info(
         cast(dict[str, Any], json.loads(credentials_json)), SCOPES
     )
 
     if not credentials.valid and credentials.expired and credentials.refresh_token:
-        credentials.refresh(Request())
+        try:
+            credentials.refresh(Request())
+        except RefreshError as exc:
+            _report(
+                RefreshOutcome(
+                    issued_at=issued_at,
+                    at=datetime.now(UTC),
+                    ok=False,
+                    rejected="invalid_grant" in str(exc),
+                )
+            )
+            raise
         store.save(credentials.to_json())
+        _report(RefreshOutcome(issued_at=issued_at, at=datetime.now(UTC), ok=True, rejected=False))
 
     return credentials
 

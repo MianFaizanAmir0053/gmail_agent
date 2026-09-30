@@ -20,6 +20,7 @@ from pydantic import SecretStr
 from app.api import router
 from app.bootstrap import SecretDecodeError, materialise_secrets
 from app.config import Settings
+from app.google.tokens import TokenMetadata
 from app.obs.liveness import Liveness
 
 SECRET = "s3cret-token"
@@ -187,6 +188,11 @@ class _Store:
 
     def health(self) -> _Token:
         return self.token
+
+    def metadata(self) -> TokenMetadata:
+        return TokenMetadata(
+            issued_at=datetime.now(UTC) - timedelta(days=2), minted_under="testing"
+        )
 
 
 def _scheduler_on(monkeypatch: pytest.MonkeyPatch, booted_ago: timedelta) -> None:

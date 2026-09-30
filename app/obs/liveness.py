@@ -10,8 +10,10 @@ succeeded" covers the database as well.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+
+from app.google.tokens import RefreshOutcome
 
 STALL_INTERVALS = 3
 """How many poll intervals may pass without a success before health degrades.
@@ -43,6 +45,38 @@ class Liveness:
 LIVENESS = Liveness(booted_at=datetime.now(UTC))
 """The running process's own record. Written by the scheduler's poll job,
 read by `/health`."""
+
+
+@dataclass
+class RefreshEvidence:
+    last_ok_at: datetime | None = None
+    rejected: bool = False
+
+
+@dataclass
+class TokenEvidence:
+    """What this process has seen of each token's refreshes, keyed by the
+    token's `issued_at`. Seeded from `job_runs` at boot, so a restart does not
+    forget a confirmation that took a week to earn."""
+
+    _by_token: dict[datetime, RefreshEvidence] = field(default_factory=dict)
+
+    def record(self, outcome: RefreshOutcome) -> None:
+        evidence = self._by_token.setdefault(outcome.issued_at, RefreshEvidence())
+        if outcome.ok:
+            evidence.last_ok_at = outcome.at
+            evidence.rejected = False
+        elif outcome.rejected:
+            evidence.rejected = True
+
+    def seed(self, issued_at: datetime, *, last_ok_at: datetime | None, rejected: bool) -> None:
+        self._by_token[issued_at] = RefreshEvidence(last_ok_at=last_ok_at, rejected=rejected)
+
+    def for_token(self, issued_at: datetime) -> RefreshEvidence:
+        return self._by_token.get(issued_at, RefreshEvidence())
+
+
+TOKEN_EVIDENCE = TokenEvidence()
 
 _HANDLER_MARK = "_mailagent_handler"
 

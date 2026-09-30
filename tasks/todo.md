@@ -226,9 +226,9 @@ retry plumbing, and rebase onto their merge if both land.
 - `/health` exposes the states.
 
 **Acceptance criteria:**
-- [ ] Confirmation needs a recorded successful refresh after `issued_at` + 7 days.
-- [ ] An older token's failure never marks a newer token expired.
-- [ ] `invalid_grant` gives `expired`.
+- [x] Confirmation needs a recorded successful refresh after `issued_at` + 7 days.
+- [x] An older token's failure never marks a newer token expired, both in memory and in `job_runs` (checked on Neon).
+- [x] `invalid_grant` gives `expired`. Evidence is reloaded from `job_runs` at boot, so a redeploy keeps a confirmation.
 
 **Verification:** token and API tests; `.\tasks.ps1 check`.
 

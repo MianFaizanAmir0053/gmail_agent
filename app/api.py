@@ -20,9 +20,10 @@ from fastapi.responses import JSONResponse
 
 from app.bootstrap import materialise_secrets
 from app.config import Settings, get_settings
-from app.google.auth import token_store
+from app.google.auth import observe_refreshes, token_store
+from app.google.tokens import RefreshOutcome, token_state
 from app.graph.runner import graph_session
-from app.obs.liveness import LIVENESS, configure_logging
+from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE, configure_logging
 from app.telegram.client import TelegramClient
 from app.telegram.handler import NotAllowedError, TelegramHandler
 
@@ -53,15 +54,28 @@ def health() -> JSONResponse:
             problems.append("no successful poll in three intervals")
 
     try:
-        token = token_store(settings).health()
+        store = token_store(settings)
+        metadata = store.metadata()
+        countdown = store.health()
     except Exception:  # a health check that raises is not a health check
         log.exception("token health check failed")
         problems.append("google token unreadable")
     else:
-        body["token_days_remaining"] = round(token.days_remaining, 1)
-        if token.expired:
+        evidence = TOKEN_EVIDENCE.for_token(metadata.issued_at)
+        state = token_state(
+            metadata,
+            now=datetime.now(UTC),
+            last_ok_refresh_at=evidence.last_ok_at,
+            rejected=evidence.rejected,
+        )
+        body["token_state"] = state
+        if state in ("testing", "production-unconfirmed"):
+            # For an unconfirmed production token this is the deadline a
+            # Testing token would have had: the moment the claim gets tested.
+            body["token_days_remaining"] = round(countdown.days_remaining, 1)
+        if state == "expired":
             problems.append("google token expired")
-        elif token.needs_reauth_soon:
+        elif state == "testing" and countdown.needs_reauth_soon:
             body["warning"] = "Google token expires soon -- run `tasks.ps1 reauth`"
 
     if problems:
@@ -119,6 +133,42 @@ def _require_token(settings: Settings) -> str:
     return settings.telegram_bot_token.get_secret_value()
 
 
+def _record_refresh(settings: Settings, outcome: RefreshOutcome) -> None:
+    """Keep a refresh as evidence: in memory for `/health`, in `job_runs` for
+    the exit criterion and for the next boot."""
+    from app.jobs.scheduler import record_tick
+
+    TOKEN_EVIDENCE.record(outcome)
+    error = None if outcome.ok else ("invalid_grant" if outcome.rejected else "refresh failed")
+    record_tick(
+        settings,
+        "token_refresh",
+        outcome.at,
+        ok=outcome.ok,
+        error=error,
+        token_issued_at=outcome.issued_at,
+    )
+
+
+def _seed_token_evidence(settings: Settings) -> None:
+    """Reload what earlier processes proved about the current token.
+
+    Confirmation takes a week to earn and a redeploy to lose, if it lives only
+    in memory. Never raises: an unreadable token is `/health`'s to report.
+    """
+    from app.store.db import connect
+    from app.store.job_runs import JobRuns
+
+    try:
+        issued_at = token_store(settings).metadata().issued_at
+        with connect(settings.database_url) as conn:
+            last_ok_at, rejected = JobRuns(conn).refresh_evidence(issued_at)
+    except Exception:
+        log.exception("could not load token refresh evidence")
+        return
+    TOKEN_EVIDENCE.seed(issued_at, last_ok_at=last_ok_at, rejected=rejected)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
@@ -150,6 +200,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             recovered = MessageLedger(conn).fail_stranded(STRANDED_AFTER)
         if recovered:
             log.warning("marked %d stranded claim(s) as failed", recovered)
+
+        _seed_token_evidence(settings)
+        observe_refreshes(lambda outcome: _record_refresh(settings, outcome))
 
         scheduler = build_scheduler(settings)
         scheduler.start()

@@ -65,6 +65,48 @@ class TokenHealth:
         return self.days_remaining <= REAUTH_WARNING_THRESHOLD.days
 
 
+TokenState = Literal["testing", "production-unconfirmed", "production-confirmed", "expired"]
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshOutcome:
+    """One attempt to refresh an access token, and which token it used."""
+
+    issued_at: datetime
+    """Identifies the refresh token. Evidence is always kept per token, so an
+    old token's death is never read as a new one's."""
+
+    at: datetime
+    ok: bool
+    rejected: bool
+    """Google refused the refresh token itself (`invalid_grant`): it is dead,
+    as opposed to a network blip that the next tick will retry."""
+
+
+def token_state(
+    metadata: TokenMetadata,
+    *,
+    now: datetime,
+    last_ok_refresh_at: datetime | None,
+    rejected: bool,
+) -> TokenState:
+    """Where a token stands, from evidence rather than from a setting.
+
+    A Testing token simply counts down. A production token is only
+    *confirmed* once it has been used successfully after the point where a
+    Testing token would have died. Until then, "In production removes the
+    seven-day limit" is a claim, and M15 exists to test it.
+    """
+    if rejected:
+        return "expired"
+    lapse_at = metadata.issued_at + TESTING_MODE_REFRESH_LIFETIME
+    if metadata.minted_under == "testing":
+        return "expired" if now >= lapse_at else "testing"
+    if last_ok_refresh_at is not None and last_ok_refresh_at > lapse_at:
+        return "production-confirmed"
+    return "production-unconfirmed"
+
+
 class TokenNotFoundError(RuntimeError):
     """No stored token. Run the consent flow: `python -m app.google.reauth`."""
 
