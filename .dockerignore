@@ -1,5 +1,6 @@
 # Secrets must never reach the image layer cache or a registry.
 .env
+.env.test
 secrets/
 *.enc
 client_secret*.json
