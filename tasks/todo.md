@@ -335,9 +335,9 @@ window, and `threads.get` with `format=metadata` for the given headers, all
 returning typed metadata records. No bodies.
 
 **Acceptance criteria:**
-- [ ] Pagination follows every page token.
-- [ ] Only `format=metadata` is requested.
-- [ ] Records carry label ids, `internalDate` and the named headers only.
+- [x] Pagination follows every page token.
+- [x] Only `format=metadata` is requested.
+- [x] Records carry label ids, `internalDate` and the named headers only.
 
 **Verification:** `uv run pytest tests/test_gmail.py`; `.\tasks.ps1 check`.
 

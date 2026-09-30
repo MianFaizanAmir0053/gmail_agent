@@ -11,11 +11,63 @@ import base64
 import binascii
 import html
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import getaddresses
+from types import MappingProxyType
 from typing import Any, cast
 
 from app.contracts import EmailMessage
+
+METADATA_HEADERS = (
+    "From",
+    "To",
+    "Cc",
+    "Subject",
+    "List-Unsubscribe",
+    "Auto-Submitted",
+    "Precedence",
+)
+"""The only headers M15's measurement asks Gmail for.
+
+Enough to tell who wrote a message, to whom, and whether a machine sent it.
+Subject is used to recognise calendar notifications and for the owner's own
+on-screen labelling. It is never written anywhere.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class MessageMeta:
+    """A message without its body: labels, time, and the named headers only."""
+
+    id: str
+    thread_id: str
+    label_ids: frozenset[str]
+    internal_date: datetime
+    headers: Mapping[str, str]
+
+
+def to_message_meta(message: dict[str, Any]) -> MessageMeta:
+    """Convert a `format=metadata` message. Headers outside
+    `METADATA_HEADERS` are dropped even if Gmail sends them."""
+    payload = cast(dict[str, Any], message.get("payload", {}))
+    wanted = {name.lower(): name for name in METADATA_HEADERS}
+    headers: dict[str, str] = {}
+    for header in payload.get("headers", []):
+        name = wanted.get(str(header.get("name", "")).lower())
+        if name is not None and name not in headers:
+            headers[name] = str(header.get("value", ""))
+
+    return MessageMeta(
+        id=cast(str, message["id"]),
+        thread_id=cast(str, message["threadId"]),
+        label_ids=frozenset(cast(list[str], message.get("labelIds", []))),
+        # internalDate, never the Date header: Gmail sets it, senders do not.
+        internal_date=datetime.fromtimestamp(int(message["internalDate"]) / 1000, tz=UTC),
+        headers=MappingProxyType(headers),
+    )
+
 
 _TAG = re.compile(r"<[^>]+>")
 _WHITESPACE = re.compile(r"\n\s*\n\s*\n+")
@@ -164,3 +216,46 @@ class GmailClient:
         """Mailbox history cursor. M04 seeds incremental sync from this."""
         profile = cast(dict[str, Any], self._service.users().getProfile(userId="me").execute())
         return cast(str, profile["historyId"])
+
+    def profile_address(self) -> str:
+        """The mailbox's own address, lower-cased for comparison."""
+        profile = cast(dict[str, Any], self._service.users().getProfile(userId="me").execute())
+        return cast(str, profile["emailAddress"]).lower()
+
+    def thread_ids(self, query: str) -> list[str]:
+        """Every thread matching a Gmail search query, across all pages.
+
+        No limit, unlike `search`: M15's measurement counts a fixed window, and
+        a capped walk would quietly undercount a busy fortnight. The window in
+        the query is what bounds it.
+        """
+        ids: list[str] = []
+        page_token: str | None = None
+        while True:
+            response = cast(
+                dict[str, Any],
+                self._service.users()
+                .threads()
+                .list(userId="me", q=query, maxResults=500, pageToken=page_token)
+                .execute(),
+            )
+            ids.extend(cast(str, thread["id"]) for thread in response.get("threads", []))
+            page_token = cast(str | None, response.get("nextPageToken"))
+            if not page_token:
+                return ids
+
+    def thread_metadata(self, thread_id: str) -> list[MessageMeta]:
+        """A thread's messages as metadata only: no bodies are requested."""
+        response = cast(
+            dict[str, Any],
+            self._service.users()
+            .threads()
+            .get(
+                userId="me",
+                id=thread_id,
+                format="metadata",
+                metadataHeaders=list(METADATA_HEADERS),
+            )
+            .execute(),
+        )
+        return [to_message_meta(message) for message in response.get("messages", [])]
