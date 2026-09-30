@@ -19,12 +19,32 @@ STALL_INTERVALS = 3
 """How many poll intervals may pass without a success before health degrades.
 One missed tick is noise; three in a row is an outage worth paging for."""
 
+DECISION_STUCK_AFTER = timedelta(hours=1)
+"""How long a decision may stay open before health degrades. Three failed
+attempts settle one within about twelve minutes, so an hour means the worker
+itself is stuck."""
+
 
 @dataclass
 class Liveness:
     booted_at: datetime
     last_poll_at: datetime | None = None
     last_poll_ok_at: datetime | None = None
+    oldest_open_decision_at: datetime | None = None
+    """When the oldest open decision was made, as the decisions job last saw
+    it. A decision recorded in this process sets it too, if the job saw none:
+    a job that hangs stops refreshing it, and the hang then ages into a 503."""
+
+    def decisions_checked(self, oldest_open: datetime | None) -> None:
+        self.oldest_open_decision_at = oldest_open
+
+    def decision_recorded(self, at: datetime) -> None:
+        if self.oldest_open_decision_at is None:
+            self.oldest_open_decision_at = at
+
+    def decision_stuck(self, now: datetime) -> bool:
+        oldest = self.oldest_open_decision_at
+        return oldest is not None and now - oldest > DECISION_STUCK_AFTER
 
     def poll_finished(self, *, ok: bool, at: datetime) -> None:
         self.last_poll_at = at

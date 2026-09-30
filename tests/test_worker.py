@@ -683,3 +683,34 @@ def test_settles_refuse_to_run_outside_a_transaction(migrated_database: str) -> 
             settle_failed(bare, 0, "nobody", reason="x")
         with pytest.raises(RuntimeError, match="transaction"):
             settle_decided(bare, 0, "nobody", final_status="skipped")
+
+
+# --- what the decisions job asks before opening a session (16.9) ----------------
+
+
+@pytest.mark.integration
+def test_the_job_sees_the_oldest_open_decision_and_whether_it_is_due(
+    conn: psycopg.Connection,
+) -> None:
+    from app.jobs.scheduler import decisions_status
+
+    assert decisions_status(conn) == (None, False)
+
+    session, _ = _world(conn)
+    _parked(conn, session)
+    decide(conn, "m1", action="confirm", revision=1, via="web")
+    decided_at = conn.execute("SELECT decided_at FROM decisions").fetchone()
+    assert decided_at is not None
+    assert decisions_status(conn) == (decided_at[0], True)
+
+    conn.execute("UPDATE decisions SET next_attempt_at = now() + interval '1 minute'")
+    assert decisions_status(conn) == (decided_at[0], False)  # waiting to retry
+
+    conn.execute(
+        "UPDATE decisions SET next_attempt_at = now(), lease_until = now() + interval '1 minute'"
+    )
+    assert decisions_status(conn) == (decided_at[0], False)  # another worker has it
+
+    conn.execute("UPDATE decisions SET lease_until = NULL")
+    apply_open(session)
+    assert decisions_status(conn) == (None, False)

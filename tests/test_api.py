@@ -195,13 +195,15 @@ class _Store:
         )
 
 
-def _scheduler_on(monkeypatch: pytest.MonkeyPatch, booted_ago: timedelta) -> None:
+def _scheduler_on(monkeypatch: pytest.MonkeyPatch, booted_ago: timedelta) -> Liveness:
     monkeypatch.setattr("app.api.token_store", lambda settings: _Store(_Token()))
     monkeypatch.setattr(
         "app.api.get_settings",
         lambda: _settings(run_scheduler=True, poll_interval_minutes=10),
     )
-    monkeypatch.setattr("app.api.LIVENESS", Liveness(booted_at=datetime.now(UTC) - booted_ago))
+    live = Liveness(booted_at=datetime.now(UTC) - booted_ago)
+    monkeypatch.setattr("app.api.LIVENESS", live)
+    return live
 
 
 def test_a_stalled_poller_is_a_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,6 +233,33 @@ def test_polling_is_not_judged_when_the_scheduler_is_off(
     monkeypatch.setattr("app.api.get_settings", lambda: _settings(run_scheduler=False))
 
     assert client.get("/health").status_code == 200
+
+
+def test_a_decision_open_for_over_an_hour_is_a_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker is stuck, or the queue is. Either way the owner's tap has
+    gone nowhere for an hour."""
+    live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    live.decisions_checked(datetime.now(UTC) - timedelta(minutes=61))
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["problems"] == ["a decision has been open for over an hour"]
+    assert response.json()["oldest_open_decision_seconds"] >= 3660
+
+
+def test_a_recent_open_decision_is_reported_but_healthy(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    live.decisions_checked(datetime.now(UTC) - timedelta(seconds=40))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert 40 <= response.json()["oldest_open_decision_seconds"] < 120
 
 
 # --- secret materialisation ------------------------------------------------

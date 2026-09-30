@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -13,16 +13,19 @@ from pydantic import SecretStr
 from app.channel.reconcile import ReconcileResult
 from app.config import Settings
 from app.jobs.ingest_job import incremental_query, scheduled_ingest
-from app.jobs.poll import PollResult
+from app.jobs.poll import STOPPING, PollResult
 from app.jobs.scheduler import (
     build_scheduler,
     check_token,
     record_tick,
+    run_decisions,
     run_ingest,
     run_poll,
     run_purge,
     run_reconcile,
+    wake_decisions,
 )
+from app.obs.liveness import Liveness
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -41,7 +44,146 @@ def test_the_standing_jobs_are_registered() -> None:
         "purge",
         "token_health",
         "reconcile",
+        "decisions",
     }
+
+
+# --- the decisions job (M16, D1) ---------------------------------------------
+
+
+def test_the_decisions_job_runs_every_fifteen_seconds_one_at_a_time() -> None:
+    """One worker: the queue's safety rests on nothing else resuming a thread."""
+    job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "decisions")
+
+    assert "0:00:15" in str(job.trigger)
+    assert job.max_instances == 1
+    assert job.coalesce is True
+
+
+def _liveness(monkeypatch: pytest.MonkeyPatch) -> Liveness:
+    live = Liveness(booted_at=datetime.now(UTC))
+    monkeypatch.setattr("app.jobs.scheduler.LIVENESS", live)
+    return live
+
+
+def _no_session(settings: Settings) -> Any:
+    raise AssertionError("opened a graph session with nothing to do")
+
+
+def test_an_empty_queue_costs_one_query_and_no_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every fifteen seconds, the common case must stay cheap."""
+    live = _liveness(monkeypatch)
+    live.decisions_checked(datetime.now(UTC) - timedelta(minutes=5))
+    monkeypatch.setattr("app.jobs.scheduler.open_decisions", lambda settings: (None, False))
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
+    recorded = _capture(monkeypatch)
+
+    run_decisions(_settings())
+
+    assert recorded == []
+    assert live.oldest_open_decision_at is None
+
+
+def test_an_open_decision_not_yet_due_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = _liveness(monkeypatch)
+    opened = datetime.now(UTC) - timedelta(minutes=2)
+    monkeypatch.setattr("app.jobs.scheduler.open_decisions", lambda settings: (opened, False))
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
+
+    run_decisions(_settings())
+
+    assert live.oldest_open_decision_at == opened
+
+
+def test_a_due_decision_is_applied_and_the_tick_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = _liveness(monkeypatch)
+    opened = datetime.now(UTC) - timedelta(seconds=30)
+    monkeypatch.setattr("app.jobs.scheduler.open_decisions", lambda settings: (opened, True))
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    calls: list[dict[str, Any]] = []
+
+    def _apply(session: Any, **kwargs: Any) -> list[tuple[str, str]]:
+        calls.append(kwargs)
+        return [("m1", "skipped")]
+
+    monkeypatch.setattr("app.jobs.scheduler.apply_open", _apply)
+    recorded = _capture(monkeypatch)
+
+    run_decisions(_settings())
+
+    # A shutdown stops the worker starting another decision.
+    assert calls[0]["stop"] is STOPPING
+    assert recorded == [{"job": "decisions", "ok": True, "started": 1, "failed": 0, "error": None}]
+    assert live.oldest_open_decision_at == opened
+
+
+def test_a_decision_that_could_not_be_applied_marks_the_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _liveness(monkeypatch)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.open_decisions", lambda settings: (datetime.now(UTC), True)
+    )
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.apply_open",
+        lambda session, **kwargs: [("m1", "error"), ("m2", "rejected")],
+    )
+    recorded = _capture(monkeypatch)
+
+    run_decisions(_settings())
+
+    assert recorded == [
+        {
+            "job": "decisions",
+            "ok": False,
+            "started": 2,
+            "failed": 1,
+            "error": "1 decision(s) could not be applied",
+        }
+    ]
+
+
+def test_a_failing_decisions_job_is_recorded_at_most_every_five_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It runs every fifteen seconds; recording each failure would bury job_runs."""
+    _liveness(monkeypatch)
+
+    def _explode(settings: Settings) -> Any:
+        raise RuntimeError("database unreachable")
+
+    monkeypatch.setattr("app.jobs.scheduler.open_decisions", _explode)
+    monkeypatch.setattr("app.jobs.scheduler._decisions_failure_recorded_at", None)
+    recorded = _capture(monkeypatch)
+
+    run_decisions(_settings())  # must not raise
+    run_decisions(_settings())
+
+    assert recorded == [{"job": "decisions", "ok": False, "error": "RuntimeError"}]
+
+
+def test_waking_runs_the_decisions_job_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    scheduler = build_scheduler(_settings())
+    scheduler.start(paused=True)  # nothing actually runs
+    try:
+        monkeypatch.setattr("app.jobs.scheduler._active", scheduler)
+
+        assert wake_decisions() is True
+
+        job = scheduler.get_job("decisions")
+        assert job is not None
+        assert job.next_run_time <= datetime.now(UTC) + timedelta(seconds=1)
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+def test_waking_without_a_scheduler_in_this_process_does_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI records decisions from another process; the job's next tick finds them."""
+    monkeypatch.setattr("app.jobs.scheduler._active", None)
+    assert wake_decisions() is False
 
 
 def test_reconciliation_runs_when_the_scheduler_starts_and_hourly_after() -> None:

@@ -12,12 +12,15 @@ before.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import psycopg
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.channel.reconcile import reconcile
+from app.channel.worker import apply_open
 from app.config import Settings
 from app.google.auth import token_store
 from app.graph.runner import graph_session
@@ -34,6 +37,19 @@ log = logging.getLogger(__name__)
 
 RECORD_CONNECT_TIMEOUT = 5
 """Seconds `record_tick` waits for the database before giving up on a record."""
+
+DECISIONS_EVERY = timedelta(seconds=15)
+"""How often the worker looks for queued decisions. A decision made in the web
+process wakes it at once; this bounds the wait for one made anywhere else."""
+
+DECISION_FAILURES_RECORDED_EVERY = timedelta(minutes=5)
+"""The decisions job runs every fifteen seconds, so a failing one is recorded
+in `job_runs` at most this often. `/health` reports a stuck queue itself."""
+
+_decisions_failure_recorded_at: datetime | None = None
+
+_active: BackgroundScheduler | None = None
+"""The scheduler this process runs, for `wake_decisions`."""
 
 
 def record_tick(settings: Settings, job: str, started_at: datetime, **fields: Any) -> None:
@@ -89,6 +105,87 @@ def run_poll(settings: Settings) -> None:
 def run_ingest(settings: Settings) -> None:
     started_at = datetime.now(UTC)
     record_tick(settings, "ingest", started_at, ok=scheduled_ingest(settings))
+
+
+def open_decisions(settings: Settings) -> tuple[datetime | None, bool]:
+    """When the oldest open decision was made, and whether any is due now."""
+    with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
+        return decisions_status(conn)
+
+
+def decisions_status(conn: psycopg.Connection) -> tuple[datetime | None, bool]:
+    row = conn.execute(
+        """
+        SELECT min(decided_at),
+               coalesce(bool_or(next_attempt_at <= now()
+                                AND (lease_until IS NULL OR lease_until < now())), false)
+          FROM decisions
+         WHERE outcome IS NULL
+        """
+    ).fetchone()
+    assert row is not None
+    return row[0], bool(row[1])
+
+
+def run_decisions(settings: Settings) -> None:
+    """The worker (M16, D1): apply queued decisions. The only thing that resumes a thread."""
+    global _decisions_failure_recorded_at
+    started_at = datetime.now(UTC)
+    try:
+        oldest, due = open_decisions(settings)
+        LIVENESS.decisions_checked(oldest)
+        # Only a due decision is worth a graph session, which loads
+        # credentials and builds clients; most ticks find nothing.
+        if not due or STOPPING.is_set():
+            return
+        with graph_session(settings) as session:
+            applied = apply_open(session, announce=announce_telegram, stop=STOPPING)
+    except Exception as exc:
+        log.exception("decisions job failed")
+        last = _decisions_failure_recorded_at
+        if last is None or started_at - last >= DECISION_FAILURES_RECORDED_EVERY:
+            _decisions_failure_recorded_at = started_at
+            record_tick(settings, "decisions", started_at, ok=False, error=type(exc).__name__)
+        return
+
+    if not applied:
+        return
+    errors = sum(1 for _, outcome in applied if outcome == "error")
+    log.info("decisions: %s", ", ".join(f"{mid} {outcome}" for mid, outcome in applied))
+    record_tick(
+        settings,
+        "decisions",
+        started_at,
+        ok=errors == 0,
+        started=len(applied),
+        failed=errors,
+        error=None if errors == 0 else f"{errors} decision(s) could not be applied",
+    )
+
+
+def activate(scheduler: BackgroundScheduler) -> None:
+    """Start the scheduler, and make it the one `wake_decisions` reaches."""
+    global _active
+    scheduler.start()
+    _active = scheduler
+
+
+def wake_decisions() -> bool:
+    """Run the decisions job now, if this process runs the scheduler.
+
+    Called after a decision is recorded in the web process, so a tap does not
+    wait for the next tick. Returns False when there is nothing to wake -- a
+    CLI in another process, or a scheduler that is off -- and the next tick
+    then finds the decision.
+    """
+    scheduler = _active
+    if scheduler is None or not scheduler.running:
+        return False
+    try:
+        scheduler.modify_job("decisions", next_run_time=datetime.now(UTC))
+    except JobLookupError:
+        return False
+    return True
 
 
 def run_reconcile(settings: Settings) -> None:
@@ -204,6 +301,19 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         id="token_health",
         max_instances=1,
         coalesce=True,
+    )
+
+    # One worker: the queue's safety rests on nothing else resuming a thread,
+    # so this job never overlaps itself.
+    scheduler.add_job(
+        run_decisions,
+        "interval",
+        seconds=int(DECISIONS_EVERY.total_seconds()),
+        args=[settings],
+        id="decisions",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=int(DECISIONS_EVERY.total_seconds()),
     )
 
     # At start, then hourly. A parked thread without a row is invisible to the

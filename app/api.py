@@ -47,11 +47,19 @@ def health() -> JSONResponse:
     problems: list[str] = []
 
     if settings.run_scheduler:
+        now = datetime.now(UTC)
         last_ok = LIVENESS.last_poll_ok_at
         body["last_poll_ok_at"] = last_ok.isoformat() if last_ok else None
         interval = timedelta(minutes=settings.poll_interval_minutes)
-        if LIVENESS.poll_overdue(datetime.now(UTC), interval):
+        if LIVENESS.poll_overdue(now, interval):
             problems.append("no successful poll in three intervals")
+
+        oldest = LIVENESS.oldest_open_decision_at
+        body["oldest_open_decision_seconds"] = (
+            round((now - oldest).total_seconds()) if oldest else None
+        )
+        if LIVENESS.decision_stuck(now):
+            problems.append("a decision has been open for over an hour")
 
     try:
         state, countdown = _token_report(token_store(settings))
@@ -215,7 +223,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     scheduler = None
     if settings.run_scheduler:
-        from app.jobs.scheduler import build_scheduler
+        from app.jobs.scheduler import activate, build_scheduler
         from app.store.db import connect
         from app.store.ledger import STRANDED_AFTER, MessageLedger
 
@@ -231,7 +239,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         observe_refreshes(lambda outcome: _record_refresh(settings, outcome))
 
         scheduler = build_scheduler(settings)
-        scheduler.start()
+        activate(scheduler)
         log.info("scheduler started: poll every %d min", settings.poll_interval_minutes)
 
     try:

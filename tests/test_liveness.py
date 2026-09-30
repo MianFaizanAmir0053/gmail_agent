@@ -36,6 +36,36 @@ def test_failed_polls_do_not_reset_the_clock() -> None:
     assert live.poll_overdue(BOOT + timedelta(minutes=41, seconds=1), TEN)
 
 
+def test_no_open_decision_is_never_stuck() -> None:
+    assert not Liveness(booted_at=BOOT).decision_stuck(BOOT + timedelta(days=3))
+
+
+def test_a_decision_open_for_over_an_hour_is_stuck() -> None:
+    live = Liveness(booted_at=BOOT)
+    live.decisions_checked(BOOT)
+
+    assert not live.decision_stuck(BOOT + timedelta(minutes=59))
+    assert live.decision_stuck(BOOT + timedelta(minutes=61))
+
+
+def test_the_job_seeing_an_empty_queue_clears_the_clock() -> None:
+    live = Liveness(booted_at=BOOT)
+    live.decisions_checked(BOOT)
+    live.decisions_checked(None)
+
+    assert not live.decision_stuck(BOOT + timedelta(hours=2))
+
+
+def test_a_decision_recorded_here_starts_the_clock_even_if_the_job_is_wedged() -> None:
+    """The job refreshes the record; a hung job never would. A decision
+    recorded in this process starts the clock anyway, so the hang shows."""
+    live = Liveness(booted_at=BOOT)
+    live.decision_recorded(BOOT)
+    live.decision_recorded(BOOT + timedelta(minutes=30))  # an older one is already open
+
+    assert live.decision_stuck(BOOT + timedelta(minutes=61))
+
+
 def test_logging_makes_the_apps_info_lines_visible() -> None:
     """Under uvicorn nothing configures the root logger, so without this the
     scheduler's INFO lines -- the record of every poll -- went nowhere."""

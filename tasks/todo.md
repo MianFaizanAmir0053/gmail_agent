@@ -690,10 +690,11 @@ A settle is one transaction of conditional writes.
 - `/health` reports the oldest open decision's age and returns 503 past one hour. It reads an in-memory record, which the job refreshes each tick and a new decision also updates, so a wedged job still shows.
 
 **Acceptance criteria:**
-- [ ] The job is registered next to poll, purge and token_health, with `max_instances=1`.
-- [ ] A wake runs the job at once.
-- [ ] `/health` returns 503 for a decision open over an hour, with no database call per request.
-- [ ] After a shutdown signal, the worker starts no new decision.
+- [x] The job is registered next to poll, purge, token_health and reconcile, with `max_instances=1`.
+- [x] A wake runs the job at once. Without a scheduler in the process (the CLI), it does nothing, and the next tick finds the decision.
+- [x] `/health` returns 503 for a decision open over an hour, with no database call per request. It also reports the oldest open decision's age.
+- [x] After a shutdown signal, the worker starts no new decision.
+- An empty queue costs one query and no graph session. A failing job is recorded in `job_runs` at most every five minutes, because it runs every fifteen seconds. The query itself is tested on Neon.
 
 **Verification:** `uv run pytest tests/test_scheduler.py tests/test_api.py tests/test_liveness.py`; `.\tasks.ps1 check`.
 
