@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from hmac import compare_digest
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -51,6 +52,24 @@ class SubscriptionKeys(BaseModel):
     auth: str = Field(min_length=1, max_length=512)
 
 
+PUSH_SERVICES = (
+    "fcm.googleapis.com",  # Chrome, Android
+    "push.apple.com",  # Safari and installed web apps on iPhone
+    "push.services.mozilla.com",  # Firefox
+    "notify.windows.com",  # Edge
+)
+"""Hosts Fly may send pushes to. Fly POSTs to whatever endpoint is stored, so
+only a real push service is accepted, rather than any https URL."""
+
+MAX_SUBSCRIPTIONS = 10
+"""Every push round sends to every row; this bounds the fan-out. Two phones
+and a laptop need three."""
+
+
+def _is_push_service(host: str) -> bool:
+    return any(host == known or host.endswith("." + known) for known in PUSH_SERVICES)
+
+
 class Subscription(BaseModel):
     """A browser's `PushSubscription`, as `JSON.stringify` writes it."""
 
@@ -59,10 +78,21 @@ class Subscription(BaseModel):
 
     @field_validator("endpoint")
     @classmethod
-    def _https_only(cls, value: str) -> str:
-        # Every push service is HTTPS; anything else is not a subscription.
-        if not value.startswith("https://") or any(ch.isspace() for ch in value):
-            raise ValueError("a push endpoint is an https URL")
+    def _a_known_push_service(cls, value: str) -> str:
+        try:
+            parts = urlsplit(value)
+            port = parts.port
+        except ValueError:
+            raise ValueError("a push endpoint is an https URL") from None
+        host = (parts.hostname or "").lower()
+        if (
+            parts.scheme != "https"
+            or any(ch.isspace() for ch in value)
+            or parts.username is not None
+            or port not in (None, 443)
+            or not _is_push_service(host)
+        ):
+            raise ValueError("a push endpoint is an https URL at a known push service")
         return value
 
 
@@ -150,7 +180,11 @@ async def post_subscription(
     settings = get_settings()
     _verify(settings, authorization)
     subscription = await _body(request, Subscription)
-    await run_in_threadpool(_store_subscription, settings, subscription)
+    if not await run_in_threadpool(_store_subscription, settings, subscription):
+        return JSONResponse(
+            {"status": "too_many", "detail": f"at most {MAX_SUBSCRIPTIONS} subscriptions"},
+            status_code=409,
+        )
     return Response(status_code=204)
 
 
@@ -165,10 +199,18 @@ async def delete_subscription(
     return Response(status_code=204)
 
 
-def _store_subscription(settings: Settings, subscription: Subscription) -> None:
+def _store_subscription(settings: Settings, subscription: Subscription) -> bool:
     """Store once per endpoint. The app re-posts on every open, so a repeat
-    refreshes the keys and `last_seen_at` rather than adding a row."""
-    with connect_autocommit(settings.database_url) as conn:
+    refreshes the keys and `last_seen_at` rather than adding a row. A new
+    endpoint beyond `MAX_SUBSCRIPTIONS` is refused; a known one never is."""
+    with connect_autocommit(settings.database_url) as conn, conn.transaction():
+        known = conn.execute(
+            "SELECT 1 FROM push_subscriptions WHERE endpoint = %s", (subscription.endpoint,)
+        ).fetchone()
+        if known is None:
+            row = conn.execute("SELECT count(*) FROM push_subscriptions").fetchone()
+            if row is not None and row[0] >= MAX_SUBSCRIPTIONS:
+                return False
         conn.execute(
             """
             INSERT INTO push_subscriptions (endpoint, p256dh, auth)
@@ -180,6 +222,7 @@ def _store_subscription(settings: Settings, subscription: Subscription) -> None:
             """,
             (subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth),
         )
+    return True
 
 
 def _remove_subscription(settings: Settings, unsubscribe: Unsubscribe) -> None:

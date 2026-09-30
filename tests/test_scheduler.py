@@ -325,8 +325,12 @@ def test_token_check_survives_an_unreadable_token(monkeypatch: pytest.MonkeyPatc
 def test_the_token_check_runs_hourly() -> None:
     """Hourly rather than twice a day: an alert no channel delivered is
     retried at the next check."""
+    before = datetime.now(UTC)
     job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "token_health")
     assert "1:00:00" in str(job.trigger)
+    # And once at start: a restart must not leave /health without a
+    # subscription count, or an alert unsent, for an hour.
+    assert before <= job.next_run_time <= datetime.now(UTC)
 
 
 @dataclass(frozen=True)

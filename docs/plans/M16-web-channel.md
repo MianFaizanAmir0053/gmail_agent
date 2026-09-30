@@ -262,7 +262,9 @@ only the session cookie, so no proposal content is handled outside `sin1`.
   - a Testing token within two days of expiry;
   - a token turning `expired`;
   - failover to the standby.
-- **Token alerts go out once per state change.** The `alerts_sent` row is written only after at least one push service accepted the push (2xx). With no subscriptions, or a failed send, the alert is retried at the next check rather than silenced.
+- **Token alerts go out once per state change, per channel.** An `alerts_sent` row, keyed by code, token and channel, is written only once that channel delivered the alert (a push service's 2xx, for web push). Per channel, because Telegram accepting a message says nothing about the phones only web push reaches. With no subscriptions, or a failed send, that channel is asked again at the next check rather than silenced.
+- **Only known push services are stored:** Google (FCM), Apple, Mozilla and Microsoft, at most ten subscriptions. Fly POSTs to whatever endpoint is stored.
+- **`WEB_APP_URL` is validated at boot** as a bare `https://host`, the only subject py_vapid accepts. Anything more would fail every push quietly.
 - **Fix to `check_token`.** It alerts from `token_state`, as `/health` already reads it. Today it alerts on the seven-day countdown for every token, so a production token would trigger a push every 12 hours from day five.
 - **Subscriptions** live in `push_subscriptions`. A 404 or 410 from the push service deletes the subscription. `/health` shows the subscription count, refreshed hourly into the in-memory record, so zero subscriptions is visible.
 - **Keys.** `.\tasks.ps1 vapid` generates the pair.
@@ -278,7 +280,7 @@ never the raw interrupt payload, which carries the model's reasoning.
   - The handler records the decision and answers "Queued". Outcomes show in the web app.
   - The Telegram webhook checks its secret before reading the body, then does its database work in the thread pool, so it never blocks the event loop.
 - **Callers:** `poll` and the scheduler go through every configured channel.
-- **Isolation:** exceptions and time-outs are isolated per channel.
+- **Isolation:** exceptions and time-outs are isolated per channel. Each call gets a thread of its own, so hung calls cannot starve the others. Announcing does not wait at all; an alert waits 60 seconds, longer than any channel's own timeouts, so a slow delivery still counts.
 
 ### D8. Retention (same clock as M15)
 
@@ -453,6 +455,20 @@ The rest landed in 16.10 and 16.11, where their callers changed:
 - the CLI and Telegram record decisions and never resume;
 - `tests/test_one_resumer.py` fails if anything but the worker resumes or re-drives a thread (the other half of issue 1);
 - channels receive the stored record, never the raw payload (issue 8).
+
+**A fifth review, on 2026-10-01, read the backend against D3, D4, D6 and D7.**
+It found no HIGH issues, and eight smaller ones, all fixed:
+1. alerts recorded as sent because Telegram accepted them (now per channel);
+2. a `WEB_APP_URL` py_vapid would reject (now validated at boot);
+3. push endpoints at any host, and one bad endpoint stopping the rest (now known push services, parsed safely, at most ten);
+4. slow channels starving each other (now a thread per call, and announcing never waits);
+5. `/docs` open, and the new health details public (docs off; details only with the bearer secret);
+6. a non-ASCII webhook secret causing a 500;
+7. secrets in dataclass reprs;
+8. a token check that waited an hour after each restart, and a silent reconcile skip.
+
+`/health` still shows M15's token fields to anyone, as M15's runbook relies on
+them; 16.22 revisits that when the runbook is rewritten.
 
 ## Running notes
 

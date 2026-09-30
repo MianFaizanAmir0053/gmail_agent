@@ -318,6 +318,7 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         id="token_health",
         max_instances=1,
         coalesce=True,
+        next_run_time=datetime.now(UTC),
     )
 
     # One worker: the queue's safety rests on nothing else resuming a thread,

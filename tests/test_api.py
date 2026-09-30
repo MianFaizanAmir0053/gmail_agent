@@ -24,6 +24,8 @@ from app.google.tokens import TokenMetadata
 from app.obs.liveness import Liveness
 
 SECRET = "s3cret-token"
+OWNER = "web-api-secret"
+"""`WEB_API_SECRET`: health details beyond the status need it."""
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -47,6 +49,10 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
+def _owner() -> dict[str, str]:
+    return {"Authorization": f"Bearer {OWNER}"}
+
+
 def _post(client: TestClient, secret: str | None, body: Any = None) -> Any:
     headers = {} if secret is None else {"X-Telegram-Bot-Api-Secret-Token": secret}
     return client.post("/telegram/webhook", json=body or {"update_id": 1}, headers=headers)
@@ -61,6 +67,17 @@ def test_missing_secret_header_is_rejected(client: TestClient) -> None:
 
 def test_wrong_secret_is_rejected(client: TestClient) -> None:
     assert _post(client, "not-the-secret").status_code == 403
+
+
+def test_a_secret_header_outside_ascii_is_a_403_not_a_crash(client: TestClient) -> None:
+    """Starlette decodes headers as latin-1; comparing str with a non-ASCII
+    character raised TypeError, a 500 and a logged traceback."""
+    response = client.post(
+        "/telegram/webhook",
+        json={"update_id": 1},
+        headers={"X-Telegram-Bot-Api-Secret-Token": "sécret".encode("latin-1")},
+    )
+    assert response.status_code == 403
 
 
 def test_empty_secret_header_is_rejected(client: TestClient) -> None:
@@ -217,7 +234,9 @@ def _scheduler_on(monkeypatch: pytest.MonkeyPatch, booted_ago: timedelta) -> Liv
     monkeypatch.setattr("app.api.token_store", lambda settings: _Store(_Token()))
     monkeypatch.setattr(
         "app.api.get_settings",
-        lambda: _settings(run_scheduler=True, poll_interval_minutes=10),
+        lambda: _settings(
+            run_scheduler=True, poll_interval_minutes=10, web_api_secret=SecretStr(OWNER)
+        ),
     )
     live = Liveness(booted_at=datetime.now(UTC) - booted_ago)
     monkeypatch.setattr("app.api.LIVENESS", live)
@@ -261,7 +280,7 @@ def test_a_decision_open_for_over_an_hour_is_a_503(
     live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
     live.decisions_checked(datetime.now(UTC) - timedelta(minutes=61))
 
-    response = client.get("/health")
+    response = client.get("/health", headers=_owner())
 
     assert response.status_code == 503
     assert response.json()["problems"] == ["a decision has been open for over an hour"]
@@ -276,10 +295,39 @@ def test_health_shows_how_many_browsers_would_hear_a_push(
     live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
     live.subscriptions_counted(0)
 
-    response = client.get("/health")
+    response = client.get("/health", headers=_owner())
 
     assert response.status_code == 200
     assert response.json()["push_subscriptions"] == 0
+
+
+def test_a_stranger_sees_the_status_but_not_the_details(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whether a proposal is waiting, or whether any phone would hear a push,
+    is the owner's business. The platform and the uptime monitor need only
+    the status code."""
+    live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    live.subscriptions_counted(2)
+    live.decisions_checked(datetime.now(UTC) - timedelta(seconds=40))
+
+    for headers in (
+        {},
+        {"Authorization": "Bearer wrong"},
+        {"Authorization": "Bearer é".encode("latin-1")},
+    ):
+        body = client.get("/health", headers=headers).json()
+        assert "push_subscriptions" not in body
+        assert "oldest_open_decision_seconds" not in body
+
+
+def test_the_api_documents_nothing_to_strangers() -> None:
+    from app.api import create_app
+
+    client = TestClient(create_app())
+
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
 
 
 def test_a_recent_open_decision_is_reported_but_healthy(
@@ -288,7 +336,7 @@ def test_a_recent_open_decision_is_reported_but_healthy(
     live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
     live.decisions_checked(datetime.now(UTC) - timedelta(seconds=40))
 
-    response = client.get("/health")
+    response = client.get("/health", headers=_owner())
 
     assert response.status_code == 200
     assert 40 <= response.json()["oldest_open_decision_seconds"] < 120

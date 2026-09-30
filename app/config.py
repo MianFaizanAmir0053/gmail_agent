@@ -7,6 +7,7 @@ three nodes into a graph run.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
@@ -201,6 +202,28 @@ class Settings(BaseSettings):
     migrate_on_boot: bool = False
     """Apply pending migrations at startup. Convenient on a single-instance
     deploy, wrong the moment there are two -- both would race."""
+
+    @field_validator("web_app_url", mode="before")
+    @classmethod
+    def _web_app_origin(cls, value: object) -> object:
+        """The bare `https://host` that becomes the VAPID subject.
+
+        py_vapid accepts nothing more -- no path, no port, not even a trailing
+        slash -- and a subject it rejects fails every push with only a warning
+        in the log. A trailing slash is forgiven; anything else fails at boot.
+        """
+        if not isinstance(value, str):
+            return value
+        origin = value.strip().rstrip("/")
+        if not origin:
+            return None
+        if not re.fullmatch(r"https://[\w-]+(\.[\w-]+)+", origin):
+            raise ValueError(
+                "WEB_APP_URL must be the web app's bare https origin, such as "
+                "https://example.vercel.app, with no path or port: web push "
+                "sends it as the VAPID subject"
+            )
+        return origin
 
     @field_validator(
         "telegram_bot_token",

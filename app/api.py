@@ -36,7 +36,7 @@ router = APIRouter()
 
 
 @router.get("/health")
-def health() -> JSONResponse:
+def health(authorization: str | None = Header(default=None)) -> JSONResponse:
     """Whether the process is doing its job, from what it already knows.
 
     503 when polling has stalled or no Google token is usable, so that the
@@ -58,16 +58,20 @@ def health() -> JSONResponse:
         if LIVENESS.poll_overdue(now, interval):
             problems.append("no successful poll in three intervals")
 
-        oldest = LIVENESS.oldest_open_decision_at
-        body["oldest_open_decision_seconds"] = (
-            round((now - oldest).total_seconds()) if oldest else None
-        )
         if LIVENESS.decision_stuck(now):
             problems.append("a decision has been open for over an hour")
 
-        # Visible, not a failure: before the first phone subscribes there is
-        # simply nobody to push to.
-        body["push_subscriptions"] = LIVENESS.push_subscriptions
+        # The owner's business, not the internet's: whether a proposal is
+        # waiting, and whether any phone would hear a push. The platform and
+        # the uptime monitor need only the status code.
+        if _is_owner(settings, authorization):
+            oldest = LIVENESS.oldest_open_decision_at
+            body["oldest_open_decision_seconds"] = (
+                round((now - oldest).total_seconds()) if oldest else None
+            )
+            # Zero is visible, not a failure: before the first phone subscribes
+            # there is simply nobody to push to.
+            body["push_subscriptions"] = LIVENESS.push_subscriptions
 
     try:
         state, countdown = token_report(token_store(settings), TOKEN_EVIDENCE)
@@ -100,6 +104,15 @@ def health() -> JSONResponse:
         body["problems"] = problems
         return JSONResponse(body, status_code=503)
     return JSONResponse(body)
+
+
+def _is_owner(settings: Settings, authorization: str | None) -> bool:
+    """Whether the request carries `WEB_API_SECRET`. Never raises."""
+    if settings.web_api_secret is None or authorization is None:
+        return False
+    scheme, _, token = authorization.partition(" ")
+    expected = settings.web_api_secret.get_secret_value().encode()
+    return scheme == "Bearer" and compare_digest(token.encode(), expected)
 
 
 @router.post("/telegram/webhook")
@@ -150,7 +163,10 @@ def _verify_secret(settings: Settings, provided: str | None) -> None:
     if settings.telegram_webhook_secret is None:
         raise HTTPException(status_code=503, detail="TELEGRAM_WEBHOOK_SECRET is not configured")
     expected = settings.telegram_webhook_secret.get_secret_value()
-    if provided is None or not compare_digest(provided, expected):
+    # Bytes, not str: Starlette decodes headers as latin-1, and compare_digest
+    # raises on a str with a character outside ASCII -- a 500 and a traceback
+    # for any caller who sends one.
+    if provided is None or not compare_digest(provided.encode(), expected.encode()):
         raise HTTPException(status_code=403, detail="bad secret token")
 
 
@@ -249,7 +265,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="mailagent", lifespan=lifespan)
+    # No /docs, /redoc or /openapi.json: they would describe every route to
+    # anyone on the internet, and the owner has no use for them.
+    app = FastAPI(
+        title="mailagent", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
+    )
     app.include_router(router)
     app.include_router(web_router)
     return app

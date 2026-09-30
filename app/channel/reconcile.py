@@ -77,8 +77,13 @@ def reconcile(session: GraphSession, *, announce: Announce | None = None) -> Rec
     for message_id, final_status in _closable(session.conn):
         try:
             # A final ledger beside a live interrupt is contradictory. Leave
-            # it for a person rather than guess which half is wrong.
+            # it for a person rather than guess which half is wrong -- but
+            # counted, so the tick is not reported healthy.
             if session.thread(message_id).parked:
+                log.warning(
+                    "%s is %s yet still parked; left for a person", message_id, final_status
+                )
+                errors += 1
                 continue
             if _close(session.conn, message_id, final_status):
                 closed += 1

@@ -1,5 +1,5 @@
 """Channels (M16, D7): every configured channel hears about a proposal, and
-none can stop the others -- by raising, or by hanging."""
+none can stop or starve the others -- by raising, or by hanging."""
 
 from __future__ import annotations
 
@@ -28,12 +28,14 @@ RECORD = proposal_from("m1", PENDING, 2)
 @dataclass
 class Recording:
     name: str = "recording"
+    delivers: bool = True
+    heard: threading.Event = field(default_factory=threading.Event)
     announced: list[str] = field(default_factory=list)
     alerts: list[str] = field(default_factory=list)
-    delivers: bool = True
 
     def announce_proposal(self, record: ProposalRecord) -> None:
         self.announced.append(record.message_id)
+        self.heard.set()
 
     def alert(self, code: str) -> bool:
         self.alerts.append(code)
@@ -55,8 +57,8 @@ class Broken:
 class Hanging:
     """Blocks until released, as a push service that accepts and never answers."""
 
-    release: threading.Event = field(default_factory=threading.Event)
     name: str = "hanging"
+    release: threading.Event = field(default_factory=threading.Event)
 
     def announce_proposal(self, record: ProposalRecord) -> None:
         self.release.wait(timeout=30)
@@ -71,6 +73,7 @@ def test_every_channel_hears_about_a_proposal() -> None:
 
     Channels([first, second]).announce(RECORD)
 
+    assert first.heard.wait(5) and second.heard.wait(5)
     assert first.announced == second.announced == ["m1"]
 
 
@@ -79,33 +82,64 @@ def test_a_failing_channel_does_not_stop_the_others() -> None:
 
     Channels([Broken(), survivor]).announce(RECORD)
 
-    assert survivor.announced == ["m1"]
+    assert survivor.heard.wait(5)
 
 
-def test_a_hanging_channel_does_not_stop_the_others() -> None:
-    hanging = Hanging()
-    survivor = Recording()
+def test_announcing_never_waits_even_when_every_channel_hangs() -> None:
+    """The caller is a poll, the worker or reconciliation; none of them should
+    wait on a push service."""
+    hanging = [Hanging(name=f"hanging-{n}") for n in range(3)]
     try:
         started = time.monotonic()
 
-        Channels([hanging, survivor], timeout=0.3).announce(RECORD)
+        Channels(list(hanging)).announce(RECORD)
 
-        assert time.monotonic() - started < 5
-        assert survivor.announced == ["m1"]
+        assert time.monotonic() - started < 1
     finally:
-        hanging.release.set()
+        for channel in hanging:
+            channel.release.set()
 
 
-def test_an_alert_counts_as_delivered_if_any_channel_delivered_it() -> None:
-    assert Channels([Broken(), Recording(delivers=True)]).alert("token_expired") is True
-    assert Channels([Recording(delivers=False)]).alert("token_expired") is False
-    assert Channels([]).alert("token_expired") is False
+def test_hung_channels_do_not_starve_a_healthy_one() -> None:
+    """No shared pool for hung calls to fill: each call gets its own thread."""
+    hanging = [Hanging(name=f"hanging-{n}") for n in range(8)]
+    healthy = Recording()
+    try:
+        for channel in hanging:
+            Channels([channel]).announce(RECORD)
+
+        Channels([healthy]).announce(RECORD)
+
+        assert healthy.heard.wait(5)
+    finally:
+        for channel in hanging:
+            channel.release.set()
+
+
+def test_an_alert_reports_which_channels_delivered_it() -> None:
+    channels = Channels([Broken(), Recording("web_push"), Recording("telegram", delivers=False)])
+
+    assert channels.alert("token_expired") == {"web_push"}
+    assert Channels([]).alert("token_expired") == set()
+
+
+def test_a_channel_that_already_delivered_is_not_asked_again() -> None:
+    telegram, web_push = Recording("telegram"), Recording("web_push")
+
+    delivered = Channels([telegram, web_push]).alert("token_expired", skip=frozenset({"telegram"}))
+
+    assert delivered == {"web_push"}
+    assert telegram.alerts == []
 
 
 def test_a_hanging_alert_is_not_counted_as_delivered() -> None:
     hanging = Hanging()
     try:
-        assert Channels([hanging], timeout=0.3).alert("token_expired") is False
+        started = time.monotonic()
+
+        assert Channels([hanging], alert_timeout=0.3).alert("token_expired") == set()
+
+        assert time.monotonic() - started < 5
     finally:
         hanging.release.set()
 

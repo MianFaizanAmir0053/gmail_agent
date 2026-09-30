@@ -101,6 +101,38 @@ def test_the_web_channels_blank_secrets_count_as_unset(name: str, blank: str) ->
     assert getattr(Settings(**fields), name) is None
 
 
+def _web_app_url(value: str) -> str | None:
+    fields: dict[str, Any] = {
+        "_env_file": None,
+        "database_url": "postgresql://x/y",
+        "gemini_api_key": "k",
+        "web_app_url": value,
+    }
+    return Settings(**fields).web_app_url
+
+
+def test_the_web_app_url_is_the_bare_origin_web_push_needs() -> None:
+    """It becomes the VAPID subject, which py_vapid accepts only as
+    https://host: anything more would fail every push, one warning at a time."""
+    assert _web_app_url("https://mailagent.vercel.app") == "https://mailagent.vercel.app"
+    assert _web_app_url("https://mailagent.vercel.app/") == "https://mailagent.vercel.app"
+    assert _web_app_url("  ") is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://mailagent.vercel.app",
+        "https://mailagent.vercel.app/app",
+        "https://mailagent.vercel.app:8443",
+        "mailagent.vercel.app",
+    ],
+)
+def test_a_web_app_url_web_push_would_reject_fails_at_boot(value: str) -> None:
+    with pytest.raises(ValidationError, match="WEB_APP_URL"):
+        _web_app_url(value)
+
+
 def test_a_blank_gateway_key_counts_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     """`AI_GATEWAY_API_KEY=` in a .env file is not a key -- the lesson of the
     blank webhook secret."""

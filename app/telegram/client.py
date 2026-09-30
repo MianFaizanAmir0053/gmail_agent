@@ -7,7 +7,7 @@ about forty lines.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
@@ -38,7 +38,9 @@ class Sender(Protocol):
 
 @dataclass(slots=True)
 class TelegramClient:
-    token: str
+    token: str = field(repr=False)
+    """The bot token. Kept out of the repr, which lands in logs and error reports."""
+
     timeout: float = 20.0
 
     def _post(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:

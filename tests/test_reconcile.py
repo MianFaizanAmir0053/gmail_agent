@@ -201,10 +201,13 @@ def test_a_deciding_proposal_is_never_touched(conn: psycopg.Connection) -> None:
 
 @pytest.mark.integration
 def test_a_proposal_that_is_still_parked_is_not_closed(conn: psycopg.Connection) -> None:
-    """A final ledger beside a live interrupt is contradictory; leave it be."""
+    """A final ledger beside a live interrupt is contradictory; leave it be --
+    but counted, so the tick is not reported healthy and a person looks."""
     session = _session(conn)
     _parked_with_row(conn, session, "m1")
     MessageLedger(conn).mark("m1", MessageStatus.REJECTED, error="declined by user")
 
-    assert _run(session).closed == 0
+    result = _run(session)
+
+    assert (result.closed, result.errors) == (0, 1)
     assert _proposal(conn, "m1") == ("pending", 1, "0123456789ab", None)

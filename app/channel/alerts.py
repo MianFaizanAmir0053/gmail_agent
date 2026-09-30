@@ -7,10 +7,12 @@ Three situations deserve a push, each once per state change:
 - failover to the standby, so mail still flows but the primary needs
   replacing (`standby_in_use`).
 
-"Once" is kept in `alerts_sent`, keyed by the alert and the token it is about,
-so it survives restarts and a new token alerts afresh. A row is written only
-after a channel delivered the alert: with no subscriptions yet, or a failed
-send, nothing is recorded and the next check tries again.
+"Once" is kept in `alerts_sent`, keyed by the alert, the token it is about
+and the channel, so it survives restarts and a new token alerts afresh. A row
+is written only once that channel delivered the alert. Per channel, because
+Telegram accepting a message says nothing about the phones only web push
+reaches -- and Telegram is blocked on the owner's network. A channel that has
+not delivered is asked again at the next check.
 
 The judgement reads token state exactly as `/health` does
 (`app/obs/token_report.py`). The old check counted every token down from
@@ -35,7 +37,10 @@ log = logging.getLogger(__name__)
 
 
 class AlertSender(Protocol):
-    def alert(self, code: AlertCode) -> bool: ...
+    @property
+    def names(self) -> frozenset[str]: ...
+
+    def alert(self, code: AlertCode, *, skip: frozenset[str] = ...) -> set[str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,25 +65,32 @@ def token_alerts(
 def send_token_alerts(
     conn: psycopg.Connection, channels: AlertSender, alerts: list[TokenAlert]
 ) -> list[AlertCode]:
-    """Send each alert not already delivered. Returns the codes delivered now."""
-    delivered: list[AlertCode] = []
+    """Send each alert through the channels that have not yet delivered it.
+    Returns the codes that reached at least one new channel."""
+    sent: list[AlertCode] = []
     for alert in alerts:
-        if _already_sent(conn, alert):
+        already = _delivered_to(conn, alert)
+        if not channels.names - already:
             continue
-        if not channels.alert(alert.code):
-            log.warning("alert %s not delivered; the next check tries again", alert.code)
-            continue
-        conn.execute(
-            "INSERT INTO alerts_sent (code, subject) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-            (alert.code, alert.subject),
-        )
-        delivered.append(alert.code)
-    return delivered
+        delivered = channels.alert(alert.code, skip=already)
+        for name in sorted(delivered):
+            conn.execute(
+                """
+                INSERT INTO alerts_sent (code, subject, channel)
+                VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
+                """,
+                (alert.code, alert.subject, name),
+            )
+        if delivered:
+            sent.append(alert.code)
+        if channels.names - already - delivered:
+            log.warning("alert %s not delivered everywhere; the next check tries again", alert.code)
+    return sent
 
 
-def _already_sent(conn: psycopg.Connection, alert: TokenAlert) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM alerts_sent WHERE code = %s AND subject = %s",
+def _delivered_to(conn: psycopg.Connection, alert: TokenAlert) -> frozenset[str]:
+    rows = conn.execute(
+        "SELECT channel FROM alerts_sent WHERE code = %s AND subject = %s",
         (alert.code, alert.subject),
-    ).fetchone()
-    return row is not None
+    ).fetchall()
+    return frozenset(row[0] for row in rows)

@@ -61,13 +61,16 @@ CREATE INDEX IF NOT EXISTS decisions_due_idx
 CREATE INDEX IF NOT EXISTS decisions_counting_idx
     ON decisions (action_type, pipeline_version, decided_at);
 
--- An alert is recorded only after a push service accepted it (D6), so a row
--- here means "delivered", and its absence means "try again".
+-- An alert is recorded per channel, and only once that channel delivered it
+-- (D6): a row means "delivered there", and its absence means "try again". Per
+-- channel, because Telegram accepting an alert says nothing about the phones
+-- that only web push reaches.
 CREATE TABLE IF NOT EXISTS alerts_sent (
     code     TEXT        NOT NULL,
     subject  TEXT        NOT NULL,
+    channel  TEXT        NOT NULL,
     sent_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (code, subject)
+    PRIMARY KEY (code, subject, channel)
 );
 
 CREATE TABLE IF NOT EXISTS push_subscriptions (

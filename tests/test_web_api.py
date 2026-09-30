@@ -234,6 +234,12 @@ SUBSCRIPTION = {
         SUBSCRIPTION | {"endpoint": "https://" + "x" * 3000},
         {"endpoint": SUBSCRIPTION["endpoint"]},  # no keys
         SUBSCRIPTION | {"keys": {"p256dh": "", "auth": "x"}},
+        # Fly would POST to whatever is stored: only real push services.
+        SUBSCRIPTION | {"endpoint": "https://["},
+        SUBSCRIPTION | {"endpoint": "https://evil.example.com/fcm/send/abc"},
+        SUBSCRIPTION | {"endpoint": "https://fcm.googleapis.com.evil.example.com/x"},
+        SUBSCRIPTION | {"endpoint": "https://owner:pw@fcm.googleapis.com/fcm/send/abc"},
+        SUBSCRIPTION | {"endpoint": "https://fcm.googleapis.com:8443/fcm/send/abc"},
     ],
 )
 def test_a_malformed_subscription_is_a_422(
@@ -283,3 +289,52 @@ def test_a_subscription_is_stored_once_and_refreshed(
     )
     assert gone.status_code == 204
     assert _rows(conn) == []
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://fcm.googleapis.com/fcm/send/abc",  # Chrome on Android
+        "https://web.push.apple.com/QGuQyavXutnMei",  # iPhone
+        "https://updates.push.services.mozilla.com/wpush/v2/abc",  # Firefox
+        "https://wns2-db5p.notify.windows.com/w/?token=abc",  # Edge
+    ],
+)
+def test_the_push_services_phones_use_are_accepted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, endpoint: str
+) -> None:
+    monkeypatch.setattr("app.web_api._store_subscription", lambda settings, subscription: True)
+
+    response = client.post(
+        "/api/push-subscriptions", json=SUBSCRIPTION | {"endpoint": endpoint}, headers=_bearer()
+    )
+
+    assert response.status_code == 204
+
+
+@pytest.mark.integration
+def test_subscriptions_are_capped_but_a_known_one_is_always_refreshed(
+    client: TestClient, conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bounded fan-out: each push round sends to every row."""
+    from app.web_api import MAX_SUBSCRIPTIONS
+
+    @contextmanager
+    def _same(url: str) -> Iterator[psycopg.Connection]:
+        yield conn
+
+    monkeypatch.setattr("app.web_api.connect_autocommit", _same)
+    conn.execute("DELETE FROM push_subscriptions")
+    for n in range(MAX_SUBSCRIPTIONS):
+        conn.execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES (%s, 'p', 'a')",
+            (f"https://fcm.googleapis.com/fcm/send/{n}",),
+        )
+
+    one_more = SUBSCRIPTION | {"endpoint": "https://fcm.googleapis.com/fcm/send/new"}
+    known = SUBSCRIPTION | {"endpoint": "https://fcm.googleapis.com/fcm/send/0"}
+
+    assert (
+        client.post("/api/push-subscriptions", json=one_more, headers=_bearer()).status_code == 409
+    )
+    assert client.post("/api/push-subscriptions", json=known, headers=_bearer()).status_code == 204

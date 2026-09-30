@@ -364,3 +364,10 @@ def test_a_tap_lands_in_the_queue_as_a_telegram_decision(conn: psycopg.Connectio
 
     row = conn.execute("SELECT action, revision, via FROM decisions").fetchone()
     assert row == ("confirm", 1, "telegram")
+
+
+def test_the_bot_token_stays_out_of_reprs() -> None:
+    """A repr lands in logs, assertion messages and error reports."""
+    from app.telegram.client import TelegramClient
+
+    assert "123:bot-token" not in repr(TelegramClient("123:bot-token"))

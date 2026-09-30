@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -39,6 +40,11 @@ PUSH_TIMEOUT = 10
 PUSH_TTL = 24 * 60 * 60
 """How long a push service keeps a push for a phone that is asleep or off."""
 
+PUSH_BUDGET = 30.0
+"""Seconds one round of sends may take. Sends are one after another, each up
+to `PUSH_TIMEOUT`, so a round stops starting new ones after this -- and so
+stays inside the time an alert waits for its channels."""
+
 GONE = frozenset({404, 410})
 
 
@@ -57,7 +63,7 @@ class Subscriptions(Protocol):
 
 @dataclass
 class DatabaseSubscriptions:
-    database_url: str
+    database_url: str = field(repr=False)
 
     def all(self) -> list[StoredSubscription]:
         with connect_autocommit(self.database_url) as conn:
@@ -74,12 +80,14 @@ class DatabaseSubscriptions:
 @dataclass
 class WebPushChannel:
     subscriptions: Subscriptions
-    private_key: str
-    subject: str
+    private_key: str = field(repr=False)
+    subject: str = field(kw_only=True)
     """The app's URL: the VAPID `sub`, sent to Apple and Google. Not the
     owner's email, which they have no need to see."""
 
-    send: Callable[..., Any] = webpush
+    send: Callable[..., Any] = field(default=webpush, kw_only=True)
+    budget: float = field(default=PUSH_BUDGET, kw_only=True)
+    clock: Callable[[], float] = field(default=time.monotonic, kw_only=True, repr=False)
     name: str = field(default="web_push", init=False)
 
     def announce_proposal(self, record: ProposalRecord) -> None:
@@ -93,8 +101,12 @@ class WebPushChannel:
         """Send to every subscription. Returns how many push services accepted."""
         delivered = 0
         data = json.dumps(payload)
+        started = self.clock()
         for subscription in self.subscriptions.all():
-            service = urlparse(subscription.endpoint).netloc
+            if self.clock() - started > self.budget:
+                log.warning("push round stopped at its %.0fs budget", self.budget)
+                break
+            service = _service(subscription.endpoint)
             try:
                 self.send(
                     subscription_info={
@@ -122,3 +134,12 @@ class WebPushChannel:
             else:
                 delivered += 1
         return delivered
+
+
+def _service(endpoint: str) -> str:
+    """The push service's host, for logs. Never raises: a malformed endpoint
+    must not stop the pushes to the subscriptions after it."""
+    try:
+        return urlparse(endpoint).hostname or "unknown"
+    except ValueError:
+        return "unparseable"

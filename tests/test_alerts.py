@@ -69,30 +69,57 @@ def test_a_new_token_is_a_new_state_to_alert_about() -> None:
 
 @dataclass
 class FakeChannels:
-    delivers: bool = True
-    sent: list[str] = field(default_factory=list)
+    """Two channels by name; `delivering` says which of them succeed."""
 
-    def alert(self, code: str) -> bool:
-        self.sent.append(code)
-        return self.delivers
+    delivering: set[str] = field(default_factory=lambda: {"web_push", "telegram"})
+    asked: list[tuple[str, frozenset[str]]] = field(default_factory=list)
+    names: frozenset[str] = frozenset({"web_push", "telegram"})
+
+    def alert(self, code: str, *, skip: frozenset[str] = frozenset()) -> set[str]:
+        self.asked.append((code, skip))
+        return {"web_push", "telegram"} & self.delivering - skip
 
 
-def _recorded(conn: psycopg.Connection) -> list[tuple[str, str]]:
-    return conn.execute("SELECT code, subject FROM alerts_sent ORDER BY sent_at").fetchall()
+def _recorded(conn: psycopg.Connection) -> list[tuple[str, str, str]]:
+    return conn.execute(
+        "SELECT code, subject, channel FROM alerts_sent ORDER BY sent_at, channel"
+    ).fetchall()
 
 
 @pytest.mark.integration
-def test_an_alert_is_recorded_only_after_a_channel_delivered_it(conn: psycopg.Connection) -> None:
+def test_an_alert_is_recorded_only_where_a_channel_delivered_it(conn: psycopg.Connection) -> None:
     """With no subscriptions, or a failed send, it is retried at the next check."""
     conn.execute("DELETE FROM alerts_sent")
     alert = TokenAlert("token_expired", SUBJECT)
-    undelivered = FakeChannels(delivers=False)
 
-    assert send_token_alerts(conn, undelivered, [alert]) == []
+    assert send_token_alerts(conn, FakeChannels(delivering=set()), [alert]) == []
     assert _recorded(conn) == []
 
     assert send_token_alerts(conn, FakeChannels(), [alert]) == ["token_expired"]
-    assert _recorded(conn) == [("token_expired", SUBJECT)]
+    assert sorted(_recorded(conn)) == [
+        ("token_expired", SUBJECT, "telegram"),
+        ("token_expired", SUBJECT, "web_push"),
+    ]
+
+
+@pytest.mark.integration
+def test_telegram_accepting_an_alert_does_not_stop_web_push_retrying(
+    conn: psycopg.Connection,
+) -> None:
+    """Telegram's API accepting a message says nothing about the phones only
+    web push reaches -- and Telegram is blocked on the owner's network."""
+    conn.execute("DELETE FROM alerts_sent")
+    alert = TokenAlert("token_expired", SUBJECT)
+    send_token_alerts(conn, FakeChannels(delivering={"telegram"}), [alert])
+
+    retry = FakeChannels()
+    assert send_token_alerts(conn, retry, [alert]) == ["token_expired"]
+
+    assert retry.asked == [("token_expired", frozenset({"telegram"}))]
+    assert sorted(_recorded(conn)) == [
+        ("token_expired", SUBJECT, "telegram"),
+        ("token_expired", SUBJECT, "web_push"),
+    ]
 
 
 @pytest.mark.integration
@@ -105,7 +132,7 @@ def test_an_alert_goes_out_once_per_state_change_even_across_a_restart(
 
     after_restart = FakeChannels()  # a new process, the same database
     assert send_token_alerts(conn, after_restart, [alert]) == []
-    assert after_restart.sent == []
+    assert after_restart.asked == []  # every channel had it; nobody is asked
 
     next_token = TokenAlert("token_expiring", (ISSUED + timedelta(days=7)).isoformat())
     assert send_token_alerts(conn, after_restart, [next_token]) == ["token_expiring"]

@@ -1,9 +1,14 @@
 """Channels (M16, D7): how the owner hears that something needs them.
 
-Every configured channel is told, and none can stop the others. Each call
-runs on a small shared thread pool with a deadline, so a channel that raises
-is logged and one that hangs is abandoned, while the rest are still told and
-the caller -- a poll, the worker, reconciliation -- carries on.
+Every configured channel is told, and none can stop or starve the others.
+Each call gets a thread of its own -- no shared pool that hung calls could
+fill -- so a channel that raises is logged, one that hangs is left behind, and
+the rest are told regardless.
+
+Announcing does not wait at all: the caller is a poll, the worker or
+reconciliation, and none of them should wait on a push service. An alert does
+wait, for longer than any channel's own timeouts, because its result decides
+whether it is recorded as delivered.
 
 A channel gets the stored proposal record: the card's fields, the revision
 and the mode, never the raw interrupt payload, which carries the model's
@@ -13,9 +18,11 @@ reasoning and can quote the email.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Literal, Protocol
 
 from app.channel.park import ProposalRecord
@@ -28,11 +35,10 @@ log = logging.getLogger(__name__)
 
 AlertCode = Literal["token_expiring", "token_expired", "standby_in_use"]
 
-CHANNEL_TIMEOUT = 15.0
-"""Seconds to wait for all channels. Each channel's own network calls have
-shorter timeouts; this is the backstop for one that ignores them."""
-
-_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="channel")
+ALERT_TIMEOUT = 60.0
+"""Seconds an alert waits for its channels. Longer than any channel's own
+worst case -- web push's send budget plus one send, Telegram's connect and
+read timeouts -- so a delivery that succeeds is counted as one."""
 
 
 class Channel(Protocol):
@@ -48,30 +54,56 @@ class Channel(Protocol):
 @dataclass
 class Channels:
     channels: list[Channel]
-    timeout: float = CHANNEL_TIMEOUT
+    alert_timeout: float = ALERT_TIMEOUT
+
+    @property
+    def names(self) -> frozenset[str]:
+        return frozenset(channel.name for channel in self.channels)
 
     def announce(self, record: ProposalRecord) -> None:
-        """Tell every channel a proposal needs the owner. Usable as the park
-        step's `Announce`."""
-        self._each(lambda channel: channel.announce_proposal(record), "announce")
+        """Tell every channel a proposal needs the owner, without waiting.
+        Usable as the park step's `Announce`."""
+        for channel in self.channels:
+            _start(channel.name, "announce", partial(channel.announce_proposal, record))
 
-    def alert(self, code: AlertCode) -> bool:
-        """True if at least one channel delivered the alert."""
-        results = self._each(lambda channel: channel.alert(code), f"alert {code}")
-        return any(result is True for result in results)
+    def alert(self, code: AlertCode, *, skip: frozenset[str] = frozenset()) -> set[str]:
+        """Send an alert through every channel not in `skip`. Returns the names
+        of the channels that delivered it within the timeout."""
+        delivered: dict[str, Any] = {}
+        threads = [
+            _start(channel.name, f"alert {code}", partial(channel.alert, code), delivered)
+            for channel in self.channels
+            if channel.name not in skip
+        ]
+        deadline = time.monotonic() + self.alert_timeout
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+            if thread.is_alive():
+                log.error("alert %s via %s did not answer in time", code, thread.name)
+        return {name for name, result in dict(delivered).items() if result is True}
 
-    def _each(self, call: Callable[[Channel], Any], what: str) -> list[Any]:
-        futures = {_POOL.submit(call, channel): channel for channel in self.channels}
-        done, not_done = wait(futures, timeout=self.timeout)
-        results: list[Any] = []
-        for future in done:
-            try:
-                results.append(future.result())
-            except Exception:
-                log.exception("%s via %s failed", what, futures[future].name)
-        for future in not_done:
-            log.error("%s via %s did not answer in %.0fs", what, futures[future].name, self.timeout)
-        return results
+
+def _start(
+    name: str, what: str, call: Callable[[], Any], results: dict[str, Any] | None = None
+) -> threading.Thread:
+    """Run one channel call in a daemon thread of its own.
+
+    Daemon, so a push service that never answers cannot hold up the process
+    when it shuts down.
+    """
+
+    def run() -> None:
+        try:
+            value = call()
+        except Exception:
+            log.exception("%s via %s failed", what, name)
+            return
+        if results is not None:
+            results[name] = value
+
+    thread = threading.Thread(target=run, name=name, daemon=True)
+    thread.start()
+    return thread
 
 
 TELEGRAM_ALERTS: dict[AlertCode, str] = {

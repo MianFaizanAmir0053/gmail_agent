@@ -250,3 +250,60 @@ def test_stored_subscriptions_are_read_and_removed(
     store.remove(FCM.endpoint)
 
     assert store.all() == []
+
+
+# --- review of the backend (2026-10-01) ------------------------------------------------
+
+
+def test_an_endpoint_that_cannot_be_parsed_does_not_stop_the_others() -> None:
+    broken = StoredSubscription(endpoint="https://[", p256dh="x", auth="y")
+    push, _, send = _channel(broken, FCM)
+
+    push.announce_proposal(proposal_from("m1", SECRET_CONTENT, 1))
+
+    assert [call["subscription_info"]["endpoint"] for call in send.calls][-1] == FCM.endpoint
+
+
+def test_a_round_of_sends_stops_at_its_budget() -> None:
+    """Sends are sequential and each may take its full timeout; the round must
+    end inside the time an alert waits for its channels."""
+    now = [0.0]
+
+    def clock() -> float:
+        return now[0]
+
+    send = FakeSend()
+
+    def slow_send(**kwargs: Any) -> Response:
+        now[0] += 20.0
+        return send(**kwargs)
+
+    third = StoredSubscription(
+        endpoint="https://fcm.googleapis.com/fcm/send/third", p256dh="p", auth="a"
+    )
+    push = WebPushChannel(
+        subscriptions=FakeSubscriptions([FCM, APPLE, third]),
+        private_key="k",
+        subject=APP_URL,
+        send=slow_send,
+        budget=30.0,
+        clock=clock,
+    )
+
+    push.announce_proposal(proposal_from("m1", SECRET_CONTENT, 1))
+
+    assert len(send.calls) == 2
+
+
+def test_secrets_stay_out_of_reprs() -> None:
+    """A repr lands in logs, assertion messages and error reports."""
+    push = WebPushChannel(
+        subscriptions=DatabaseSubscriptions("postgresql://owner:db-password@host/db"),
+        private_key="vapid-private-key",
+        subject=APP_URL,
+    )
+
+    text = repr(push)
+
+    assert "vapid-private-key" not in text
+    assert "db-password" not in text
