@@ -181,8 +181,11 @@ write at runtime instead of at boot.
 
 ### Checkpoint: after tasks 5–8
 
-- [ ] `.\tasks.ps1 check` is green, and the integration tests pass in CI or on the dev database.
-- [ ] Against the dev database, `serve` with the scheduler on and `DRY_RUN=true` writes `job_runs` rows, and `/health` flips to 503 when polling is broken, for example with a wrong `TEST_CALENDAR_ID`.
+- [x] `.\tasks.ps1 check` is green.
+- [ ] The integration tests pass on the Neon test database: `uv run --env-file .env.test pytest -m integration`.
+- [ ] Against the Neon test database, `serve` with the scheduler on writes `ok = false` rows to `job_runs`, and `/health` flips to 503 when polling is broken.
+  - Break polling with `TEST_CALENDAR_ID` unset, so `graph_session` fails before any Gmail read.
+  - Neon holds test data only. The healthy path, with real mail, is first exercised on Supabase at task 14.
 
 ### Task 9: Make retries visible
 

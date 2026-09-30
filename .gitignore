@@ -1,5 +1,7 @@
 # Secrets -- never commit
 .env
+# Integration-test database URL (a hosted Neon project); it carries a password.
+.env.test
 secrets/
 *.enc
 token.json
