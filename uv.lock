@@ -7,6 +7,9 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
+[manifest]
+constraints = [{ name = "langgraph-checkpoint", specifier = ">=4.2.0,<5" }]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.5"
@@ -1038,8 +1041,8 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = ">=1.2" },
     { name = "google-genai", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "langgraph", specifier = ">=0.2" },
-    { name = "langgraph-checkpoint-postgres", specifier = ">=2.0" },
+    { name = "langgraph", specifier = ">=1.2.11,<2" },
+    { name = "langgraph-checkpoint-postgres", specifier = ">=3.1.2,<4" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.5" },

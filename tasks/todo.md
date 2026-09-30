@@ -84,9 +84,9 @@ Non-edit decisions must clear it.
 - `fly.toml` raises `kill_timeout` above the longest tick.
 
 **Acceptance criteria:**
-- [ ] `uv lock --check` passes after the bounds change.
+- [x] `uv lock --check` passes after the bounds change.
 - [ ] The image builds, locally or on Fly's remote builder, and boot-time secret writing succeeds as `appuser`.
-- [ ] No dependency version changes in `uv.lock`.
+- [x] No dependency version changes in `uv.lock`: only the manifest constraint and the specifiers changed.
 
 **Verification:** `uv lock --check`; `docker build .` when Docker is running, otherwise at task 14's first deploy; `.\tasks.ps1 check`.
 
