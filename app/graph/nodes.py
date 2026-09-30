@@ -26,6 +26,7 @@ from app.extraction.pipeline import ExtractionPipeline
 from app.google.calendar import CalendarClient
 from app.google.gmail import GmailClient
 from app.graph.state import GraphState
+from app.graph.versioning import action_type
 from app.store.ledger import MessageLedger, MessageStatus
 from app.tools.calendar_tool import CreateEventInput, check_conflicts, execute_create_event
 
@@ -66,6 +67,9 @@ class Deps:
     reviewer: Reviewer | None = None
     """M13. Left unset, `review` approves everything and the graph behaves
     exactly as it did before the reviewer existed."""
+    pipeline_version: str = "unversioned"
+    """What shaped this session's proposals (`app/graph/versioning.py`).
+    Computed once per session from settings and prompts."""
 
     def now(self) -> datetime:
         return datetime.now(UTC)
@@ -170,6 +174,14 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
             # thread. Recording it here is what lets M17 refuse a proposal that
             # was parked under a different setting than the one it would run in.
             "dry_run": deps.calendar.dry_run,
+            # The reviewer's last objections, for the card: a human should see
+            # the second opinion, not only its effect.
+            "review_issues": state.get("review_issues", []),
+            # Recomputed at every park, so an edit that adds a guest turns a
+            # hold into an invite. The revision is not here: it is read from
+            # the thread's state, which proposals parked before M16 also have.
+            "action_type": action_type(state["extraction"]),
+            "pipeline_version": deps.pipeline_version,
         }
     )
     action = str(decision.get("action", "cancel")).lower()

@@ -440,3 +440,9 @@ approved the spec on 2026-09-30.
   - a forged session cookie is refused.
 - **`npm audit` found critical advisories in `next` 16.3.1**, which was already pinned before this task. The owner approved the upgrade: `next` is now 16.3.8 and `sharp` 0.35.5, and `npm audit` reports none. The checks and the local gate probe pass on the upgraded build.
 - M09's spec still mentions `DASHBOARD_TOKEN`, as a record of what M09 built.
+
+### Task 16.3: payload, version and revision (2026-09-30)
+
+- **`pipeline_version` hashes only what can shape a proposal.** The reviewer's model, prompt and schema count only while the reviewer runs, and the search prompt and tool only while search does. Otherwise a setting that changes nothing would reset M24's evidence.
+- **The response schemas are hashed with the prompts**, because their field descriptions instruct the model too.
+- **`PIPELINE_REVISION` is bumped by hand** for changes the hash cannot see, such as the code that lays out an email for the model.

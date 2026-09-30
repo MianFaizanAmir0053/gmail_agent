@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -405,6 +405,106 @@ def test_malformed_extraction_routes_to_skip_not_to_the_calendar() -> None:
 
     assert _interrupt_payload(graph, config) is None
     assert ledger.statuses == [MessageStatus.SKIPPED]
+
+
+# --- what M16 records at every park ----------------------------------------
+
+
+def _hold() -> ExtractionResult:
+    return _meeting().model_copy(update={"attendees": []})
+
+
+def test_a_parked_proposal_carries_what_m24_counts_by() -> None:
+    """The payload is the single source for what a proposal is (M16, D2)."""
+    reviewer = FakeReviewer(verdicts=["revise"] * 3)
+    graph, config, _ = _run(_deps(reviewer=reviewer, pipeline_version="v-test"))
+
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None
+    assert payload["action_type"] == "calendar_invite"
+    assert payload["pipeline_version"] == "v-test"
+    # The reviewer's last objections travel with the proposal onto the card.
+    assert payload["review_issues"] == ["the stated zone was ignored"]
+
+
+def test_a_proposal_without_reviewer_objections_carries_none() -> None:
+    graph, config, _ = _run(_deps())
+
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None
+    assert payload["review_issues"] == []
+
+
+def test_an_edit_that_adds_a_guest_turns_a_hold_into_an_invite() -> None:
+    """An invite emails other people, so it is a different action from a hold."""
+    from langgraph.types import Command
+
+    pipeline = FakePipeline(extractions=[_hold(), _meeting()])
+    graph, config, _ = _run(_deps(pipeline=pipeline))
+
+    first = _interrupt_payload(graph, config)
+    assert first is not None
+    assert first["action_type"] == "calendar_hold"
+
+    graph.invoke(Command(resume={"action": "edit", "correction": "invite Sara"}), config)
+
+    second = _interrupt_payload(graph, config)
+    assert second is not None
+    assert second["action_type"] == "calendar_invite"
+
+
+# --- the session's view of a thread (M16) ----------------------------------
+
+
+def _session(deps: Deps) -> Any:
+    from app.graph.runner import GraphSession
+
+    return GraphSession(deps=deps, conn=cast(Any, None), checkpointer=InMemorySaver(), trace=False)
+
+
+def test_the_revision_comes_from_the_threads_own_counter() -> None:
+    session = _session(_deps())
+    session.start("m1", "m1")
+    assert session.revision("m1") == 1
+
+    session.resume("m1", {"action": "edit", "correction": "make it 5pm"})
+
+    assert session.pending("m1") is not None
+    assert session.revision("m1") == 2
+
+
+@dataclass
+class FlakyPipeline(FakePipeline):
+    """Fails the extraction calls whose (1-based) numbers are listed."""
+
+    failing_calls: set[int] = field(default_factory=set)
+    calls: int = 0
+
+    def extract(self, email: EmailMessage, *, extra: str = "", **kwargs: Any) -> ExtractionResult:
+        self.calls += 1
+        if self.calls in self.failing_calls:
+            # Not retried by the node's policy, so the test does not sleep
+            # through its back-off.
+            raise RuntimeError("model unavailable")
+        return super().extract(email, extra=extra, **kwargs)
+
+
+def test_redrive_finishes_an_edit_whose_extraction_failed() -> None:
+    """The decision was consumed; the thread stopped mid-graph, not parked."""
+    pipeline = FlakyPipeline(failing_calls={2})
+    session = _session(_deps(pipeline=pipeline))
+    session.start("m1", "m1")
+
+    with pytest.raises(RuntimeError):
+        session.resume("m1", {"action": "edit", "correction": "make it 5pm"})
+    assert session.pending("m1") is None
+
+    session.redrive("m1")
+
+    assert session.pending("m1") is not None
+    assert session.revision("m1") == 2
+    # The re-driven extraction still saw the owner's correction.
+    assert "make it 5pm" in pipeline.corrections[-1]
 
 
 # --- durability ------------------------------------------------------------

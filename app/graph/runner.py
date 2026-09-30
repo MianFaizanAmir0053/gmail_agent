@@ -21,6 +21,7 @@ from app.google.gmail import GmailClient
 from app.graph.build import build_graph
 from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import Deps
+from app.graph.versioning import pipeline_version
 from app.obs.trace import Tracer
 from app.store.ledger import MessageLedger
 
@@ -78,6 +79,16 @@ class GraphSession:
         """
         return self._run(message_id, Command(resume=decision))
 
+    def redrive(self, message_id: str) -> dict[str, Any]:
+        """Run a thread on from where it stopped, with no new input.
+
+        For a thread that consumed a decision and then failed mid-graph: its
+        checkpoint still names the node that failed, and this runs it again.
+        Callers must not re-drive a thread whose next node is `act` -- creating
+        an event is not idempotent (`app/graph/build.py`).
+        """
+        return self._run(message_id, None)
+
     def pending(self, message_id: str) -> dict[str, Any] | None:
         """The interrupt payload for a parked thread, or None if not parked."""
         snapshot = self._graph().get_state(self.config(message_id))
@@ -86,6 +97,16 @@ class GraphSession:
                 value: dict[str, Any] = interrupt_.value
                 return value
         return None
+
+    def revision(self, message_id: str) -> int:
+        """Which version of the proposal the thread is on: 1 until an edit.
+
+        Read from the graph's own edit counter rather than from the interrupt
+        payload, so proposals parked before the payload carried anything
+        extra get the same answer.
+        """
+        values = self._graph().get_state(self.config(message_id)).values
+        return int(values.get("revisions", 0)) + 1
 
 
 @contextmanager
@@ -129,5 +150,6 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
                 if settings.reviewer_enabled
                 else None
             ),
+            pipeline_version=pipeline_version(settings),
         )
         yield GraphSession(deps=deps, conn=conn, checkpointer=checkpointer)

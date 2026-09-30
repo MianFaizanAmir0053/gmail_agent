@@ -561,10 +561,10 @@ Pages that read the database may fail until 16.23. Only sign-in is under test.
   - `redrive(message_id)`: runs `invoke(None)` through the tracer.
 
 **Acceptance criteria:**
-- [ ] Toggling the reviewer, or changing any listed model or prompt, changes `pipeline_version`. Nothing else does.
-- [ ] An edit that adds a guest turns `calendar_hold` into `calendar_invite` at the re-park.
-- [ ] The revision is 1 at the first park and 2 after an edit, including for a payload without the new fields.
-- [ ] `redrive` re-runs a node that failed after an edit.
+- [x] Toggling the reviewer, or changing any listed model or prompt, changes `pipeline_version`. Nothing else does. The reviewer's model and prompt count only while the reviewer runs, and the search prompt only while search does.
+- [x] An edit that adds a guest turns `calendar_hold` into `calendar_invite` at the re-park.
+- [x] The revision is 1 at the first park and 2 after an edit. It is read from state, never from the payload, so older payloads get the same answer.
+- [x] `redrive` re-runs a node that failed after an edit, and the owner's correction still reaches it.
 
 **Verification:** `uv run pytest tests/test_graph.py tests/test_versioning.py`; `.\tasks.ps1 check`.
 
