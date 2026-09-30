@@ -22,6 +22,7 @@ from app.google.auth import token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
 from app.jobs.poll import STOPPING, poll_once
+from app.obs.liveness import LIVENESS
 from app.store.db import connect
 from app.store.job_runs import JobRuns
 from app.telegram.client import TelegramClient
@@ -47,11 +48,17 @@ def run_poll(settings: Settings) -> None:
     started_at = datetime.now(UTC)
     try:
         with graph_session(settings) as session:
-            result = poll_once(session, settings.poll_batch_size, stop=STOPPING)
+            result = poll_once(
+                session,
+                settings.poll_batch_size,
+                stop=STOPPING,
+                show_titles=settings.app_env != "prod",
+            )
     except Exception as exc:
         # A scheduled job that raises kills nothing but itself, and APScheduler
         # would swallow the traceback. Log it loudly; the next tick retries.
         log.exception("poll failed")
+        LIVENESS.poll_finished(ok=False, at=datetime.now(UTC))
         # The type only: exception text can carry message content or URLs.
         record_tick(settings, "poll", started_at, ok=False, error=type(exc).__name__)
         return
@@ -59,6 +66,7 @@ def run_poll(settings: Settings) -> None:
     log.info(
         "poll: saw %d unread, started %d, failed %d", result.seen, result.started, result.failed
     )
+    LIVENESS.poll_finished(ok=result.failed == 0, at=datetime.now(UTC))
     record_tick(
         settings,
         "poll",

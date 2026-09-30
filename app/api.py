@@ -11,15 +11,18 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from hmac import compare_digest
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from app.bootstrap import materialise_secrets
 from app.config import Settings, get_settings
 from app.google.auth import token_store
 from app.graph.runner import graph_session
+from app.obs.liveness import LIVENESS, configure_logging
 from app.telegram.client import TelegramClient
 from app.telegram.handler import NotAllowedError, TelegramHandler
 
@@ -28,23 +31,44 @@ router = APIRouter()
 
 
 @router.get("/health")
-def health() -> dict[str, Any]:
-    """Liveness plus the two things that silently rot: the database and the
-    seven-day Google token."""
+def health() -> JSONResponse:
+    """Whether the process is doing its job, from what it already knows.
+
+    503 when polling has stalled or no Google token is usable, so that the
+    platform and an external uptime monitor both treat it as down. Nothing here
+    touches the database: every successful poll already proves the database
+    works, and this endpoint is public and called every few seconds. Reasons
+    are fixed phrases; exception text stays in the server log, where hosts and
+    paths belong.
+    """
     settings = get_settings()
-    status: dict[str, Any] = {"status": "ok", "dry_run": settings.dry_run}
+    body: dict[str, Any] = {"status": "ok", "dry_run": settings.dry_run}
+    problems: list[str] = []
+
+    if settings.run_scheduler:
+        last_ok = LIVENESS.last_poll_ok_at
+        body["last_poll_ok_at"] = last_ok.isoformat() if last_ok else None
+        interval = timedelta(minutes=settings.poll_interval_minutes)
+        if LIVENESS.poll_overdue(datetime.now(UTC), interval):
+            problems.append("no successful poll in three intervals")
 
     try:
-        health_info = token_store(settings).health()
-        status["token_days_remaining"] = round(health_info.days_remaining, 1)
-        if health_info.needs_reauth_soon:
-            status["status"] = "degraded"
-            status["warning"] = "Google token expires soon -- run `tasks.ps1 reauth`"
-    except Exception as exc:  # a health check that raises is not a health check
-        status["status"] = "degraded"
-        status["token_error"] = str(exc)
+        token = token_store(settings).health()
+    except Exception:  # a health check that raises is not a health check
+        log.exception("token health check failed")
+        problems.append("google token unreadable")
+    else:
+        body["token_days_remaining"] = round(token.days_remaining, 1)
+        if token.expired:
+            problems.append("google token expired")
+        elif token.needs_reauth_soon:
+            body["warning"] = "Google token expires soon -- run `tasks.ps1 reauth`"
 
-    return status
+    if problems:
+        body["status"] = "degraded"
+        body["problems"] = problems
+        return JSONResponse(body, status_code=503)
+    return JSONResponse(body)
 
 
 @router.post("/telegram/webhook")
@@ -97,6 +121,8 @@ def _require_token(settings: Settings) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    configure_logging()
+
     # Before settings: `get_settings()` validates paths that only exist once the
     # base64 credential vars have been decoded to disk.
     for path in materialise_secrets():

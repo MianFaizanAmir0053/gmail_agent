@@ -47,8 +47,18 @@ class PollResult(NamedTuple):
 
 
 def poll_once(
-    session: GraphSession, limit: int, *, stop: threading.Event | None = None
+    session: GraphSession,
+    limit: int,
+    *,
+    stop: threading.Event | None = None,
+    show_titles: bool = True,
 ) -> PollResult:
+    """One pass over the newest unread mail.
+
+    `show_titles=False` is for production, where this output lands in hosted
+    logs that sit outside the database's controls: message ids and statuses
+    are enough to trace a run, and an extracted title is mail content.
+    """
     ledger = MessageLedger(session.conn)
 
     message_ids = session.deps.gmail.list_unread(max_results=limit)
@@ -84,7 +94,8 @@ def poll_once(
         else:
             ledger.mark(message_id, MessageStatus.AWAITING_APPROVAL)
             proposed = pending["proposed"]
-            print(f"  {message_id}  AWAITING APPROVAL  {proposed.get('title')}")
+            title = proposed.get("title") if show_titles else ""
+            print(f"  {message_id}  AWAITING APPROVAL  {title}".rstrip())
             _notify(pending, message_id)
 
     if not stopped:

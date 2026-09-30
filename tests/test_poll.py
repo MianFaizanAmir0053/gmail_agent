@@ -59,6 +59,7 @@ class FakeDeps:
 class FakeSession:
     unread: list[str]
     on_start: Callable[[str], None] = lambda message_id: None
+    parked: dict[str, str] = field(default_factory=dict)
     started: list[str] = field(default_factory=list)
     conn: object = field(default_factory=object)
 
@@ -70,8 +71,10 @@ class FakeSession:
         self.started.append(message_id)
         self.on_start(message_id)
 
-    def pending(self, message_id: str) -> None:
-        return None
+    def pending(self, message_id: str) -> dict[str, Any] | None:
+        if message_id not in self.parked:
+            return None
+        return {"proposed": {"title": self.parked[message_id]}}
 
 
 @pytest.fixture
@@ -117,3 +120,20 @@ def test_a_stopped_pass_does_not_advance_the_cursor(ledger: FakeLedger, cursor: 
     poll.poll_once(cast(GraphSession, session), 10, stop=stop)
 
     assert cursor.values == []
+
+
+def test_production_output_names_no_titles(
+    ledger: FakeLedger,
+    cursor: FakeCursor,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Hosted logs sit outside the database's controls: ids and statuses only."""
+    monkeypatch.setattr(poll, "_notify", lambda pending, message_id: None)
+    session = FakeSession(unread=["a"], parked={"a": "Salary review with HR"})
+
+    poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event(), show_titles=False)
+
+    out = capsys.readouterr().out
+    assert "AWAITING APPROVAL" in out
+    assert "Salary review" not in out

@@ -170,10 +170,10 @@ write at runtime instead of at boot.
 - In production, `poll` prints message ids and statuses, never titles.
 
 **Acceptance criteria:**
-- [ ] `/health` returns 200 inside the boot grace and 503 after three failed intervals.
-- [ ] No database call happens per request.
-- [ ] Scheduler log lines appear in the server's output.
-- [ ] With `APP_ENV=prod`, poll output contains no extracted title.
+- [x] `/health` returns 200 inside the boot grace and 503 after three failed intervals.
+- [x] No database call happens per request; it reads the in-process `LIVENESS` record.
+- [x] Scheduler log lines appear in the server's output. Seen at runtime: `ERROR app.api: token health check failed` under uvicorn.
+- [x] With `APP_ENV=prod`, poll output contains no extracted title.
 
 **Verification:** `uv run pytest tests/test_api.py tests/test_scheduler.py`; a manual check with `.\tasks.ps1 serve` and `curl -i localhost:8000/health`.
 
