@@ -41,3 +41,37 @@ M01 and M02 are parallel — when the OAuth consent screen makes you want to qui
 ## Shared contracts
 
 All modules speak `app/contracts.py`. Get it right early — see [M00](M00-skeleton.md).
+
+---
+
+## v2 · Universal personal assistant (M15–M27)
+
+Plan, decisions and capability map: `../../ASSISTANT-PLAN.md`. Evidence: `../research/assistant-landscape-2026-09.md`. The active task list lives in `../../tasks/todo.md`.
+
+Each module is specified and approved just before it is built, so only M15 has a spec so far.
+
+```
+M15 ─┬─► M16 ─────────────────┬─► M19 ─┬─► M22 ─┬─► M23
+     ├─► M17 ─► M18 ──────────┤        │        ├─► M26
+     │                        │        └─► M25  └─► M27
+     └─► M20 ─────────────────┴─► M21 ─┬─► M23
+                                       └─► M24
+```
+
+| # | Module | Est. | Status |
+|---|---|---|---|
+| [M15](M15-go-live.md) | Go live and measure | 5d + 8d unattended | ◐ spec written, awaiting sign-off |
+| M16 | Web channel | 5d | ☐ not specified |
+| M17 | Action policy | 4d | ☐ not specified |
+| M18 | Untrusted input | 4d | ☐ not specified |
+| M19 | Planner | 5d | ☐ not specified |
+| M20 | Mail sync | 3d | ☐ not specified |
+| M21 | Loose ends | 7d | ☐ not specified |
+| M22 | Connector gateway | 4d | ☐ not specified |
+| M23 | Connectors, wave 1 | 5d | ☐ not specified |
+| M24 | Earned autonomy | 3d | ☐ not specified |
+| M25 | Memory | 4d | ☐ not specified |
+| M26 | Money, read-only | 3d | ☐ not specified |
+| M27 | Browser fallback | 5d | ☐ not specified |
+
+**MVP is M15–M21.** Never cut M17 or M18 — they are what make the rest safe to build.
