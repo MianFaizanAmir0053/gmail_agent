@@ -383,4 +383,35 @@ All five must hold.
 
 ## Running notes
 
-*Not started.*
+### 2026-09-30 · Task 1: hosting comparison
+
+All prices were fetched on 2026-09-30 from official pages. Monthly figures are
+our own arithmetic from list prices.
+
+| | Fly.io (app) | Railway Hobby (app + database) | Supabase (database) | Neon (database) |
+|---|---|---|---|---|
+| Cost for this workload | Pay-as-you-go only; no free allowance for new organisations ([plans](https://docs.fly.io/about/discontinued-plans)). shared-cpu-1x in `sin`: 512 MB ≈ $4.05, 1 GB ≈ $7.23 per 30 days ([pricing](https://docs.fly.io/about/pricing)) | $5/month including $5 of usage; RAM $10/GB-month ([plans](https://docs.railway.com/reference/pricing/plans)). App plus Postgres ≈ $6–8.5 | Free $0; Pro $25, which is over budget ([pricing](https://supabase.com/pricing)) | Free cannot stay always on; paid always-on at 0.25 CU ≈ $19 ([pricing](https://neon.com/pricing)) |
+| Nearest region | Singapore; no Mumbai ([regions](https://docs.fly.io/reference/regions)) | Singapore; no India ([regions](https://docs.railway.com/reference/deployment-regions)) | Mumbai or Singapore ([regions](https://supabase.com/docs/guides/platform/regions)) | Singapore ([regions](https://neon.com/docs/introduction/regions)) |
+| Connection | Outbound IPv6 | Direct, over the private network | Direct over IPv6 only; the session pooler on `:5432` works over IPv4 ([docs](https://supabase.com/docs/guides/database/connecting-to-postgres)) | Direct host, or a transaction-mode pooler |
+| Gotchas | The first deploy creates 2 machines; `kill_timeout` defaults to 5 s; `fly launch` enables auto-stop | Postgres is self-managed on a volume (`pgvector/pgvector:pg16`); volume backups exist ([backups](https://docs.railway.com/reference/backups)); a hard usage limit takes every service offline ([limits](https://docs.railway.com/reference/usage-limits)) | Free has no automatic backups, turns read-only past 500 MB, and pauses after a week of inactivity | Free scales to zero after 5 minutes and caps at 100 CU-hours per month |
+
+**Uptime monitors.** Better Stack Free raises an incident on any non-2XX
+response and adds heartbeats ([docs](https://betterstack.com/docs/uptime/monitor-types)).
+Whether UptimeRobot Free treats a 503 as down is unverified.
+
+**Recommendation:** Railway Hobby in Singapore, running the app and
+`pgvector/pgvector:pg16` on a private network (about $6–8.5 a month), with:
+- a Neon Free project in Singapore as the integration-test database;
+- Better Stack Free for the HTTP check and a poller heartbeat.
+
+**Owner's decision:** the cheaper **Fly.io in `sin` + Supabase Free in
+Singapore**, about $4–7 a month.
+
+- **Database connection:** Supabase's direct connection. It is IPv6-only on the free plan, and Fly machines reach it over outbound IPv6. The session-mode pooler on `:5432` is the fallback. Transaction mode on `:6543` is never used.
+- **Uptime:** Better Stack Free.
+- **Integration tests:** a Neon Free project in Singapore, through `TEST_DATABASE_URL`.
+
+**Risks accepted with Supabase Free:**
+- no automatic backups, so the M15 evidence tables could be lost;
+- read-only past 500 MB, which the purge and ingestion-off keep well clear of;
+- pausing after a week of inactivity. Whether ten-minute polls count as activity is unverified; the uptime monitor would catch a pause.

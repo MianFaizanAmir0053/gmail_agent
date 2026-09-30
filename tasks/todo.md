@@ -33,9 +33,13 @@ CI only. CI only means pushing the branch, which the owner must approve.
 The owner decides.
 
 **Acceptance criteria:**
-- [ ] A comparison with sources and fetch dates is added to the M15 running notes.
-- [ ] The owner's choice is recorded: host, database provider and plan, both regions, the uptime monitor, and the integration-test route.
-- [ ] If Railway is chosen, the Fly-specific steps in tasks 4, 13, 14 and 20 are rewritten for Railway before they start.
+- [x] A comparison with sources and fetch dates is added to the M15 running notes.
+- [x] The owner's choice is recorded:
+  - host: Fly.io in `sin`;
+  - database: Supabase Free in Singapore, over its direct IPv6 connection;
+  - uptime monitor: Better Stack Free;
+  - integration tests: a Neon Free project in Singapore.
+- [x] Railway was not chosen, so the Fly steps stand.
 
 **Verification:** the running notes carry the decision, with sources.
 
@@ -87,6 +91,13 @@ Non-edit decisions must clear it.
 - [x] `uv lock --check` passes after the bounds change.
 - [ ] The image builds, locally or on Fly's remote builder, and boot-time secret writing succeeds as `appuser`.
 - [x] No dependency version changes in `uv.lock`: only the manifest constraint and the specifiers changed.
+- [x] `fly.toml`:
+  - `kill_timeout = 120`, up from the 5-second default;
+  - `primary_region = "sin"`;
+  - `swap_size_mb = 512`;
+  - auto-stop already off.
+
+*Status: done except the image build, which stays unverified until CI or the first remote build (task 14), because this machine has no Docker.*
 
 **Verification:** `uv lock --check`; `docker build .` when Docker is running, otherwise at task 14's first deploy; `.\tasks.ps1 check`.
 
@@ -94,24 +105,29 @@ Non-edit decisions must clear it.
 
 ### Checkpoint: after tasks 1–4
 
-- [ ] `.\tasks.ps1 check` is green.
-- [ ] The routing fix is proven by tests.
-- [ ] Hosting is decided.
-- [ ] The owner reviews before liveness work starts.
+- [x] `.\tasks.ps1 check` is green.
+- [x] The routing fix is proven by tests.
+- [x] Hosting is decided.
+- [x] The owner reviewed on 2026-09-30 and said continue.
 
-### Task 5 (conditional): Shared database connect helper
+### Task 5 (reduced): Refuse transaction-mode pooler URLs
 
-**Description:** Only if task 1's provider forces a transaction-mode pooler.
-One helper sets `prepare_threshold=None`, which disables prepared statements,
-and every connection uses it: checkpointer, ledger, migrations and `job_runs`.
+**Description:** Task 1 chose Supabase's direct connection, so no
+prepared-statement workaround is needed. What remains is a guard.
+
+Settings validation rejects a `DATABASE_URL` or `TEST_DATABASE_URL` that
+points at a known transaction-mode pooler: Supabase's port `6543`, or a Neon
+host containing `-pooler`. The error names the direct or session-mode
+alternative. Otherwise a pasted pooler string would fail every checkpoint
+write at runtime instead of at boot.
 
 **Acceptance criteria:**
-- [ ] Every `psycopg.connect` call in `app/` goes through the helper.
-- [ ] A test asserts the option is set when the URL is flagged as pooled.
+- [ ] Both pooler forms are rejected at settings validation, with an actionable message.
+- [ ] Direct, session-mode and localhost URLs are accepted.
 
-**Verification:** grep for `psycopg.connect`; `.\tasks.ps1 check`.
+**Verification:** `uv run pytest tests/test_config.py`; `.\tasks.ps1 check`.
 
-**Dependencies:** task 1 · **Files:** `app/store/db.py`, `app/graph/checkpointer.py`, `tests/test_config.py` · **Scope:** S
+**Dependencies:** task 1 · **Files:** `app/config.py`, `tests/test_config.py` · **Scope:** S
 
 ### Task 6: Shutdown-safe polling and recovery of stranded claims
 

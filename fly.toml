@@ -1,15 +1,25 @@
 # Fly.io deployment.
 #
 #   fly launch --no-deploy      # claims the app name, writes no secrets
-#   fly postgres create         # managed Postgres, then `fly postgres attach`
-#   fly secrets set ...         # see docs/DEPLOY.md
-#   fly deploy
+#   fly secrets set ...         # see docs/DEPLOY.md; the database is Supabase
+#   fly deploy --ha=false       # one machine: a second would run a second poller
 #
 # Railway users: delete this file and see docs/DEPLOY.md -- the Dockerfile and
 # environment variables are identical, only the CLI differs.
 
 app = "mailagent"
-primary_region = "fra"
+# Singapore, next to the Supabase project, so mail bodies at rest and in
+# transit stay in one region (M15 task 1).
+primary_region = "sin"
+
+# The default is 5 seconds, shorter than one message's trip through the
+# graph. A redeploy would kill the poller mid-message and strand a `claimed`
+# ledger row that nothing picks up again.
+kill_timeout = 120
+
+# 512 MB is tight for LangGraph plus the Google clients; swap absorbs the
+# peaks for less than the next memory size costs.
+swap_size_mb = 512
 
 [build]
   dockerfile = "Dockerfile"
