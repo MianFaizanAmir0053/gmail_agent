@@ -167,7 +167,10 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
             "correction": str(decision.get("correction", "")),
             "revisions": state.get("revisions", 0) + 1,
         }
-    return {"approved": action == "confirm"}
+    # Any other answer ends the edit round. Left in place, the previous
+    # correction outlives it: `_decision` would still see an edit in progress
+    # and send a Confirm or Cancel straight back to `extract`.
+    return {"approved": action == "confirm", "correction": ""}
 
 
 def act(deps: Deps, state: GraphState) -> GraphState:

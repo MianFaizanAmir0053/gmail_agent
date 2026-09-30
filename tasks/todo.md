@@ -48,9 +48,9 @@ any later decision is routed back to `extract`, and the proposal stays parked.
 Non-edit decisions must clear it.
 
 **Acceptance criteria:**
-- [ ] *Edit* then *Cancel* ends at `reject` with the ledger marked `REJECTED`.
-- [ ] *Edit* then *Confirm* reaches `act` exactly once.
-- [ ] Existing graph tests still pass.
+- [x] *Edit* then *Cancel* ends at `reject` with the ledger marked `REJECTED`.
+- [x] *Edit* then *Confirm* reaches `act` exactly once.
+- [x] Existing graph tests still pass.
 
 **Verification:** `uv run pytest tests/test_graph.py`, then `.\tasks.ps1 check`.
 
