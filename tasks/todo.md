@@ -737,9 +737,9 @@ A settle is one transaction of conditional writes.
 
 ### Checkpoint: one path
 
-- [ ] `.\tasks.ps1 check` is green, and the integration tests pass on Neon.
-- [ ] `GraphSession.resume` is called only from `app/channel/worker.py`, checked with a search.
-- [ ] End to end on Neon: a planted email parks, `approve` confirms it, and the ledger, `proposals` and `decisions` agree. This needs the dev Google token; without it, run a fake graph and say so.
+- [x] `.\tasks.ps1 check` is green, and the integration tests pass on Neon: 125 passed on 2026-10-01; the one failure is the known one.
+- [x] `GraphSession.resume` is called only from `app/channel/worker.py`. Enforced by `tests/test_one_resumer.py` rather than a one-off search.
+- [ ] End to end on Neon with a planted email: **not run.** The dev Google token is not on this machine; minting it is M15's owner step (`.\tasks.ps1 reauth`). The same path ran on Neon with a fake graph instead: park, `decide`, worker, settled, for confirm, edit and cancel (`tests/test_worker.py`).
 
 ---
 
@@ -756,10 +756,10 @@ A settle is one transaction of conditional writes.
 - The handlers are plain `def`, and each opens its own connection.
 
 **Acceptance criteria:**
-- [ ] A missing or wrong secret gets 401; an unset or blank secret gets 503.
-- [ ] The handlers are sync.
-- [ ] A decision request returns without waiting on the graph, and wakes the worker.
-- [ ] A subscription is stored once per endpoint and can be removed.
+- [x] A missing or wrong secret gets 401; an unset or blank secret gets 503. The secret is checked before the body is read: an unauthenticated request with a broken body gets 401, not 422.
+- [x] ~~The handlers are sync.~~ **Changed, as for the webhook in 16.11:** the handlers are `async`, check the secret first, and run their database work in the thread pool.
+- [x] A decision request returns without waiting on the graph (202, 409 with the current revision, 404, 422), and wakes the worker. A malformed request, including a `sweep` or an overlong correction, is refused before the queue sees it, and a 422 never echoes the input.
+- [x] A subscription is stored once per endpoint, refreshed on repeat, and can be removed. A non-https endpoint is refused.
 
 **Verification:** `uv run pytest tests/test_web_api.py tests/test_config.py`; `.\tasks.ps1 check`.
 

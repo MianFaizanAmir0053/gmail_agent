@@ -153,6 +153,15 @@ class Settings(BaseSettings):
     public_url: str | None = None
     """Externally reachable base URL, for registering the Telegram webhook."""
 
+    # --- Web channel (M16) ----------------------------------------------------
+    web_api_secret: SecretStr | None = None
+    """The bearer secret the web app's server sends to `/api/*`. It lives only
+    in the Next.js server environment and here; the browser never holds it.
+    Unset means the API answers 503."""
+
+    vapid_private_key: SecretStr | None = None
+    """Signs web pushes. Generate the pair with `.\\tasks.ps1 vapid`."""
+
     # --- Scheduling (M07) ---------------------------------------------------
     run_scheduler: bool = False
     """Start the in-process poller. Off by default so local `serve` and tests
@@ -193,6 +202,8 @@ class Settings(BaseSettings):
         "telegram_webhook_secret",
         "fernet_key",
         "ai_gateway_api_key",
+        "web_api_secret",
+        "vapid_private_key",
         mode="before",
     )
     @classmethod

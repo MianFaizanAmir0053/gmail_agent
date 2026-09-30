@@ -202,7 +202,8 @@ with `.\tasks.ps1 approve --reconcile`.
 | `POST /api/pairing/codes` | iPhone fallback only (see below) |
 | `POST /api/pairing/redeem` | iPhone fallback only (see below) |
 
-- **Plain `def` handlers.** Their database calls are synchronous, and FastAPI runs a `def` handler in its thread pool, so a slow query cannot stall `/health`.
+- **Authenticated before the body is read, then off the event loop.** The handlers are `async`: each checks the bearer secret, then parses the body, then hands its blocking database work to the thread pool, so a slow query cannot stall `/health`. A plain `def` handler would receive a body FastAPI had already parsed for an unauthenticated caller.
+- **A 422 never echoes the input.** Validation errors carry locations and messages only, because the input can be the owner's correction.
 - **Auth.** `Authorization: Bearer <WEB_API_SECRET>`, compared with `compare_digest`. An unset **or blank** secret means 503.
   - `WEB_API_SECRET` and `VAPID_PRIVATE_KEY` join `_blank_secret_is_unset` in `app/config.py`. Otherwise a blank value becomes `SecretStr("")`, which counts as configured, and `compare_digest("", "")` is true: the webhook bug this repo already fixed once.
 - **Server-side only.** The secret lives only in the Next.js server environment, and the browser never calls Fly. Owner identity is enforced in the web app: every page and server action calls `auth()` and requires the owner's session. A blank `OWNER_EMAIL` admits nobody.

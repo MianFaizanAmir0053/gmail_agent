@@ -23,10 +23,12 @@ from app.bootstrap import materialise_secrets
 from app.config import Settings, get_settings
 from app.google.auth import observe_refreshes, standby_token_store, token_store
 from app.google.tokens import RefreshOutcome, TokenHealth, TokenState, TokenStore, token_state
+from app.jobs.scheduler import decision_recorded
 from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE, configure_logging
 from app.store.db import connect_autocommit
 from app.telegram.client import TelegramClient
 from app.telegram.handler import NotAllowedError, TelegramHandler
+from app.web_api import router as web_router
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -152,18 +154,9 @@ def _handle_telegram(settings: Settings, update: dict[str, Any]) -> str:
             conn=conn,
             bot=TelegramClient(_require_token(settings)),
             allowed_chat_ids=frozenset(settings.allowed_chat_ids),
-            on_queued=decision_queued,
+            on_queued=decision_recorded,
         )
         return handler.handle(update)
-
-
-def decision_queued() -> None:
-    """A decision was recorded in this process: start the stuck-queue clock
-    and wake the worker, so the tap does not wait for the next tick."""
-    from app.jobs.scheduler import wake_decisions
-
-    LIVENESS.decision_recorded(datetime.now(UTC))
-    wake_decisions()
 
 
 def _verify_secret(settings: Settings, provided: str | None) -> None:
@@ -278,6 +271,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="mailagent", lifespan=lifespan)
     app.include_router(router)
+    app.include_router(web_router)
     return app
 
 

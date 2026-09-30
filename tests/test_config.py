@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -84,6 +86,19 @@ def test_a_gateway_classifier_without_its_key_fails_at_startup(
 ) -> None:
     with pytest.raises(ValidationError, match="AI_GATEWAY_API_KEY"):
         _gateway_settings(monkeypatch, classify_model="typesafe-ai/jev")
+
+
+@pytest.mark.parametrize("name", ["web_api_secret", "vapid_private_key"])
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_the_web_channels_blank_secrets_count_as_unset(name: str, blank: str) -> None:
+    """M16's secrets get the webhook's fix: blank is not configured."""
+    fields: dict[str, Any] = {
+        "_env_file": None,
+        "database_url": "postgresql://x/y",
+        "gemini_api_key": "k",
+        name: blank,
+    }
+    assert getattr(Settings(**fields), name) is None
 
 
 def test_a_blank_gateway_key_counts_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:

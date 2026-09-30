@@ -170,6 +170,13 @@ def activate(scheduler: BackgroundScheduler) -> None:
     _active = scheduler
 
 
+def decision_recorded() -> None:
+    """A decision was recorded in this process: start the stuck-queue clock and
+    wake the worker, so the owner's tap does not wait for the next tick."""
+    LIVENESS.decision_recorded(datetime.now(UTC))
+    wake_decisions()
+
+
 def wake_decisions() -> bool:
     """Run the decisions job now, if this process runs the scheduler.
 
