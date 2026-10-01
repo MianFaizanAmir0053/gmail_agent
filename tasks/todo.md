@@ -989,12 +989,15 @@ A sixth adversarial review read the web app on 2026-10-01: one HIGH issue (a tap
 - `POST /api/pairing/redeem` allows 5 attempts, after which the code is dead.
 - A successful redeem returns a single-use grant, which the installed app turns into its own session.
 
+Built on 2026-10-01, ahead of the iPhone test, because the owner moved every test to the end. It is switched off (`PAIRING_ENABLED=false` on Fly and Vercel) until that test shows Google sign-in failing inside the installed app.
+
 **Acceptance criteria:**
-- [ ] A code dies after 5 attempts, and after 5 minutes.
-- [ ] A grant works once.
-- [ ] The owner signs in inside the installed iPhone app through pairing.
+- [x] A code dies after 5 attempts, and after 5 minutes. `tests/test_pairing.py` on Neon, 14 passed. Two tests were checked against deliberately broken code: without the issuing lock, two live codes; without `FOR UPDATE`, the right code redeemed twice.
+- [x] A grant works once. The redeemed code is the grant: Auth.js's `authorize` redeems it on the server and issues the session, so there is no separate grant step.
+- [ ] The owner signs in inside the installed iPhone app through pairing: at the end tests, and only if Google sign-in fails there.
 
 **Verification:** `uv run pytest tests/test_pairing.py`; the web checks; the owner's iPhone.
+- 2026-10-01: 784 unit tests and the full integration suite on Neon (174) passed; 68 web tests, typecheck and build passed. Locally, against the Neon test database with throwaway secrets: the sign-in page showed the code box, a wrong and an ended code were refused with Auth.js's generic message, the code from `/pair` signed the browser in as the owner, and with pairing off only Google was offered.
 
 **Dependencies:** 16.2, 16.12 · **Files:** `app/channel/pairing.py`, `app/web_api.py`, `dashboard/src/app/pair/page.tsx`, `tests/test_pairing.py` · **Scope:** M
 

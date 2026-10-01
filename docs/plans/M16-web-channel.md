@@ -534,6 +534,15 @@ offered at the "ready to deploy" checkpoint.
 - **Proven on Neon by forcing a crash after each step.** The crash is a `BaseException`, so no error handler runs, as when a process dies. In every case the next tick finished the job, and the fake graph counted exactly one application.
 - **A payload with no recorded mode is stored as a dry run.** This covers proposals parked before M15 recorded one. M17 must never act for real on a proposal whose mode nobody wrote down.
 
+### Task 16.24: pairing, built and switched off (2026-10-01)
+
+- **Built before the iPhone test, because the owner moved every test to the end.** Fly's `PAIRING_ENABLED` and the web app's turn it on together. While it is off, the API answers 404 after the secret check, and the sign-in page offers only Google.
+- **D4's single-use grant is the redeemed code itself.** Auth.js's `authorize` redeems the code on the server, and Auth.js issues the session. `issued_to` is the label `web`: JWT sessions have no server-side id to bind to.
+- **At most one code is live, under an advisory lock that only issuers take.** Without it, two requests at once both left their code live, as a test on Neon showed. A table lock would deadlock against a redeem holding the code's row. A redeem must run inside a transaction; without the row lock, two redeems of the right code at once both succeeded.
+- **The SHA-256 keeps the code out of the table, not out of reach.** Anyone who can read the table can try all million codes in a moment. What protects a code is its five minutes and five attempts, and that `web_reader` cannot read the table. Anyone who can reach the sign-in page can spend the live code's attempts. So pairing should be switched off again once the iPhone is paired.
+- **Switching pairing off does not sign out a paired device.** Every check reads only the session's address, so the paired session lasts until `AUTH_SECRET` is rotated, as D4 says for revocation.
+- **The sign-in rule became a tested function per provider** (`admitsSignInAttempt`). Google is admitted exactly as before; pairing only while it is on, and only for `OWNER_EMAIL`; any other provider is refused.
+
 ### Tasks 16.21–16.22: retention and runbook (2026-10-01)
 
 - **Retention keys on the ledger, and never touches an open proposal.** A pending card beside a final ledger exists: the M15 CLI left some behind. Its content stays until reconciliation closes it, and the next purge clears it a week after the ledger settled.

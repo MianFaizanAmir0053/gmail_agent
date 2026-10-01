@@ -402,7 +402,20 @@ out on its own.
 3. Sign in again on the devices you keep, and open the app on each: it posts
    its subscription again every time it opens.
 
-### 9.8 Left as it was
+### 9.8 Pairing, only if iPhone sign-in fails
+
+Built and switched off. Use it only if Google sign-in fails inside the
+installed iPhone app.
+
+1. Set `PAIRING_ENABLED=true` on Fly (`fly secrets set PAIRING_ENABLED=true`) and in Vercel, then redeploy Vercel.
+2. On a device that is already signed in, open `/me`, follow **Pair the installed iPhone app**, and tap **Show a pairing code**. It lasts five minutes and allows five tries; showing a new one ends the old one.
+3. In the installed iPhone app, type the code into the sign-in page's **Pairing code** box.
+4. Set both flags back to `false`, and redeploy Vercel. The paired iPhone stays signed in; only rotating `AUTH_SECRET` (§9.7) signs it out.
+
+While pairing is on, anyone who reaches the sign-in page can use up a live
+code's five tries, so leave it on only for the minutes it takes.
+
+### 9.9 Left as it was
 
 - `/health`'s token fields from M15 stay public. They name the token's state,
   never its value. Whether they move behind the bearer is to be revisited
