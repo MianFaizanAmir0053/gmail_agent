@@ -1219,11 +1219,11 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 
 # M20 · Mail sync — tasks
 
-Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md).
+Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised after its third review round on 2026-10-01. Where a task and the spec differ, the spec wins.
 
 ### Task 20.1: Records
 
-**Description:** Migration `011_mail_sync.sql` (D8): `mail_items`, its indexes, `mail_cursors`.
+**Description:** Migration `011_mail_sync.sql` (D8): `gmail_messages` and its indexes, `gmail_cursors`, `gmail_fetch_queue`.
 
 **Acceptance criteria:**
 - [ ] It applies and can be re-run; `web_reader` reads none of it.
@@ -1234,49 +1234,62 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md).
 
 ### Task 20.2: Gmail calls for sync
 
-**Description:** The Gmail client gains: `history.list` pages (exclusive start); field-masked metadata fetches with the six headers; day-window id listing; `num_retries` for 429 and 5xx; a pacer counting units by method; `CursorExpired` for a history `404` and `MessageGone` for a fetch `404`.
+**Description:** The Gmail client gains:
+- `history.list` pages (exclusive start);
+- field-masked metadata fetches with the six headers (a new constant, not M15's);
+- epoch-window id listing;
+- 429 and 5xx retries bounded to 30 seconds in all for the pipeline's fetch;
+- a pacer, shared by every Gmail call in the process, counting units by method;
+- `CursorExpired` for a history `404`, and `MessageGone` for a fetch `404`.
 
 **Acceptance criteria:**
 - [ ] Every call is covered against a fake service, both `404`s included.
-- [ ] Every metadata request carries the field mask; none asks for a body, snippet or subject.
-- [ ] The pacer holds 2,000 units a minute.
+- [ ] Every metadata request carries the field mask and exactly the six headers; none asks for a body, snippet or subject.
+- [ ] The pacer holds the sync to 2,000 units a minute.
 
-**Verification:** `uv run pytest tests/test_gmail.py`.
+**Verification:** `uv run pytest tests/test_gmail.py tests/test_mail_quota.py`.
 
 **Dependencies:** None · **Files:** `app/google/gmail.py`, `app/mail/quota.py`, tests · **Scope:** M
 
-### Task 20.3: Items
+### Task 20.3: Messages
 
-**Description:** `app/mail/items.py` (D1): classify (direction `in`, `out` or `self`; category; the raw bulk signals), upsert idempotently, apply label additions and removals.
+**Description:** `app/mail/messages.py` (D1): classify (direction, `to_self`, category, the raw bulk signals), store idempotently, apply label additions and removals, and recompute direction and category.
 
 **Acceptance criteria:**
-- [ ] `SENT` gives `out`; `SENT` and `INBOX` give `self`; categories map; no category is `primary`; drafts, chats, spam and trash are not stored.
-- [ ] Upserting twice changes nothing; a label delta applies without a fetch.
+- [ ] `SENT` gives `out`; mail from the owner to the owner is `to_self`; categories map; no category is `primary`; Promotions, Social, drafts, chats, spam and trash are not stored.
+- [ ] Storing twice changes nothing; a label change applies without a fetch.
 - [ ] A seeded subject, snippet and body never reach the table.
 
-**Verification:** `uv run pytest tests/test_mail_items.py`; Neon.
+**Verification:** `uv run pytest tests/test_mail_messages.py`; Neon.
 
-**Dependencies:** 20.1, 20.2 · **Files:** `app/mail/items.py`, tests · **Scope:** S
+**Dependencies:** 20.1, 20.2 · **Files:** `app/mail/messages.py`, tests · **Scope:** S
 
-### Task 20.4: Incremental sync and catching up
+### Task 20.4: Incremental sync, the switch-over, and catching up
 
-**Description:** `app/mail/sync.py` (D3): the first pass (cursor and `feed_from`), incremental passes (the cursor after each page), the catch-up on a history `404`, the shutdown check between pages; the scheduler's `mail_sync` job every 2 minutes.
+**Description:** `app/mail/sync.py` (D3):
+- the first run, from the old poller's stored id and time;
+- the switch-over listing, once;
+- incremental passes, with the cursor after each page and `caught_up_at` at the end;
+- the fetch queue for per-message failures and label-change fetches;
+- the catch-up on a history `404`, with its gap and the 7-day re-fetch;
+- the advisory lock, and the 60-second bound;
+- the scheduler's `mail_sync` job every 2 minutes.
 
 **Acceptance criteria:**
 - [ ] Each sync case in the spec's tests passes against a fake service.
-- [ ] A crash mid-pass costs at most one page.
+- [ ] A crash mid-pass costs at most one page; a catch-up resumes after a restart.
 
 **Verification:** `uv run pytest tests/test_mail_sync.py tests/test_scheduler.py`; Neon.
 
-**Dependencies:** 20.3 · **Files:** `app/mail/sync.py`, `app/jobs/scheduler.py`, tests · **Scope:** M
+**Dependencies:** 20.3 · **Files:** `app/mail/sync.py`, `app/jobs/scheduler.py`, tests · **Scope:** L (split if it grows: passes and the cursor, then the switch-over and catch-up)
 
-### Task 20.5: The backfill
+### Task 20.5: The backfill and the fetch queue
 
-**Description:** One day at a time, newest first, back to 90 days, resuming from `backfill_until`, within the sync's share of the quota (D3).
+**Description:** Both run in the background, within the sync's quota share, after the incremental pass (D3). The backfill goes one epoch-second day at a time, newest first, from `feed_from` back to 90 days, resuming from `backfill_until`. The queue drops messages older than 90 days; five strikes mark a message `unreadable`.
 
 **Acceptance criteria:**
-- [ ] It resumes after a restart and stops at 90 days.
-- [ ] Incremental passes always run first; the backfill only spends what they leave.
+- [ ] The backfill resumes after a restart, stops at 90 days, and never stores mail newer than `feed_from`.
+- [ ] Outages charge no strike.
 
 **Verification:** `uv run pytest tests/test_mail_sync.py`.
 
@@ -1286,36 +1299,42 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md).
 
 - [ ] Checks green; Neon.
 
-### Task 20.6: The pipeline's feed, and the switch-over
+### Task 20.6: The pipeline's feed, the switch-over, and stranded claims
 
-**Description:** Poll's candidates come from the feed (D4), with the age limit; `list_unread` only until a cursor exists; `feed_from` from the old poller's last pass. The graph's fetch marks a message gone before its turn as `SKIPPED`.
+**Description:**
+- Poll's candidates come from the feed (D4): the rule, `feed_from` less an hour, and the 7-day age limit with its `SKIPPED` record.
+- `list_unread` is used only until the first sync run.
+- The pipeline's fetch raises `MessageGone`, which poll records as `SKIPPED`.
+- A classification skip records "not a meeting".
+- At boot, stranded claims are recorded, released or failed.
+- The new reasons join the purge's fixed reasons.
 
 **Acceptance criteria:**
 - [ ] Every feed case in the spec's tests passes, Google Groups mail included.
-- [ ] The backfill, and mail older than 7 days when first seen, never reach poll.
+- [ ] Nothing older than `feed_from` less an hour, and nothing older than 7 days, reaches the pipeline.
 
-**Verification:** `uv run pytest tests/test_poll.py tests/test_mail_feed.py tests/test_graph.py`; Neon.
+**Verification:** `uv run pytest tests/test_poll.py tests/test_mail_feed.py tests/test_graph.py tests/test_ledger.py tests/test_purge.py`; Neon.
 
-**Dependencies:** 20.5 · **Files:** `app/jobs/poll.py`, `app/mail/feed.py`, `app/graph/nodes.py`, tests · **Scope:** M
+**Dependencies:** 20.5 · **Files:** `app/jobs/poll.py`, `app/mail/feed.py`, `app/graph/nodes.py` (`fetch` and `skip` only), `app/graph/build.py`, `app/store/ledger.py`, `app/api.py`, `app/jobs/purge.py`, tests · **Scope:** M
 
 ### Task 20.7: Recall and liveness
 
-**Description:** The daily `mail_recall` job (D5) with its lagged window, repair and alert; `/health` 503 on a stale sync, and its bearer-only fields (D6).
+**Description:** The daily `mail_recall` job (D5): sync recall with repair, feed recall leaving out paused and capped hours, the too-old check, and category agreement both ways. `/health` returns 503 when no pass has reached the end of history for three intervals, and shows its bearer-only fields (D6).
 
 **Acceptance criteria:**
-- [ ] A missing id is inserted, gives below 100%, and raises one alert a day.
-- [ ] A sync older than three intervals gives 503, across a restart.
+- [ ] Each recall case in the spec's tests passes.
+- [ ] A lagging or dead sync gives 503; a fresh boot does not.
 
 **Verification:** `uv run pytest tests/test_mail_recall.py tests/test_api.py tests/test_liveness.py`.
 
-**Dependencies:** 20.4 · **Files:** `app/mail/recall.py`, `app/jobs/scheduler.py`, `app/api.py`, `app/obs/liveness.py`, tests · **Scope:** S
+**Dependencies:** 20.4 · **Files:** `app/mail/recall.py`, `app/jobs/scheduler.py`, `app/api.py`, `app/obs/liveness.py`, tests · **Scope:** M
 
 ### Task 20.8: Retention, the CLI and the runbook
 
-**Description:** The purge (D7); `python -m app.mail.sync --status|--show|--catch-up|--check-feed` (D8); `docs/DEPLOY.md` and the README.
+**Description:** The purge (D7); `python -m app.mail.sync --once|--status|--show|--catch-up|--check-feed` (D8); `docs/DEPLOY.md` and the README.
 
 **Acceptance criteria:**
-- [ ] Day 179 kept, day 181 deleted; ledger rows untouched.
+- [ ] Day 179 kept, day 181 deleted; gone rows a week after `gone_at`; ledger rows untouched.
 - [ ] Each CLI command works against a fake service and Neon.
 - [ ] A read-through against the spec finds no step outside the docs.
 
