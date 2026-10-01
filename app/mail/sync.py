@@ -90,11 +90,9 @@ WINDOW = timedelta(days=1)
 """A catch-up and the backfill list a day at a time, newest first."""
 
 BACKFILL_FOR = timedelta(days=90)
-"""How far back from `feed_from` the backfill reaches."""
-
-QUEUE_DROPS_AFTER = timedelta(days=90)
-"""A queued message older than this when fetched is dropped, not stored: a
-label change can touch years-old mail, and only the last 90 days matter."""
+"""How far back from `feed_from` the backfill reaches. The fetch queue drops,
+rather than stores, a message older than the backfill's floor: a label
+change can touch years-old mail, and only what the backfill reaches matters."""
 
 STRIKES = 5
 """Failures of its own before a queued message is marked unreadable."""
@@ -339,7 +337,7 @@ def sync_once(
     if cursor.gap_from is not None and not run.halted():
         _list_gap(run, cursor)
     if not run.halted():
-        _work_queue(run)
+        _work_queue(run, floor=cursor.feed_from - BACKFILL_FOR)
     _close_gap(run)
     if not run.halted():
         _backfill(run, _reload(run))
@@ -651,14 +649,15 @@ def _strike(conn: psycopg.Connection, message_id: str) -> None:
     )
 
 
-def _work_queue(run: _Run) -> None:
+def _work_queue(run: _Run, *, floor: datetime) -> None:
     """Fetch what the queue holds, each at most once a run.
 
     Entries that never failed come first, re-fetches first among them; then
     those that failed, fewest strikes and longest ago first, so a head that
     fails every time cannot starve the rest. A failure of the message's own
     counts a strike, and five make it unreadable. An outage stops the queue
-    and counts nothing.
+    and counts nothing. A message older than `floor`, where the backfill
+    stops, is dropped rather than stored.
     """
     conn = run.conn
     rows = conn.execute(
@@ -687,7 +686,7 @@ def _work_queue(run: _Run) -> None:
             run.failed.add(message_id)
             _strike(conn, message_id)
             continue
-        if row.internal_at < run.started - QUEUE_DROPS_AFTER:
+        if row.internal_at < floor:  # older than the backfill reaches
             dequeue(conn, message_id)
             continue
         try:

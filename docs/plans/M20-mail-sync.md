@@ -169,7 +169,8 @@ A crash or a deploy costs at most one page.
 
 **The fetch queue** is worked in the background, after the incremental pass,
 within the backfill's share of the quota. A fetch that shows a message older
-than 90 days drops it. A per-message failure counts a strike; five strikes
+than the backfill reaches (90 days before `feed_from`, not before today)
+drops it. A per-message failure counts a strike; five strikes
 mark it `unreadable`, counted in `/health`. Outages count no strikes. Entries
 that never failed come first; those that did follow, fewest strikes and
 longest ago first, so a head that fails every time cannot starve the rest.

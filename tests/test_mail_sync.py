@@ -100,7 +100,13 @@ def _old_poller(conn: psycopg.Connection, history_id: str | None, at: datetime) 
     )
 
 
-def _started(conn: psycopg.Connection, box: FakeMailbox, *, backfilled: bool = True) -> None:
+def _started(
+    conn: psycopg.Connection,
+    box: FakeMailbox,
+    *,
+    backfilled: bool = True,
+    feed_from: datetime = NOW,
+) -> None:
     """A mailbox already synced: the cursor at its current id, caught up and
     switched over at NOW, and -- unless asked otherwise -- nothing left to
     backfill."""
@@ -110,7 +116,14 @@ def _started(conn: psycopg.Connection, box: FakeMailbox, *, backfilled: bool = T
                                    caught_up_at, backfill_until)
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        (ME, str(box.history_id), NOW, NOW, NOW, NOW - timedelta(days=91) if backfilled else NOW),
+        (
+            ME,
+            str(box.history_id),
+            feed_from,
+            NOW,
+            NOW,
+            feed_from - timedelta(days=91) if backfilled else feed_from,
+        ),
     )
 
 
@@ -843,6 +856,25 @@ def test_a_backfilled_row_the_database_refuses_is_queued_and_the_backfill_goes_o
     assert set(_rows(mail)) == {"older"}
     assert _queue(mail)["refused"] == ("fetch_failed", 1, "queued")
     assert _cursor(mail).backfill_until == NOW - timedelta(days=90)
+
+
+def test_the_queue_keeps_what_the_backfill_reaches(mail: psycopg.Connection) -> None:
+    """The backfill reaches 90 days back from `feed_from`, so the queue's
+    horizon is the same, not 90 days back from today: weeks after the
+    switch-over, a message the backfill stored must not be dropped when a
+    label change brings its neighbour in."""
+    box = FakeMailbox()
+    _started(mail, box, feed_from=NOW - timedelta(days=30))
+    promo = {"INBOX", "CATEGORY_PROMOTIONS"}
+    box.put("within", labels=promo, at=NOW - timedelta(days=100))
+    box.put("beyond", labels=promo, at=NOW - timedelta(days=125))
+    for message_id in ("within", "beyond"):
+        box.relabel(message_id, remove={"CATEGORY_PROMOTIONS"}, add={"CATEGORY_PERSONAL"})
+
+    _sync(mail, box)
+
+    assert "within" in _rows(mail) and "beyond" not in _rows(mail)
+    assert _queue(mail) == {}
 
 
 def test_a_queued_message_older_than_ninety_days_is_dropped(mail: psycopg.Connection) -> None:
