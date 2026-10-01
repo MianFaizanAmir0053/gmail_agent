@@ -120,8 +120,11 @@ def classify(meta: MessageMeta, owners: frozenset[str]) -> MessageRow:
     `to_self` is mail from the owner to the owner, read from `From` and `To`:
     a forward to yourself would otherwise be fed as if someone else had sent
     it. A copy in `Cc` does not count.
+
+    NUL characters are dropped from every header first: Postgres text cannot
+    hold one, so a row carrying it could never be stored.
     """
-    headers = meta.headers
+    headers = {name: value.replace("\x00", "") for name, value in meta.headers.items()}
     senders = _addresses(headers.get("From", ""))
     to_addrs = _addresses(headers.get("To", ""))
     from_addr = senders[0] if senders else None

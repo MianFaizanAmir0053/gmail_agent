@@ -164,7 +164,7 @@ A crash or a deploy costs at most one page.
 
 **Errors.**
 - Only a failure of `history.list` itself stops a pass. The cursor stays at the last record handled, and the next tick retries.
-- A fetch that fails for one message, other than with a `404`, sends that message to the fetch queue and the pass moves on. So one bad message never holds up the cursor.
+- A fetch that fails for one message, other than with a `404`, sends that message to the fetch queue and the pass moves on. So one bad message never holds up the cursor. A row the database refuses counts the same: each row is stored in a savepoint of its own, so it never rolls back the rest of its page. NUL characters, which Postgres text cannot hold, are dropped from the headers first.
 - An outage (5xx, 429 or the network) stops the pass without blaming any message.
 
 **The fetch queue** is worked in the background, after the incremental pass,

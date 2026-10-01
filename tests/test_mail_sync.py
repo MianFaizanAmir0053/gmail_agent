@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -19,7 +19,7 @@ from fake_gmail import SECRET, FakeMailbox, http_error
 
 from app.google.gmail import GmailClient
 from app.mail import quota, sync
-from app.mail.messages import store
+from app.mail.messages import MessageRow, classify, store
 from app.mail.quota import Pacer
 from app.mail.sync import Cursor, SyncReport, load_cursor, sync_lock, sync_once
 
@@ -322,6 +322,55 @@ def test_a_message_that_fails_on_its_own_is_queued_and_the_pass_goes_on(
 
     _sync(mail, box)
     assert set(_rows(mail)) == {"good", "bad"} and _queue(mail) == {}
+
+
+def test_a_header_with_a_nul_is_stored_without_it(mail: psycopg.Connection) -> None:
+    """Postgres text cannot hold NUL. Kept, it failed the row's insert, which
+    rolled back its whole page, and every run replayed that page for ever."""
+    box = FakeMailbox()
+    _started(mail, box)
+    box.deliver("nul", labels=PRIMARY, at=NOW, to="me@exam\x00ple.com", Auto_Submitted="n\x00o")
+    box.deliver("next", labels=PRIMARY, at=NOW)
+
+    report = _sync(mail, box)
+
+    rows = _rows(mail)
+    assert rows["nul"]["to_addrs"] == ["me@example.com"]
+    assert rows["nul"]["auto_submitted"] == "no"
+    assert "next" in rows and report.reached_end
+
+
+def _refusing(monkeypatch: pytest.MonkeyPatch, *refused: str) -> None:
+    """The database refuses these messages' rows: a category its CHECK rejects."""
+
+    def classify_badly(meta: Any, owners: frozenset[str]) -> MessageRow:
+        row = classify(meta, owners)
+        return replace(row, category="nonsense") if meta.id in refused else row  # type: ignore[arg-type]
+
+    monkeypatch.setattr("app.mail.sync.classify", classify_badly)
+
+
+def test_a_row_the_database_refuses_is_queued_and_its_page_goes_on(
+    mail: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each row is stored in a savepoint of its own: a refused one is struck
+    like a failed fetch, and the cursor moves past it."""
+    box = FakeMailbox()
+    _started(mail, box)
+    box.deliver("refused", labels=PRIMARY, at=NOW)
+    box.deliver("next", labels=PRIMARY, at=NOW)
+    _refusing(monkeypatch, "refused")
+
+    report = _sync(mail, box)
+
+    assert set(_rows(mail)) == {"next"}
+    assert _queue(mail)["refused"] == ("fetch_failed", 1, "queued")
+    assert _cursor(mail).history_id == str(box.history_id)
+    assert report.reached_end and report.ok
+
+    for _ in range(4):  # the queue tries it again at each run, and strikes it
+        _sync(mail, box)
+    assert _queue(mail)["refused"] == ("fetch_failed", 5, "unreadable")
 
 
 def test_an_outage_stops_the_pass_and_blames_no_message(mail: psycopg.Connection) -> None:
@@ -699,6 +748,22 @@ def test_the_backfill_only_spends_what_the_incremental_pass_left(
     names = [name for name, _ in box.calls]
     first_listing = names.index("messages.list")
     assert "history.list" not in names[first_listing:]
+
+
+def test_a_backfilled_row_the_database_refuses_is_queued_and_the_backfill_goes_on(
+    mail: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    box = FakeMailbox()
+    _started(mail, box, backfilled=False)
+    box.put("refused", labels=READ, at=NOW - timedelta(days=2))
+    box.put("older", labels=READ, at=NOW - timedelta(days=3))
+    _refusing(monkeypatch, "refused")
+
+    _sync(mail, box)
+
+    assert set(_rows(mail)) == {"older"}
+    assert _queue(mail)["refused"] == ("fetch_failed", 1, "queued")
+    assert _cursor(mail).backfill_until == NOW - timedelta(days=90)
 
 
 def test_a_queued_message_older_than_ninety_days_is_dropped(mail: psycopg.Connection) -> None:

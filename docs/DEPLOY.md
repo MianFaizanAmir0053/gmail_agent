@@ -536,9 +536,9 @@ holds back a message until its re-fetch answers, so mail trashed during the
 outage is never fed. Nothing is marked gone for not being listed. Progress
 shows in `--status` and `/health`.
 
-A message that fails to fetch on its own five times is marked unreadable
-and passed over; `/health` counts them. An outage (5xx, 429, the network)
-stops a run without counting against any message.
+A message that fails to fetch or store on its own five times is marked
+unreadable and passed over; `/health` counts them. An outage (5xx, 429, the
+network) stops a run without counting against any message.
 
 ### 10.7 Retention
 

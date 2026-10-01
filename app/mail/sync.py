@@ -523,13 +523,13 @@ def _apply(run: _Run, change: HistoryChange, deleted: set[str], fetched: dict[st
     if change.kind == "added":
         outcome = fetched.get(message_id)
         if isinstance(outcome, MessageRow):
-            _count(report, store(conn, account, outcome, "history"))
+            if not _stored(run, outcome, "history"):
+                _failed_on_its_own(run, message_id)
         elif outcome is _GONE:
             report.gone += mark_gone(conn, account, message_id)
             dequeue(conn, message_id)
         elif outcome is _FAILED:
-            run.failed.add(message_id)
-            report.queued += enqueue(conn, message_id, "fetch_failed", strikes=1)
+            _failed_on_its_own(run, message_id)
     elif change.kind == "deleted":
         report.gone += mark_gone(conn, account, message_id)
         dequeue(conn, message_id)
@@ -562,6 +562,26 @@ def _count(report: SyncReport, outcome: str) -> None:
         report.stored += 1
     elif outcome == "updated":
         report.updated += 1
+
+
+def _stored(run: _Run, row: MessageRow, arrived_via: ArrivedVia) -> bool:
+    """Store one row in a savepoint of its own. False if the database refused
+    it: that is the message's own failure, and must not roll back the rest of
+    its page -- the next run would replay the same page for ever."""
+    try:
+        with run.conn.transaction():
+            _count(run.report, store(run.conn, run.account, row, arrived_via))
+    except psycopg.DatabaseError as exc:
+        log.warning("mail sync: %s could not be stored (%s)", row.message_id, type(exc).__name__)
+        return False
+    return True
+
+
+def _failed_on_its_own(run: _Run, message_id: str) -> None:
+    """Queue a message that failed on its own, with its first strike. The
+    queue tries it again at the next run, not straight away."""
+    run.failed.add(message_id)
+    run.report.queued += enqueue(run.conn, message_id, "fetch_failed", strikes=1)
 
 
 # --- the fetch queue --------------------------------------------------------
@@ -641,9 +661,17 @@ def _work_queue(run: _Run) -> None:
         if row.internal_at < run.started - QUEUE_DROPS_AFTER:
             dequeue(conn, message_id)
             continue
-        with conn.transaction():
-            _count(run.report, store(conn, run.account, row, _ARRIVALS[reason]))
-            dequeue(conn, message_id)
+        try:
+            with conn.transaction():
+                _count(run.report, store(conn, run.account, row, _ARRIVALS[reason]))
+                dequeue(conn, message_id)
+        except psycopg.DatabaseError as exc:
+            # The database refused the row: a strike, as for a failed fetch.
+            log.warning(
+                "mail sync: queued %s could not be stored (%s)", message_id, type(exc).__name__
+            )
+            run.failed.add(message_id)
+            _strike(conn, message_id)
 
 
 # --- the switch-over ----------------------------------------------------------
@@ -700,8 +728,8 @@ def _fetch_and_store(
 ) -> bool:
     """Fetch and store one listed message. False if the run must stop.
 
-    A 404 passes it over, and a failure of its own queues it. `before` stores
-    nothing at or after it: the backfill's limit.
+    A 404 passes it over, and a failure of its own -- to fetch, or to store
+    -- queues it. `before` stores nothing at or after it: the backfill's limit.
     """
     if run.halted():
         return False
@@ -716,11 +744,10 @@ def _fetch_and_store(
         if is_outage(exc):
             run.failure(exc, "messages.get")
             return False
-        run.failed.add(message_id)
-        run.report.queued += enqueue(run.conn, message_id, "fetch_failed", strikes=1)
+        _failed_on_its_own(run, message_id)
         return True
-    if before is None or row.internal_at < before:
-        _count(run.report, store(run.conn, run.account, row, arrived_via))
+    if (before is None or row.internal_at < before) and not _stored(run, row, arrived_via):
+        _failed_on_its_own(run, message_id)
     return True
 
 
