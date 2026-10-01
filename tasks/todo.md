@@ -911,7 +911,7 @@ A settle is one transaction of conditional writes.
 **Description:** A CI job runs `npm ci`, `npm run typecheck`, `npm run build` and `npm test` in `dashboard/` on Node 24.
 
 **Acceptance criteria:**
-- [ ] The job runs on every push, and it is green.
+- [x] The job runs on every push, and it is green. Run 36839072810 on `83bb537`, 2026-10-01: web, check and docker all succeeded. The earlier runs on this branch had failed in the Python job, on two tests: the retrieval test `main` had already fixed, now merged in; and a test that expected Postgres 18's RESTRICT error where CI's Postgres 16 raises a foreign-key error.
 
 **Verification:** the CI run on the pushed branch.
 
@@ -919,7 +919,7 @@ A settle is one transaction of conditional writes.
 
 ### Checkpoint: ready to deploy
 
-- [ ] The Python and web checks are green, locally and in CI. Locally green on 2026-10-01: 742 unit tests, lint, format and mypy; 58 web tests, typecheck and build; the integration tests on Neon apart from the known retrieval test. CI waits on the push.
+- [x] The Python and web checks are green, locally and in CI. Locally on 2026-10-01: 742 unit tests, lint, format and mypy; 58 web tests, typecheck and build; the integration tests on Neon, the retrieval test included once `main`'s fix was merged. CI: run 36839072810, all three jobs green.
 - [ ] Locally: sign in, see a planted proposal, decide it, and receive a push in a desktop browser. Done on 2026-10-01 without the push: the browser pane has no push service, so the push is proven on the phones at deploy (16.23, 16.25).
 - [ ] The owner reviews before the deploy.
 
