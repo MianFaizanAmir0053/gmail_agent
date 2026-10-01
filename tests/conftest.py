@@ -59,8 +59,10 @@ def conn(migrated_database: str) -> Iterator[psycopg.Connection]:
     survives untouched.
     """
     with psycopg.connect(migrated_database) as connection:
-        # Decisions refuse cascading deletes (M24's evidence), so they go
-        # first -- still inside the transaction that is rolled back.
+        # Decisions refuse cascading deletes (M24's evidence), and their
+        # approvals refuse them in turn (M17), so those go first -- still
+        # inside the transaction that is rolled back.
+        connection.execute("DELETE FROM outbound_actions")
         connection.execute("DELETE FROM decisions")
         connection.execute("DELETE FROM processed_messages")
         connection.execute("UPDATE sync_state SET last_history_id = NULL WHERE id = 1")

@@ -14,8 +14,18 @@ import pytest
 
 MIGRATION = Path(__file__).resolve().parent.parent / "migrations" / "008_web_reader.sql"
 
-SHOWN = ("runs", "spans", "eval_runs", "proposals", "decisions")
-"""What the web app reads: the analytics pages and the timeline."""
+SHOWN = (
+    "runs",
+    "spans",
+    "eval_runs",
+    "proposals",
+    "decisions",
+    "control",
+    "confirmed_contacts",
+    "audit_log",
+)
+"""What the web app reads: the analytics pages, the timeline, the header's
+pause and budget state, the guests already allowed, and the Activity page."""
 
 HIDDEN = (
     "processed_messages",
@@ -24,8 +34,11 @@ HIDDEN = (
     "alerts_sent",
     "pairing_codes",
     "job_runs",
+    "outbound_actions",
+    "model_spend",
 )
-"""Everything else: the mailbox side, the graph's state, the secrets of push."""
+"""Everything else: the mailbox side, the graph's state, the secrets of push,
+the approvals' nonces, and the spend record."""
 
 
 def _as_web_reader(conn: psycopg.Connection) -> None:

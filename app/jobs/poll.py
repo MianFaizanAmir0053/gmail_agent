@@ -123,11 +123,13 @@ def reset(conn: psycopg.Connection, *, app_env: str) -> int:
 
     Decisions are M24's evidence and refuse cascading deletes, so they are
     removed here explicitly -- which is why production is refused outright.
+    Their approvals (M17) refuse cascades too, and go first.
     """
     if app_env == "prod":
         raise SystemExit(
             "Refusing to reset the production ledger: its decisions are M24's evidence."
         )
+    conn.execute("DELETE FROM outbound_actions")
     conn.execute("DELETE FROM decisions")
     deleted = conn.execute("DELETE FROM processed_messages").rowcount
     conn.commit()

@@ -208,8 +208,9 @@ def committed_proposal(migrated_database: str) -> Iterator[str]:
         _park(setup, message_id)
     yield message_id
     with psycopg.connect(migrated_database, autocommit=True) as cleanup:
-        # Decisions are protected from cascading deletes, so this test's own
-        # rows go first, explicitly.
+        # Decisions and their approvals are protected from cascading deletes,
+        # so this test's own rows go first, explicitly.
+        cleanup.execute("DELETE FROM outbound_actions WHERE message_id = %s", (message_id,))
         cleanup.execute("DELETE FROM decisions WHERE message_id = %s", (message_id,))
         cleanup.execute("DELETE FROM processed_messages WHERE gmail_message_id = %s", (message_id,))
 
