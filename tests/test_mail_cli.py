@@ -91,7 +91,8 @@ def test_status_shows_the_records_as_counts_and_times(
     assert ME in out
     assert "by direction: in 1, out 1" in out
     assert "by category: primary 2" in out
-    assert "by arrived_via: history 1, switch_over 1" in out or "history 2" in out
+    # m1 came before the first run (the switch-over), m2 after it (history).
+    assert "by arrived_via: history 1, switch_over 1" in out
     assert "Latest too-old records: 1" in out and "old" in out
     assert SECRET not in out
 
