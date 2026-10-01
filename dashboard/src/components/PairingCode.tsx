@@ -14,14 +14,12 @@ export function PairingCode() {
   return (
     <form action={ask} className="pairing">
       {answer?.ok && (
-        <>
-          <p className="pairing-code mono" aria-label="Pairing code">
-            {answer.code}
-          </p>
+        <div role="status">
+          <p className="pairing-code mono">{answer.code}</p>
           <p className="note">
             Valid until {answer.validUntil}. It works once, and five wrong tries end it.
           </p>
-        </>
+        </div>
       )}
       {answer && !answer.ok && (
         <p className="note error" role="status">
