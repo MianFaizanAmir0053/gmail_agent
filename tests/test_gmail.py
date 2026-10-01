@@ -630,6 +630,29 @@ def test_a_client_error_is_not_retried() -> None:
     assert service.requests[0].attempts == 1
 
 
+def _new_style_error(
+    status: int,
+    *,
+    errors: tuple[str, ...] = (),
+    details: tuple[str, ...] = (),
+    grpc_status: str | None = None,
+) -> HttpError:
+    """An error body as Google's newer front ends send it: `details` holds
+    `ErrorInfo` records, beside or instead of the older `errors` list."""
+    error: dict[str, Any] = {"code": status, "message": "x"}
+    if errors:
+        error["errors"] = [{"reason": reason, "domain": "usageLimits"} for reason in errors]
+    if details:
+        error["details"] = [
+            {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}
+            for reason in details
+        ]
+    if grpc_status is not None:
+        error["status"] = grpc_status
+    content = json.dumps({"error": error}).encode()
+    return HttpError(SimpleNamespace(status=status, reason="x"), content)
+
+
 @pytest.mark.parametrize(
     ("error", "outage"),
     [
@@ -647,6 +670,36 @@ def test_a_client_error_is_not_retried() -> None:
 def test_an_outage_is_told_apart_from_one_messages_failure(error: Exception, outage: bool) -> None:
     """An outage blames no message (D3): it stops the pass and charges no strike."""
     assert is_outage(error) is outage
+
+
+@pytest.mark.parametrize(
+    ("error", "rate_limit"),
+    [
+        # The client library keeps `details` when both lists are sent, so the
+        # older reason in `errors` was never read.
+        (_new_style_error(403, errors=("rateLimitExceeded",), details=("OTHER",)), True),
+        (_new_style_error(403, details=("RATE_LIMIT_EXCEEDED",)), True),
+        (_new_style_error(403, grpc_status="RESOURCE_EXHAUSTED"), True),
+        (_new_style_error(403, errors=("userRateLimitExceeded",)), True),
+        (
+            _new_style_error(
+                403, details=("ACCESS_TOKEN_SCOPE_INSUFFICIENT",), grpc_status="PERMISSION_DENIED"
+            ),
+            False,
+        ),
+        (_new_style_error(403, errors=("insufficientPermissions",)), False),
+    ],
+)
+def test_a_403_rate_limit_is_read_from_either_list_in_the_body(
+    error: HttpError, rate_limit: bool
+) -> None:
+    assert is_outage(error) is rate_limit
+
+
+def test_a_403_whose_body_is_not_json_is_not_a_rate_limit() -> None:
+    error = HttpError(SimpleNamespace(status=403, reason="x"), b"<html>Forbidden</html>")
+
+    assert is_outage(error) is False
 
 
 def test_the_real_client_library_sends_the_mask_and_the_six_headers() -> None:

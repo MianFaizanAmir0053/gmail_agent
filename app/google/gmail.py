@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import binascii
 import html
+import json
 import math
 import re
 import time
@@ -74,7 +75,11 @@ RETRY_FOR = 30.0
 well inside the platform's kill timeout (120 s)."""
 
 _FIRST_RETRY_AFTER = 1.0
-_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+_RATE_LIMIT_REASONS = frozenset(
+    {"rateLimitExceeded", "userRateLimitExceeded", "RATE_LIMIT_EXCEEDED", "RESOURCE_EXHAUSTED"}
+)
+"""A 403 that means "slow down": the older `errors` reasons, and the newer
+`details` reason and status Google's front ends send beside or instead of them."""
 
 
 class MessageGoneError(LookupError):
@@ -122,10 +127,36 @@ def is_outage(exc: BaseException) -> bool:
 
 
 def _reasons(exc: Any) -> set[str]:
-    details = getattr(exc, "error_details", None)
-    if not isinstance(details, list):
+    """Every reason an error gives, read from its body.
+
+    Not from the client library's `error_details` alone: when Gmail sends both
+    `error.errors` and `error.details`, it keeps only `details`, so a rate
+    limit named in the other list went unseen and was taken for a refusal.
+    """
+    found = set(_reasons_in(getattr(exc, "error_details", None)))
+    error = _error_body(exc)
+    if error is not None:
+        found.update(_reasons_in(error.get("errors")))
+        found.update(_reasons_in(error.get("details")))
+        if isinstance(error.get("status"), str):
+            found.add(error["status"])
+    return found
+
+
+def _reasons_in(items: Any) -> set[str]:
+    if not isinstance(items, list):
         return set()
-    return {str(item["reason"]) for item in details if isinstance(item, dict) and "reason" in item}
+    return {str(item["reason"]) for item in items if isinstance(item, dict) and "reason" in item}
+
+
+def _error_body(exc: Any) -> dict[str, Any] | None:
+    """The `error` object of a failed call's JSON body, or None."""
+    try:
+        data = json.loads(getattr(exc, "content", b"") or b"")
+    except (TypeError, ValueError):  # not JSON: a proxy's page, say
+        return None
+    error = data.get("error") if isinstance(data, dict) else None
+    return error if isinstance(error, dict) else None
 
 
 def _status(exc: BaseException) -> int | None:
