@@ -43,8 +43,11 @@ rounds. The third round's findings were folded in the same day (see Review).
 **A consequence to know.** Feeding read mail as well as unread means
 one-time-code and password-reset mail in Primary now reaches the classifier
 (the paid tier, which does not train on it), where the old unread-only poller
-mostly missed it. M20 keeps the model's reasoning about such mail out of the
-ledger (D4). M18 strips the codes before anything is stored.
+mostly missed it. When the classifier finds no meeting, M20 records a fixed
+phrase in the ledger instead of the model's reasoning (D4). A meeting with no
+start time, and a proposal the reviewer rejects, still record the model's
+words; the purge clears them after a week. M18 strips the codes before
+anything is stored.
 
 ## Scope
 

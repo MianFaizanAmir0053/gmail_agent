@@ -440,9 +440,12 @@ mail from that record, read or not. Spec:
   than before: mail from any of them to any of them is the owner's own
   (`to_self`) and is never fed to the pipeline.
 - Feeding read mail as well as unread means one-time-code and password-reset
-  mail in Primary now reaches the classifier. The ledger records "not a
-  meeting" for it, never the model's reasoning; M18 strips codes before
-  anything stores them.
+  mail in Primary now reaches the classifier. When the classifier finds no
+  meeting, the ledger records "not a meeting", not the model's reasoning.
+  Two reasons are still the model's words: a meeting with no start time
+  records the extractor's reasoning, and a proposal the reviewer rejects
+  records its issues. The purge clears both after a week; M18 strips codes
+  before anything stores them.
 
 ### 10.2 The first runs
 
@@ -459,8 +462,10 @@ The sync runs every two minutes, each run at most a minute.
 3. **The switch-over listing,** once: unread mail outside the four other tabs
    from the last seven days, up to the moment of the listing, is stored.
 4. **The backfill** works back 90 days from `feed_from`, one day at a time,
-   in whatever quota is left. A busy mailbox takes hours. Nothing waits for
-   it, and nothing it stores is fed.
+   in whatever quota is left. A busy mailbox takes hours, and nothing waits
+   for it. The feed decides by time: what the backfill stores from the hour
+   before `feed_from` is fed (the old poller's last hour, covered twice
+   rather than not at all), and anything older never is.
 5. If the old poller's history id has expired (about a week), the first run
    is a catch-up instead (10.6).
 
