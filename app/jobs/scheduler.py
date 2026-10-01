@@ -12,7 +12,7 @@ before.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 import psycopg
@@ -356,26 +356,40 @@ def _record_mail_sync(
     record_tick(settings, "mail_sync", started_at, ok=ok, **fields)
 
 
-MAIL_RECALL_AT = {"hour": 5, "minute": 15}
+MAIL_RECALL_AT = time(5, 15)
 """UTC: mid-morning in the owner's zone, so an alert is seen the same day."""
 
+MAIL_RECALL_EVERY = timedelta(hours=1)
+"""How often the recall job wakes. It recalls once a day, at its first wake
+after `MAIL_RECALL_AT`; a restart, or a failed attempt, costs an hour at most,
+where a daily trigger lost the day."""
 
-def run_mail_recall(settings: Settings) -> None:
-    """Daily: the sync's and the feed's recall (M20, D5). Never raises.
 
-    Each of the three checks is its own `job_runs` row, so the exit
-    criterion's seven clean days can be counted for each.
+def run_mail_recall(settings: Settings, *, now: datetime | None = None) -> None:
+    """Hourly: the day's recall of the sync and the feed (M20, D5), once it is
+    past 05:15 UTC and that day's has not yet completed. Never raises.
+
+    `job_runs` says whether it has: its three checks are rows of their own,
+    so the exit criterion's seven clean days can be counted for each. A
+    failed attempt is a row too, shown by `/health` until one completes, and
+    the next hour tries again.
     """
-    started_at = datetime.now(UTC)
+    started_at = now or datetime.now(UTC)
+    due = datetime.combine(started_at.date(), MAIL_RECALL_AT, tzinfo=UTC)
+    if started_at < due:
+        return
     try:
+        if _recalled_since(settings, due):
+            return
         result = run_recall(settings)
     except Exception as exc:
         log.exception("mail recall failed")
+        MAIL_SYNC.recall_failed(at=started_at, error=type(exc).__name__)
         record_tick(settings, "mail_recall", started_at, ok=False, error=type(exc).__name__)
         return
     if result is None:  # no sync run yet: nothing to check
         return
-    MAIL_SYNC.recall = result.summary()
+    MAIL_SYNC.recall_finished(result.summary())
     record_tick(
         settings,
         "mail_recall_sync",
@@ -406,17 +420,32 @@ def run_mail_recall(settings: Settings) -> None:
     )
 
 
+def _recalled_since(settings: Settings, at: datetime) -> bool:
+    """Whether a recall has completed since `at`: its checks' rows exist."""
+    with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
+        row = conn.execute(
+            """
+            SELECT EXISTS (SELECT 1 FROM job_runs
+                            WHERE job = 'mail_recall_sync' AND started_at >= %s)
+            """,
+            (at,),
+        ).fetchone()
+    return bool(row and row[0])
+
+
 def _add_mail_jobs(scheduler: BackgroundScheduler, settings: Settings) -> None:
+    hourly = int(MAIL_RECALL_EVERY.total_seconds())
     scheduler.add_job(
         run_mail_recall,
-        "cron",
-        **MAIL_RECALL_AT,
+        "interval",
+        seconds=hourly,
         args=[settings],
         id="mail_recall",
         max_instances=1,
         coalesce=True,
-        # A restart that missed the hour still checks that day.
-        misfire_grace_time=12 * 3600,
+        misfire_grace_time=hourly,
+        # Soon after a restart, once the sync has had a few runs.
+        next_run_time=datetime.now(UTC) + timedelta(minutes=10),
     )
     every = int(MAIL_SYNC_EVERY.total_seconds())
     # One run at a time: the advisory lock already keeps two runs apart, and

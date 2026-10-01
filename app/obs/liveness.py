@@ -134,8 +134,19 @@ class MailSyncLiveness:
     recall: dict[str, Any] | None = None
     """The last daily recall, as counts."""
 
+    recall_failure: dict[str, str] | None = None
+    """When the latest recall attempt failed, and the exception's type; None
+    once one completes. The hourly job tries again."""
+
     def reached_end(self, at: datetime) -> None:
         self.caught_up_at = at
+
+    def recall_finished(self, summary: dict[str, Any]) -> None:
+        self.recall = summary
+        self.recall_failure = None
+
+    def recall_failed(self, *, at: datetime, error: str) -> None:
+        self.recall_failure = {"at": at.isoformat(), "error": error}
 
     def fetches_tried(self, *, tried: int, failed: int, at: datetime) -> None:
         """What a run's fetches came to. A run that tried too few to judge,
@@ -160,7 +171,8 @@ class MailSyncLiveness:
     def report(self, now: datetime) -> dict[str, Any]:
         """The owner's view: the cursor's age, whether every fetch is failing,
         the backfill's, the queue's and any catch-up's progress, the
-        unreadable and too-old counts, the table's size, and the last recall."""
+        unreadable and too-old counts, the table's size, the last recall, and
+        whether the latest attempt at one failed."""
         age = round((now - self.caught_up_at).total_seconds()) if self.caught_up_at else None
         failing = self.fetches_failing_since
         return {
@@ -168,6 +180,7 @@ class MailSyncLiveness:
             "fetches_failing_since": failing.isoformat() if failing else None,
             **(self.status or {}),
             "last_recall": self.recall,
+            "last_recall_failure": self.recall_failure,
         }
 
 

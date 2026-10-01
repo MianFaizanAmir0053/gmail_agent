@@ -118,6 +118,21 @@ def test_one_fetch_that_answers_clears_the_failing_state() -> None:
     assert live.report(BOOT)["fetches_failing_since"] is None
 
 
+def test_a_failed_recall_shows_until_one_completes() -> None:
+    live = MailSyncLiveness(booted_at=BOOT)
+    live.recall_failed(at=BOOT, error="SyncBusyError")
+
+    assert live.report(BOOT)["last_recall_failure"] == {
+        "at": BOOT.isoformat(),
+        "error": "SyncBusyError",
+    }
+
+    live.recall_finished({"missed": 0})
+
+    assert live.report(BOOT)["last_recall_failure"] is None
+    assert live.report(BOOT)["last_recall"] == {"missed": 0}
+
+
 def test_the_owners_view_has_the_cursors_age_the_records_and_the_last_recall() -> None:
     live = MailSyncLiveness(booted_at=BOOT)
     live.reached_end(BOOT)

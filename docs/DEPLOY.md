@@ -500,10 +500,14 @@ says).
   `/health` shows `mail_sync`: the cursor's age, since when every fetch has
   failed (`fetches_failing_since`), `feed_from`, the backfill's reach, the
   fetch queue (queued, unreadable), any catch-up, the too-old count, the row
-  count, and the last recall.
+  count, the last recall, and the latest recall attempt's failure, if it
+  failed (`last_recall_failure`).
 - **`job_runs`:** `mail_sync` (at most every ten minutes per outcome, and
-  every catch-up), and three rows a day from the recall at 05:15 UTC:
-  `mail_recall_sync`, `mail_recall_feed`, `mail_recall_categories`.
+  every catch-up), and three rows a day from the recall:
+  `mail_recall_sync`, `mail_recall_feed`, `mail_recall_categories`. The
+  recall job wakes hourly and checks at its first wake after 05:15 UTC; a
+  restart costs an hour at most, and a failed attempt is a `mail_recall` row
+  that is not ok, tried again the next hour.
 - **Alerts,** once a day each, through every configured channel: "Mail sync
   missed messages" (Gmail listed mail the sync did not have -- it is stored
   and fed as it is found -- or a category disagreed), and "The mail feed has

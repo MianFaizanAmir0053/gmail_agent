@@ -35,6 +35,7 @@ from app.mail.recall import (
     send_alerts,
 )
 from app.mail.sync import sync_lock
+from app.store.job_runs import JobRuns
 from app.store.ledger import MessageLedger, MessageStatus
 
 pytestmark = pytest.mark.integration
@@ -223,6 +224,27 @@ def test_the_recall_waits_for_the_syncs_lock_and_gives_up_in_time(
             check(mail, _client(FakeMailbox()), Channels([]), now=NOW, lock_wait=0.3)
 
     assert check(mail, _client(FakeMailbox()), Channels([]), now=NOW).alerts() == []
+
+
+def test_job_runs_say_whether_the_days_recall_has_completed(
+    mail: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hourly job reads this to recall once a day (`app.jobs.scheduler`):
+    a failed attempt does not count, and the next hour tries again."""
+    from app.jobs import scheduler
+
+    mail.execute("DELETE FROM job_runs WHERE job LIKE 'mail_recall%%'")
+    monkeypatch.setattr(scheduler, "connect", lambda url, **kwargs: nullcontext(mail))
+    settings = Settings(_env_file=None, database_url="postgresql://unused", gemini_api_key="k")
+    due = datetime(2020, 3, 10, 5, 15, tzinfo=UTC)
+    runs = JobRuns(mail)
+
+    runs.record("mail_recall", due, due, ok=False, error="RuntimeError")
+    runs.record("mail_recall_sync", due - timedelta(days=1), due - timedelta(days=1), ok=True)
+    assert not scheduler._recalled_since(settings, due)
+
+    runs.record("mail_recall_sync", due + timedelta(hours=1), due + timedelta(hours=1), ok=False)
+    assert scheduler._recalled_since(settings, due)  # completed, whatever it found
 
 
 def test_a_clean_day_raises_nothing(mail: psycopg.Connection) -> None:

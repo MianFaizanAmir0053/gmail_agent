@@ -633,18 +633,23 @@ def test_only_a_pass_that_reached_the_end_of_history_counts_for_liveness(
     assert live.status == {"rows": 3}
 
 
-def test_the_mail_recall_runs_daily() -> None:
+def test_the_mail_recall_wakes_every_hour() -> None:
+    """A daily cron fired once: a restart after 05:15 UTC, or a run that
+    failed, cost that day's recall. The job wakes hourly instead."""
     job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "mail_recall")
 
-    assert str(job.trigger).startswith("cron")
+    assert str(job.trigger).startswith("interval") and "1:00:00" in str(job.trigger)
     assert job.max_instances == 1
 
 
+DAY = datetime(2026, 10, 1, tzinfo=UTC)
+"""A day the recall is due on, at 05:15 UTC."""
+
+
 def _recall_result(**overrides: Any) -> RecallResult:
-    at = datetime(2026, 10, 1, tzinfo=UTC)
     values: dict[str, Any] = {
-        "since": at - timedelta(hours=26),
-        "until": at - timedelta(hours=2),
+        "since": DAY - timedelta(hours=26),
+        "until": DAY - timedelta(hours=2),
         "listed": 9,
         "missed": 0,
         "repaired": 0,
@@ -658,13 +663,33 @@ def _recall_result(**overrides: Any) -> RecallResult:
     return RecallResult(**(values | overrides))
 
 
-def test_each_recall_check_is_its_own_record(monkeypatch: pytest.MonkeyPatch) -> None:
+def _recall(
+    monkeypatch: pytest.MonkeyPatch, *outcomes: Any, done_today: bool = False
+) -> list[dict[str, Any]]:
+    """Each attempt returns (or raises) the next outcome; an attempt with
+    none left fails. `done_today`: `job_runs` already has the day's recall."""
     recorded = _capture(monkeypatch)
-    live = _mail_liveness(monkeypatch)
-    result = _recall_result(missed=1, repaired=1)
-    monkeypatch.setattr("app.jobs.scheduler.run_recall", lambda settings: result)
+    queue = list(outcomes)
 
-    run_mail_recall(_settings())
+    def _run(settings: Settings) -> Any:
+        outcome = queue.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr("app.jobs.scheduler.run_recall", _run)
+    monkeypatch.setattr("app.jobs.scheduler._recalled_since", lambda settings, at: done_today)
+    return recorded
+
+
+CHECKS = ["mail_recall_sync", "mail_recall_feed", "mail_recall_categories"]
+
+
+def test_each_recall_check_is_its_own_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = _mail_liveness(monkeypatch)
+    recorded = _recall(monkeypatch, _recall_result(missed=1, repaired=1))
+
+    run_mail_recall(_settings(), now=DAY + timedelta(hours=6))
 
     assert recorded == [
         {
@@ -681,27 +706,57 @@ def test_each_recall_check_is_its_own_record(monkeypatch: pytest.MonkeyPatch) ->
     assert live.recall is not None and live.recall["missed"] == 1
 
 
-def test_a_failing_recall_does_not_escape_and_is_recorded(
+def test_the_recall_waits_for_quarter_past_five(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _recall(monkeypatch)
+
+    run_mail_recall(_settings(), now=DAY + timedelta(hours=5, minutes=14))
+
+    assert recorded == []
+
+
+def test_a_restart_after_quarter_past_five_still_checks_that_day(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded = _capture(monkeypatch)
+    """Whenever the hourly job wakes after 05:15, it finds the day's recall
+    not yet done, and does it."""
+    recorded = _recall(monkeypatch, _recall_result())
 
-    def _explode(settings: Settings) -> Any:
-        raise RuntimeError("gmail is down")
+    run_mail_recall(_settings(), now=DAY + timedelta(hours=9, minutes=40))
 
-    monkeypatch.setattr("app.jobs.scheduler.run_recall", _explode)
+    assert [row["job"] for row in recorded] == CHECKS
 
-    run_mail_recall(_settings())  # must not raise
+
+def test_a_recall_done_today_is_not_done_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _recall(monkeypatch, done_today=True)
+
+    run_mail_recall(_settings(), now=DAY + timedelta(hours=7))
+
+    assert recorded == []
+
+
+def test_a_failed_recall_is_shown_and_tried_again_an_hour_later(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live = _mail_liveness(monkeypatch)
+    recorded = _recall(monkeypatch, RuntimeError("gmail is down"), _recall_result())
+    failed_at = DAY + timedelta(hours=5, minutes=20)
+
+    run_mail_recall(_settings(), now=failed_at)  # must not raise
 
     assert recorded == [{"job": "mail_recall", "ok": False, "error": "RuntimeError"}]
+    assert live.recall_failure == {"at": failed_at.isoformat(), "error": "RuntimeError"}
+
+    run_mail_recall(_settings(), now=failed_at + timedelta(hours=1))
+
+    assert [row["job"] for row in recorded[1:]] == CHECKS
+    assert live.recall_failure is None
 
 
 def test_before_the_first_sync_run_the_recall_records_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded = _capture(monkeypatch)
-    monkeypatch.setattr("app.jobs.scheduler.run_recall", lambda settings: None)
+    recorded = _recall(monkeypatch, None)
 
-    run_mail_recall(_settings())
+    run_mail_recall(_settings(), now=DAY + timedelta(hours=6))
 
     assert recorded == []

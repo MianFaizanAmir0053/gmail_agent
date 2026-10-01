@@ -1,7 +1,8 @@
 """Recall, of the sync and of the feed (M20, D5).
 
-A daily job looks at the window from 26 hours ago to 2 hours ago, which keeps
-it clear of the sync's own timing:
+A daily check looks at the window from 26 hours ago to 2 hours ago, which
+keeps it clear of the sync's own timing. Its job wakes hourly, and checks
+once a day after 05:15 UTC (`app.jobs.scheduler`):
 
 - **Sync recall.** The ids Gmail lists for the window, using D1's set, are
   checked against `gmail_messages`. Missing ones are fetched and stored, so a

@@ -404,6 +404,21 @@ def test_the_owner_sees_the_mail_syncs_records_and_a_stranger_does_not(
     assert "mail_sync" not in stranger
 
 
+def test_the_owner_sees_a_recall_that_failed_last_time(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    mail = _mail_sync(monkeypatch, timedelta(minutes=1), caught_up_ago=timedelta(seconds=5))
+    mail.recall_failed(at=datetime(2026, 10, 1, 5, 15, tzinfo=UTC), error="SyncBusyError")
+
+    owner = client.get("/health", headers=_owner()).json()
+
+    assert owner["mail_sync"]["last_recall_failure"] == {
+        "at": "2026-10-01T05:15:00+00:00",
+        "error": "SyncBusyError",
+    }
+
+
 def test_a_recent_open_decision_is_reported_but_healthy(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
