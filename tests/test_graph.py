@@ -268,6 +268,11 @@ def test_the_fetch_adds_no_retries_to_the_gmail_clients_own() -> None:
         _run(_deps(gmail=gmail))
 
     assert gmail.calls == 1
+    # Asked of the graph itself: a policy whose rule skipped this error would
+    # pass the count above, and still retry what it did catch.
+    graph = build_graph(_deps(), InMemorySaver())
+    assert graph.nodes["fetch"].retry_policy is None
+    assert graph.nodes["classify"].retry_policy is not None  # the check can see one
 
 
 def test_confirm_creates_the_event_and_records_the_id() -> None:

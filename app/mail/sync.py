@@ -4,6 +4,7 @@
     python -m app.mail.sync --status          # the records, as counts and times
     python -m app.mail.sync --show <id>       # one row's metadata, no content
     python -m app.mail.sync --catch-up        # as if the cursor had expired
+    python -m app.mail.sync --retry-unreadable  # unreadable mail queued again
     python -m app.mail.sync --check-feed      # the exit criterion's feed checks
 
 Run by the scheduler every two minutes, one run at a time, each bounded to
@@ -19,14 +20,17 @@ Run by the scheduler every two minutes, one run at a time, each bounded to
 6. spends what quota is left on the backfill.
 
 Only a failure of `history.list` itself stops a pass. One message that will
-not fetch goes to the queue and the pass moves on; an outage stops the pass
-and blames nobody. A `404` from `history.list` -- Gmail no longer keeps the
-cursor's history -- starts a catch-up: the gap is recorded and the cursor
-moved to the present in one transaction, and the gap is worked off in the
-background.
+not fetch, or whose row the database refuses, goes to the queue and the pass
+moves on; an outage stops the pass and blames nobody. A fetch that fails as
+if Gmail were down is checked with one profile read first, so a message
+that answers 5xx every time is struck rather than taken for an outage. A
+`404` from `history.list` -- Gmail no longer keeps the cursor's history --
+starts a catch-up: the gap is recorded and the cursor moved to the present
+in one transaction, and the gap is worked off in the background.
 
 Every run holds a Postgres advisory lock: a scheduled run that finds it
-taken skips its turn, and a CLI run waits for it.
+taken skips its turn, a CLI run waits for it, and the daily recall waits
+for it a while.
 """
 
 from __future__ import annotations
@@ -56,6 +60,7 @@ from app.google.gmail import (
 from app.mail import feed, quota
 from app.mail.messages import (
     D1_QUERY,
+    PRIMARY_QUERY,
     ArrivedVia,
     MessageRow,
     apply_labels,
@@ -66,6 +71,7 @@ from app.mail.messages import (
     stored_ids,
 )
 from app.mail.quota import ShareExhaustedError
+from app.obs.liveness import FETCHES_JUDGED_FROM
 
 log = logging.getLogger(__name__)
 
@@ -90,11 +96,9 @@ WINDOW = timedelta(days=1)
 """A catch-up and the backfill list a day at a time, newest first."""
 
 BACKFILL_FOR = timedelta(days=90)
-"""How far back from `feed_from` the backfill reaches."""
-
-QUEUE_DROPS_AFTER = timedelta(days=90)
-"""A queued message older than this when fetched is dropped, not stored: a
-label change can touch years-old mail, and only the last 90 days matter."""
+"""How far back from `feed_from` the backfill reaches. The fetch queue drops,
+rather than stores, a message older than the backfill's floor: a label
+change can touch years-old mail, and only what the backfill reaches matters."""
 
 STRIKES = 5
 """Failures of its own before a queued message is marked unreadable."""
@@ -170,6 +174,12 @@ class SyncReport:
 
     gone: int = 0
     queued: int = 0
+    fetches: int = 0
+    """Messages the run tried to fetch, whatever the answer."""
+
+    failures: int = 0
+    """Of those, how many failed on their own, to fetch or to store."""
+
     reached_end: bool = False
     """The pass reached the end of history: what liveness counts."""
 
@@ -187,8 +197,20 @@ class SyncReport:
     """The records as the run left them, for `/health` (`status`)."""
 
     @property
+    def fetching_failed(self) -> bool:
+        """It tried at least three fetches and none answered: a field mask or
+        a policy the API refuses fails every message on its own, while each
+        pass still reaches the end of history."""
+        return self.fetches >= FETCHES_JUDGED_FROM and self.failures >= self.fetches
+
+    @property
     def ok(self) -> bool:
-        return self.error is None
+        return self.error is None and not self.fetching_failed
+
+    @property
+    def problem(self) -> str | None:
+        """What `job_runs` records for a run that was not ok: a fixed phrase."""
+        return self.error or ("every fetch failed" if self.fetching_failed else None)
 
 
 @dataclass
@@ -339,7 +361,7 @@ def sync_once(
     if cursor.gap_from is not None and not run.halted():
         _list_gap(run, cursor)
     if not run.halted():
-        _work_queue(run)
+        _work_queue(run, floor=cursor.feed_from - BACKFILL_FOR)
     _close_gap(run)
     if not run.halted():
         _backfill(run, _reload(run))
@@ -499,21 +521,55 @@ def _fetch_additions(
             continue
         if run.halted():
             return False
-        try:
-            fetched[message_id] = classify(run.gmail.message_metadata(message_id), run.owners)
-        except MessageGoneError:
-            fetched[message_id] = _GONE
-        except ShareExhaustedError:
-            run.report.stopped = "quota"
+        outcome = _fetch(run, message_id, "messages.get")
+        if outcome is None:
             return False
-        except Exception as exc:
-            if is_outage(exc):
-                run.failure(exc, "messages.get")
-                return False
-            log.warning(
-                "mail sync: %s failed to fetch (%s); queued", message_id, type(exc).__name__
-            )
-            fetched[message_id] = _FAILED
+        fetched[message_id] = outcome
+    return True
+
+
+def _fetch(run: _Run, message_id: str, what: str) -> object:
+    """One message's row, `_GONE` for a 404, `_FAILED` for a failure of its
+    own, or None when the run must stop.
+
+    A failure that looks like an outage -- a 5xx or a timeout that outlasted
+    the client's retries -- is checked with one cheap call, the profile (a
+    unit). If Gmail answers that, the failure is the message's own: it is
+    queued and struck like any other, for one message that answers 500 every
+    time would otherwise stop every pass on it, and with it the cursor, the
+    queue, the backfill and any catch-up. Only if the probe fails too is it an
+    outage, which stops the run and blames nobody.
+    """
+    try:
+        row = classify(run.gmail.message_metadata(message_id), run.owners)
+    except MessageGoneError:
+        run.report.fetches += 1
+        return _GONE
+    except ShareExhaustedError:
+        run.report.stopped = "quota"
+        return None
+    except Exception as exc:
+        if is_outage(exc) and not _gmail_answers(run, exc, what):
+            return None
+        log.warning("mail sync: %s failed to fetch (%s); queued", message_id, type(exc).__name__)
+        run.report.fetches += 1
+        run.report.failures += 1
+        return _FAILED
+    run.report.fetches += 1
+    return row
+
+
+def _gmail_answers(run: _Run, exc: Exception, what: str) -> bool:
+    """The probe after a fetch failed as if Gmail were down. False, with the
+    run stopped, when it is: the probe failed too, or the share is spent."""
+    try:
+        run.gmail.profile()
+    except ShareExhaustedError:
+        run.report.stopped = "quota"
+        return False
+    except Exception:
+        run.failure(exc, what)
+        return False
     return True
 
 
@@ -523,13 +579,13 @@ def _apply(run: _Run, change: HistoryChange, deleted: set[str], fetched: dict[st
     if change.kind == "added":
         outcome = fetched.get(message_id)
         if isinstance(outcome, MessageRow):
-            _count(report, store(conn, account, outcome, "history"))
+            if not _stored(run, outcome, "history"):
+                _failed_on_its_own(run, message_id)
         elif outcome is _GONE:
             report.gone += mark_gone(conn, account, message_id)
             dequeue(conn, message_id)
         elif outcome is _FAILED:
-            run.failed.add(message_id)
-            report.queued += enqueue(conn, message_id, "fetch_failed", strikes=1)
+            _failed_on_its_own(run, message_id)
     elif change.kind == "deleted":
         report.gone += mark_gone(conn, account, message_id)
         dequeue(conn, message_id)
@@ -564,6 +620,27 @@ def _count(report: SyncReport, outcome: str) -> None:
         report.updated += 1
 
 
+def _stored(run: _Run, row: MessageRow, arrived_via: ArrivedVia) -> bool:
+    """Store one row in a savepoint of its own. False if the database refused
+    it: that is the message's own failure, and must not roll back the rest of
+    its page -- the next run would replay the same page for ever."""
+    try:
+        with run.conn.transaction():
+            _count(run.report, store(run.conn, run.account, row, arrived_via))
+    except psycopg.DatabaseError as exc:
+        log.warning("mail sync: %s could not be stored (%s)", row.message_id, type(exc).__name__)
+        run.report.failures += 1
+        return False
+    return True
+
+
+def _failed_on_its_own(run: _Run, message_id: str) -> None:
+    """Queue a message that failed on its own, with its first strike. The
+    queue tries it again at the next run, not straight away."""
+    run.failed.add(message_id)
+    run.report.queued += enqueue(run.conn, message_id, "fetch_failed", strikes=1)
+
+
 # --- the fetch queue --------------------------------------------------------
 
 
@@ -571,14 +648,16 @@ def enqueue(
     conn: psycopg.Connection, message_id: str, reason: QueueReason, *, strikes: int = 0
 ) -> bool:
     """Queue a message to fetch outside the pass. An entry already there,
-    queued or unreadable, is left as it is."""
+    queued or unreadable, is left as it is. One queued with a strike failed
+    just now."""
     return bool(
         conn.execute(
             """
-            INSERT INTO gmail_fetch_queue (message_id, reason, strikes) VALUES (%s, %s, %s)
+            INSERT INTO gmail_fetch_queue (message_id, reason, strikes, failed_at)
+            VALUES (%(id)s, %(reason)s, %(strikes)s, CASE WHEN %(strikes)s > 0 THEN now() END)
             ON CONFLICT (message_id) DO NOTHING
             """,
-            (message_id, reason, strikes),
+            {"id": message_id, "reason": reason, "strikes": strikes},
         ).rowcount
     )
 
@@ -592,25 +671,30 @@ def _strike(conn: psycopg.Connection, message_id: str) -> None:
         """
         UPDATE gmail_fetch_queue
            SET strikes = strikes + 1,
-               status = CASE WHEN strikes + 1 >= %s THEN 'unreadable' ELSE status END
+               status = CASE WHEN strikes + 1 >= %s THEN 'unreadable' ELSE status END,
+               failed_at = now()
          WHERE message_id = %s
         """,
         (STRIKES, message_id),
     )
 
 
-def _work_queue(run: _Run) -> None:
-    """Fetch what the queue holds, re-fetches first, each at most once a run.
+def _work_queue(run: _Run, *, floor: datetime) -> None:
+    """Fetch what the queue holds, each at most once a run.
 
-    A failure of the message's own counts a strike, and five make it
-    unreadable. An outage stops the queue and counts nothing.
+    Entries that never failed come first, re-fetches first among them; then
+    those that failed, fewest strikes and longest ago first, so a head that
+    fails every time cannot starve the rest. A failure of the message's own
+    counts a strike, and five make it unreadable. An outage stops the queue
+    and counts nothing. A message older than `floor`, where the backfill
+    stops, is dropped rather than stored.
     """
     conn = run.conn
     rows = conn.execute(
         f"""
         SELECT message_id, reason FROM gmail_fetch_queue
          WHERE status = 'queued'
-         ORDER BY {_QUEUE_ORDER}, queued_at, message_id
+         ORDER BY strikes, failed_at NULLS FIRST, {_QUEUE_ORDER}, queued_at, message_id
          LIMIT %s
         """,
         (QUEUE_BATCH,),
@@ -620,30 +704,33 @@ def _work_queue(run: _Run) -> None:
             continue
         if run.halted():
             return
-        try:
-            row = classify(run.gmail.message_metadata(message_id), run.owners)
-        except MessageGoneError:
+        row = _fetch(run, message_id, "the fetch queue")
+        if row is None:
+            return
+        if row is _GONE:
             with conn.transaction():
                 run.report.gone += mark_gone(conn, run.account, message_id)
                 dequeue(conn, message_id)
             continue
-        except ShareExhaustedError:
-            run.report.stopped = "quota"
-            return
-        except Exception as exc:
-            if is_outage(exc):
-                run.failure(exc, "the fetch queue")
-                return
-            log.warning("mail sync: queued %s failed again (%s)", message_id, type(exc).__name__)
+        if not isinstance(row, MessageRow):  # it failed on its own
             run.failed.add(message_id)
             _strike(conn, message_id)
             continue
-        if row.internal_at < run.started - QUEUE_DROPS_AFTER:
+        if row.internal_at < floor:  # older than the backfill reaches
             dequeue(conn, message_id)
             continue
-        with conn.transaction():
-            _count(run.report, store(conn, run.account, row, _ARRIVALS[reason]))
-            dequeue(conn, message_id)
+        try:
+            with conn.transaction():
+                _count(run.report, store(conn, run.account, row, _ARRIVALS[reason]))
+                dequeue(conn, message_id)
+        except psycopg.DatabaseError as exc:
+            # The database refused the row: a strike, as for a failed fetch.
+            log.warning(
+                "mail sync: queued %s could not be stored (%s)", message_id, type(exc).__name__
+            )
+            run.report.failures += 1
+            run.failed.add(message_id)
+            _strike(conn, message_id)
 
 
 # --- the switch-over ----------------------------------------------------------
@@ -652,12 +739,16 @@ def _work_queue(run: _Run) -> None:
 def _switch_over(run: _Run, cursor: Cursor) -> None:
     """Once: unread mail outside the four other tabs, from the last seven days.
 
+    The window runs to the listing itself, not to the run's start. On a
+    fresh database `feed_from` is the run's start and the cursor is the
+    profile's id, read a moment later: mail accepted in between is in no
+    history page after the cursor, and newer than anything the backfill
+    stores. What the listing shares with history is stored once.
+
     Done when every listed message not yet stored has been fetched; a run
     that stops part-way lists again next time, and skips what it stored.
     """
-    ids = _list(
-        run, SWITCH_OVER_QUERY, run.started - SWITCH_OVER_FOR, run.started, "the switch-over"
-    )
+    ids = _list(run, SWITCH_OVER_QUERY, run.started - SWITCH_OVER_FOR, run.now(), "the switch-over")
     if ids is None or not _store_listed(run, ids, "switch_over"):
         return
     run.conn.execute(
@@ -700,27 +791,21 @@ def _fetch_and_store(
 ) -> bool:
     """Fetch and store one listed message. False if the run must stop.
 
-    A 404 passes it over, and a failure of its own queues it. `before` stores
-    nothing at or after it: the backfill's limit.
+    A 404 passes it over, and a failure of its own -- to fetch, or to store
+    -- queues it. `before` stores nothing at or after it: the backfill's limit.
     """
     if run.halted():
         return False
-    try:
-        row = classify(run.gmail.message_metadata(message_id), run.owners)
-    except MessageGoneError:
-        return True
-    except ShareExhaustedError:
-        run.report.stopped = "quota"
+    row = _fetch(run, message_id, "messages.get")
+    if row is None:
         return False
-    except Exception as exc:
-        if is_outage(exc):
-            run.failure(exc, "messages.get")
-            return False
-        run.failed.add(message_id)
-        run.report.queued += enqueue(run.conn, message_id, "fetch_failed", strikes=1)
+    if row is _FAILED:
+        _failed_on_its_own(run, message_id)
         return True
-    if before is None or row.internal_at < before:
-        _count(run.report, store(run.conn, run.account, row, arrived_via))
+    if not isinstance(row, MessageRow):  # a 404 passes it over
+        return True
+    if (before is None or row.internal_at < before) and not _stored(run, row, arrived_via):
+        _failed_on_its_own(run, message_id)
     return True
 
 
@@ -903,18 +988,25 @@ def _backfilled(run: _Run, old: datetime, new: datetime) -> datetime:
 
 
 @contextmanager
-def sync_lock(conn: psycopg.Connection, *, wait: bool) -> Iterator[bool]:
+def sync_lock(
+    conn: psycopg.Connection, *, wait: bool, timeout: float | None = None
+) -> Iterator[bool]:
     """Hold the sync's advisory lock for the block.
 
     The scheduled job does not wait (`wait=False`): it is told False at once,
-    and skips its turn. The CLI waits for the scheduled run to finish.
+    and skips its turn. The CLI waits for the scheduled run to finish. The
+    recall waits at most `timeout` seconds, and is told False if the lock
+    stayed taken.
     """
-    if wait:
+    if wait and timeout is None:
         conn.execute("SELECT pg_advisory_lock(%s)", (LOCK,))
         held = True
     else:
-        row = conn.execute("SELECT pg_try_advisory_lock(%s)", (LOCK,)).fetchone()
-        held = bool(row and row[0])
+        held = _try_lock(conn)
+        deadline = time.monotonic() + (timeout or 0.0)
+        while wait and not held and time.monotonic() < deadline:
+            time.sleep(min(1.0, max(deadline - time.monotonic(), 0.0)))
+            held = _try_lock(conn)
     try:
         yield held
     finally:
@@ -924,6 +1016,11 @@ def sync_lock(conn: psycopg.Connection, *, wait: bool) -> Iterator[bool]:
             except psycopg.Error:
                 # Closing the connection releases it all the same.
                 log.warning("could not release the mail sync's lock; the connection will")
+
+
+def _try_lock(conn: psycopg.Connection) -> bool:
+    row = conn.execute("SELECT pg_try_advisory_lock(%s)", (LOCK,)).fetchone()
+    return bool(row and row[0])
 
 
 # --- the command line (D8) --------------------------------------------------------
@@ -1029,46 +1126,121 @@ def force_catch_up(
     )
 
 
-def check_feed(conn: psycopg.Connection, out: Out = print) -> bool:
+def retry_unreadable(conn: psycopg.Connection) -> int:
+    """`--retry-unreadable`, and every `--catch-up`: queue each unreadable
+    message again, its strikes reset. Returns how many.
+
+    Five strikes were otherwise for ever, whatever had failed them: a catch-up
+    queues only what is not in the queue already. Within the backfill's reach
+    only -- an entry queued before the backfill's floor is about mail older
+    than it, and stays as it is.
+    """
+    return conn.execute(
+        """
+        UPDATE gmail_fetch_queue
+           SET status = 'queued', strikes = 0, failed_at = NULL, queued_at = now()
+         WHERE status = 'unreadable'
+           AND queued_at >= (SELECT min(feed_from) FROM gmail_cursors) - %s
+        """,
+        (BACKFILL_FOR,),
+    ).rowcount
+
+
+def check_feed(
+    conn: psycopg.Connection,
+    gmail: GmailClient,
+    out: Out = print,
+    *,
+    now: datetime | None = None,
+) -> bool:
     """`--check-feed`: the exit criterion's checks of the switch-over (D8).
 
     1. No message older than `feed_from` less an hour has a ledger row made
        after the switch-over: the backfill never reached the pipeline.
-    2. Every Primary message from the switch-over hour -- an hour either side
-       of `feed_from` -- was processed, or recorded with a reason.
+    2. Every Primary message Gmail lists for the switch-over hour -- an hour
+       either side of `feed_from` -- is stored, and was processed or
+       recorded, is held back (and why), or is one the feed's rule leaves out.
+       Asked of Gmail, not of the stored rows: those cannot show a message
+       the sync never stored.
     """
+    now = now or datetime.now(UTC)
+    cursor = load_cursor(conn, gmail.profile().address)
+    if cursor is None:
+        out("No sync has run for this mailbox yet: run --once first.")
+        return False
     early = conn.execute(
         """
         SELECT m.message_id
           FROM gmail_messages m
-          JOIN gmail_cursors c ON c.account = m.account
           JOIN processed_messages p ON p.gmail_message_id = m.message_id
-         WHERE m.internal_at < c.feed_from - %(margin)s AND p.created_at >= c.created_at
+         WHERE m.account = %(account)s
+           AND m.internal_at < %(feed_from)s - %(margin)s AND p.created_at >= %(created)s
          ORDER BY m.internal_at
         """,
-        {"margin": feed.MARGIN},
+        {
+            "account": cursor.account,
+            "feed_from": cursor.feed_from,
+            "margin": feed.MARGIN,
+            "created": cursor.created_at,
+        },
     ).fetchall()
-    waiting = conn.execute(
-        f"""
-        SELECT m.message_id
-          FROM gmail_messages m
-          JOIN gmail_cursors c ON c.account = m.account
-         WHERE {feed.RULE}
-           AND m.internal_at >= c.feed_from - %(margin)s
-           AND m.internal_at < c.feed_from + %(margin)s
-         ORDER BY m.internal_at
-        """,
-        {"margin": feed.MARGIN},
-    ).fetchall()
+    listed = gmail.message_ids(
+        PRIMARY_QUERY, after=cursor.feed_from - feed.MARGIN, before=cursor.feed_from + feed.MARGIN
+    )
+    stale = cursor.caught_up_at is None or cursor.caught_up_at < now - feed.SYNCED_WITHIN
+    verdicts = _switch_over_hour(conn, cursor.account, listed, stale=stale)
+    missing = [message_id for message_id in listed if message_id not in verdicts]
+    waiting = [message_id for message_id, verdict in verdicts.items() if verdict is None]
+
     out(
         "Older mail processed after the switch-over: "
         + (", ".join(row[0] for row in early) if early else "none (good)")
     )
+    out(f"The switch-over hour, as Gmail lists it: {len(listed)} message(s)")
+    for message_id, verdict in verdicts.items():
+        if verdict is not None:
+            out(f"  {message_id}  {verdict}")
+    out("Switch-over hour mail never stored: " + (", ".join(missing) or "none (good)"))
     out(
         "Switch-over hour mail neither processed nor recorded: "
-        + (", ".join(row[0] for row in waiting) if waiting else "none (good)")
+        + (", ".join(waiting) or "none (good)")
     )
-    return not early and not waiting
+    return not early and not missing and not waiting
+
+
+def _switch_over_hour(
+    conn: psycopg.Connection, account: str, listed: list[str], *, stale: bool
+) -> dict[str, str | None]:
+    """Each stored listed message's verdict, oldest first: what became of
+    it, or None if it meets the feed's rule and nothing has taken it."""
+    rows = conn.execute(
+        f"""
+        SELECT m.message_id,
+               EXISTS (SELECT 1 FROM processed_messages p
+                        WHERE p.gmail_message_id = m.message_id),
+               q.reason, q.strikes,
+               ({feed.OFFERED})
+          FROM gmail_messages m
+          JOIN gmail_cursors c ON c.account = m.account
+          LEFT JOIN gmail_fetch_queue q ON q.message_id = m.message_id AND q.status = 'queued'
+         WHERE m.account = %(account)s AND m.message_id = ANY(%(listed)s)
+         ORDER BY m.internal_at, m.message_id
+        """,
+        {"account": account, "listed": listed, "margin": feed.MARGIN},
+    ).fetchall()
+    verdicts: dict[str, str | None] = {}
+    for message_id, processed, reason, strikes, offered in rows:
+        if processed:
+            verdicts[message_id] = "processed"
+        elif reason is not None:
+            verdicts[message_id] = f"held: queued for a fetch ({reason}, {strikes} strike(s))"
+        elif not offered:
+            verdicts[message_id] = "left out by the feed's rule"
+        elif stale:
+            verdicts[message_id] = "held: the sync has not reached the end of history lately"
+        else:
+            verdicts[message_id] = None
+    return verdicts
 
 
 @contextmanager
@@ -1099,7 +1271,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands.add_argument("--show", metavar="MESSAGE_ID", help="One row's metadata.")
     commands.add_argument(
-        "--catch-up", action="store_true", help="Force a catch-up, as if the cursor had expired."
+        "--catch-up",
+        action="store_true",
+        help="Force a catch-up, as if the cursor had expired, and retry unreadable mail.",
+    )
+    commands.add_argument(
+        "--retry-unreadable",
+        action="store_true",
+        help="Queue every unreadable message again, its strikes reset.",
     )
     commands.add_argument(
         "--check-feed", action="store_true", help="The exit criterion's switch-over checks."
@@ -1128,8 +1307,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"Recorded a gap from {gap.since:%Y-%m-%d %H:%M} to {gap.until:%Y-%m-%d %H:%M} "
                 "UTC. The scheduled sync works it off; --status shows how far it has got."
             )
+        if args.catch_up or args.retry_unreadable:
+            print(f"{retry_unreadable(conn)} unreadable message(s) queued again.")
             return 0
-        return 0 if check_feed(conn) else 1
+        return 0 if check_feed(conn, sync_client(settings)) else 1
 
 
 if __name__ == "__main__":

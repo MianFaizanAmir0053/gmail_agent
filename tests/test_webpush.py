@@ -8,6 +8,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -21,6 +22,7 @@ from app.channel.channels import configured_channels
 from app.channel.park import proposal_from
 from app.channel.webpush import (
     ALERT_PUSH,
+    ALERT_PUSHES,
     PROPOSAL_PUSH,
     DatabaseSubscriptions,
     StoredSubscription,
@@ -30,6 +32,7 @@ from app.config import Settings
 from app.jobs.vapid import generate_keys
 
 APP_URL = "https://mailagent-owner.vercel.app"
+SERVICE_WORKER = Path(__file__).resolve().parent.parent / "dashboard" / "public" / "sw.js"
 
 SECRET_CONTENT: dict[str, Any] = {
     "proposed": {
@@ -121,6 +124,45 @@ def test_an_alert_push_is_generic_too() -> None:
     push.alert("token_expired")
 
     assert json.loads(send.calls[0]["data"]) == ALERT_PUSH
+
+
+@pytest.mark.parametrize(
+    ("code", "body"),
+    [
+        ("mail_sync_missed", "Mail sync missed messages."),
+        ("mail_feed_stalled", "The mail feed has stalled."),
+    ],
+)
+def test_a_mail_alert_pushes_its_own_generic_words(code: str, body: str) -> None:
+    push, _, send = _channel(FCM)
+
+    assert push.alert(code) is True  # type: ignore[arg-type]
+
+    sent = json.loads(send.calls[0]["data"])
+    assert sent["body"] == body
+    assert sent != ALERT_PUSH  # not the sign-in alert's words
+
+
+def test_each_alert_kind_has_a_tag_of_its_own() -> None:
+    """The phone replaces a notification only with one of the same tag. A
+    mail alert must not replace an unread sign-in alert, which is sent once,
+    and the two mail alerts, each sent once a day, must not replace each
+    other."""
+    tags = [
+        ALERT_PUSHES[code]["tag"]
+        for code in ("token_expired", "mail_sync_missed", "mail_feed_stalled")
+    ]
+
+    assert len({*tags, PROPOSAL_PUSH["tag"]}) == 4
+
+
+def test_the_service_worker_knows_every_tag_fly_sends() -> None:
+    """A tag the worker does not know is shown as a proposal's, and the next
+    proposal would replace it (`dashboard/public/sw.js`)."""
+    worker = SERVICE_WORKER.read_text(encoding="utf-8")
+
+    for push in (PROPOSAL_PUSH, *ALERT_PUSHES.values()):
+        assert f'"{push["tag"]}"' in worker, push["tag"]
 
 
 def test_an_alert_and_a_proposal_are_told_apart_on_the_phone() -> None:

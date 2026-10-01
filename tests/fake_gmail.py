@@ -84,7 +84,9 @@ class FakeMailbox:
 
     page_size: int = 500
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-    failures: dict[str, list[BaseException]] = field(default_factory=lambda: defaultdict(list))
+    failures: dict[str, list[BaseException | None]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
 
     # --- the mailbox changing -------------------------------------------------
 
@@ -131,9 +133,11 @@ class FakeMailbox:
         """Gmail stops keeping the history up to now."""
         self.expired_below = self.history_id + 1
 
-    def fail(self, key: str, *errors: BaseException) -> None:
+    def fail(self, key: str, *errors: BaseException | None) -> None:
         """The next calls of `key` -- "history.list", "messages.list",
-        "getProfile" or "messages.get:<id>" -- raise these, one each."""
+        "getProfile" or "messages.get:<id>" -- raise these, one each. A None
+        lets its call through: `fail("getProfile", None, error)` answers the
+        run's own profile read and fails the one after."""
         self.failures[key].extend(errors)
 
     def _record(self, kind: str, message: FakeMessage, labels: list[str] | None = None) -> None:
@@ -168,8 +172,9 @@ class FakeMailbox:
 
         def run() -> Any:
             queued = self.failures.get(key or method)
-            if queued:
-                raise queued.pop(0)
+            error = queued.pop(0) if queued else None
+            if error is not None:
+                raise error
             return answer()
 
         return _Request(run)

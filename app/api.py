@@ -78,6 +78,9 @@ def health(authorization: str | None = Header(default=None)) -> JSONResponse:
         # end of history, so a sync that is alive but behind shows too.
         if MAIL_SYNC.overdue(now, MAIL_SYNC_EVERY):
             problems.append("no mail sync pass reached the end of history in three intervals")
+        # Each pass can reach the end of history while every fetch fails.
+        if MAIL_SYNC.fetches_failing(now, MAIL_SYNC_EVERY):
+            problems.append("every mail sync fetch has failed for three intervals")
         if _is_owner(settings, authorization):
             body["mail_sync"] = MAIL_SYNC.report(now)
 
@@ -221,35 +224,47 @@ def _seed_token_evidence(settings: Settings) -> None:
     TOKEN_EVIDENCE.seed(issued_at, last_ok_at=last_ok_at, rejected=rejected)
 
 
-def _settle_stranded_claims(settings: Settings) -> None:
-    """At boot, every `claimed` row (M20, D4): a thread that parked is left to
-    reconciliation, one the feed would offer again is released, and the rest
-    are marked FAILED rather than left `claimed`, where nothing would ever
-    look at them again."""
+def _settle_stranded_claims(settings: Settings, *, claimed_before: datetime) -> None:
+    """Every `claimed` row made before `claimed_before` (M20, D4): a thread
+    that parked is left to reconciliation, one the feed would offer again is
+    released, and the rest are marked FAILED rather than left `claimed`,
+    where nothing would ever look at them again.
+
+    Never raises: boot must complete. A claim that cannot be settled is
+    logged and left for the next pass, or the next boot.
+    """
     from app.graph.checkpointer import postgres_checkpointer
     from app.graph.nodes import Deps
     from app.graph.runner import GraphSession
     from app.mail.feed import recover_stranded
     from app.store.db import connect
 
-    with (
-        connect(settings.database_url) as conn,
-        postgres_checkpointer(settings.database_url) as saver,
-    ):
-        # Reading a thread's state builds the graph but runs none of its
-        # nodes, so their dependencies are never needed here.
-        threads = GraphSession(deps=cast(Deps, None), conn=conn, checkpointer=saver, trace=False)
-        result = recover_stranded(
-            conn,
-            parked=lambda message_id: threads.thread(message_id).parked,
-            forget=saver.delete_thread,
-        )
-    if result.left or result.released or result.failed:
+    try:
+        with (
+            connect(settings.database_url) as conn,
+            postgres_checkpointer(settings.database_url) as saver,
+        ):
+            # Reading a thread's state builds the graph but runs none of its
+            # nodes, so their dependencies are never needed here.
+            threads = GraphSession(
+                deps=cast(Deps, None), conn=conn, checkpointer=saver, trace=False
+            )
+            result = recover_stranded(
+                conn,
+                parked=lambda message_id: threads.thread(message_id).parked,
+                forget=saver.delete_thread,
+                claimed_before=claimed_before,
+            )
+    except Exception:
+        log.exception("could not settle stranded claims; the next pass tries again")
+        return
+    if result.left or result.released or result.failed or result.errors:
         log.warning(
-            "stranded claims: %d left for reconciliation, %d released, %d failed",
+            "stranded claims: %d left for reconciliation, %d released, %d failed, %d unsettled",
             result.left,
             result.released,
             result.failed,
+            result.errors,
         )
 
 
@@ -274,15 +289,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler = None
     if settings.run_scheduler:
         from app.jobs.scheduler import activate, build_scheduler
+        from app.mail.feed import STRANDED_AFTER
 
-        # Nothing is in flight in this process yet, so every claim was left by
-        # a predecessor that died mid-message.
-        _settle_stranded_claims(settings)
+        # Nothing is in flight in this process yet, so a claim made before boot
+        # was left by a predecessor that died mid-message -- unless a poller in
+        # another process still holds it. The poller has no lock to ask, so a
+        # claim younger than STRANDED_AFTER waits for a second pass, once it is
+        # that old; neither pass touches a claim made after boot, by this
+        # process's own poller.
+        booted_at = datetime.now(UTC)
+        _settle_stranded_claims(settings, claimed_before=booted_at - STRANDED_AFTER)
 
         _seed_token_evidence(settings)
         observe_refreshes(lambda outcome: _record_refresh(settings, outcome))
 
         scheduler = build_scheduler(settings)
+        scheduler.add_job(
+            _settle_stranded_claims,
+            "date",
+            run_date=booted_at + STRANDED_AFTER,
+            args=[settings],
+            kwargs={"claimed_before": booted_at},
+            id="stranded_claims",
+            # However late: by default a job over a second late is skipped.
+            misfire_grace_time=None,
+        )
         activate(scheduler)
         log.info("scheduler started: poll every %d min", settings.poll_interval_minutes)
 

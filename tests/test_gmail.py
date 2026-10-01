@@ -337,9 +337,14 @@ class _FakeResource:
 @dataclass
 class RecordingPacer:
     spent: list[tuple[str, str | None]] = field(default_factory=list)
+    waits: list[float | None] = field(default_factory=list)
+    """How long each call allowed the pacer to wait."""
 
-    def spend(self, method: str, *, share: str | None = None) -> None:
+    def spend(
+        self, method: str, *, share: str | None = None, wait_for: float | None = None
+    ) -> None:
         self.spent.append((method, share))
+        self.waits.append(wait_for)
 
 
 @dataclass
@@ -427,6 +432,25 @@ def test_a_fetch_404_is_message_gone_and_is_not_retried(fetch: str) -> None:
         getattr(_sync_client(service), fetch)("m1")
 
     assert service.requests[0].attempts == 1
+
+
+@pytest.mark.parametrize("label", ["TRASH", "SPAM"])
+def test_the_pipelines_fetch_of_mail_now_binned_ends_it_as_gone(label: str) -> None:
+    """The full message carries its labels at no extra cost: mail the owner
+    trashed after the sync last saw it is not processed (M20 review, S4)."""
+    service = FakeService()
+    service.reply("messages.get", SEEDED | {"labelIds": ["INBOX", label]})
+
+    with pytest.raises(MessageGoneError):
+        _sync_client(service).get_message("m1")
+
+
+def test_the_syncs_fetch_of_binned_mail_still_answers() -> None:
+    """The sync must see a binned message's labels to keep its row current."""
+    service = FakeService()
+    service.reply("messages.get", SEEDED | {"labelIds": ["TRASH"]})
+
+    assert _sync_client(service).message_metadata("m1").label_ids == frozenset({"TRASH"})
 
 
 def test_message_gone_is_a_lookup_error_so_no_retry_policy_retries_it() -> None:
@@ -630,6 +654,134 @@ def test_a_client_error_is_not_retried() -> None:
     assert service.requests[0].attempts == 1
 
 
+def test_every_retry_is_charged_to_the_pacer() -> None:
+    """A retry costs Gmail's quota like any call."""
+    service = FakeService()
+    service.reply("messages.get", _http_error(503), _http_error(429), SEEDED)
+    pacer = RecordingPacer()
+
+    _sync_client(service, pacer).message_metadata("m1")
+
+    assert pacer.spent == [("messages.get", "sync")] * 3
+
+
+def test_the_pauses_between_retries_are_jittered() -> None:
+    """Callers that failed together must not all come back together."""
+    pauses: list[list[float]] = []
+    for _ in range(3):
+        service = FakeService()
+        service.reply("messages.get", _http_error(503), _http_error(503), SEEDED)
+        clock = FakeClock()
+        _sync_client(service, clock=clock).message_metadata("m1")
+        first, second = clock.slept
+        assert 0.5 <= first <= 1.5 and 1.0 <= second <= 3.0
+        pauses.append(clock.slept)
+
+    assert len({tuple(slept) for slept in pauses}) > 1
+
+
+@dataclass
+class SlowHttp:
+    """The transport under a real discovery client: every request answers 503
+    after `takes` seconds, or after the socket timeout it was given if that
+    is shorter. The clock moves while it is busy, as a hung connection's
+    does -- not only while the client sleeps."""
+
+    clock: FakeClock
+    takes: float
+    inner: Any = None
+    timeouts: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        import httplib2  # type: ignore[import-untyped]
+
+        owner = self
+
+        class Http(httplib2.Http):  # type: ignore[misc]
+            def request(self, *args: Any, **kwargs: Any) -> Any:
+                owner.timeouts.append(self.timeout)
+                owner.clock.now += min(owner.takes, self.timeout)
+                body = b'{"error": {"code": 503, "message": "backend error"}}'
+                return httplib2.Response({"status": "503"}), body
+
+        self.inner = Http(timeout=60)
+
+
+def _slow_client(http: SlowHttp, pacer: Any, clock: FakeClock) -> GmailClient:
+    from googleapiclient.discovery import build
+
+    service = build("gmail", "v1", http=http.inner, static_discovery=True)
+    return GmailClient(service, pacer=pacer, sleep=clock.sleep, clock=clock)
+
+
+def test_a_call_that_hangs_stays_inside_its_budget() -> None:
+    """Attempts that each take 20 seconds: the second is given only the time
+    left, so the call ends at its budget, not at 60-second socket timeouts."""
+    clock = FakeClock()
+    http = SlowHttp(clock, takes=20.0)
+    pacer = RecordingPacer()
+
+    with pytest.raises(HttpError):
+        _slow_client(http, pacer, clock).get_message("m1")
+
+    assert clock.now <= RETRY_FOR + 1e-9  # its budget, to the float
+    assert http.timeouts[0] <= RETRY_FOR
+    assert len(http.timeouts) == 2 and http.timeouts[1] < 10
+    assert len(pacer.spent) == 2  # the retry was charged too
+
+
+@dataclass
+class WaitingPacer:
+    """A pacer whose minute is full: each spend waits as long as it may."""
+
+    clock: FakeClock
+    waits: list[float | None] = field(default_factory=list)
+
+    def spend(
+        self, method: str, *, share: str | None = None, wait_for: float | None = None
+    ) -> None:
+        self.waits.append(wait_for)
+        self.clock.now += wait_for or 0.0
+
+
+def test_the_pacers_wait_counts_against_the_budget() -> None:
+    """The budget starts before the pacer is asked, so a long wait for the
+    minute leaves the attempt only what is left."""
+    clock = FakeClock()
+    http = SlowHttp(clock, takes=20.0)
+    pacer = WaitingPacer(clock)
+
+    with pytest.raises(HttpError):
+        _slow_client(http, pacer, clock).get_message("m1")
+
+    assert pacer.waits[0] is not None and pacer.waits[0] < RETRY_FOR
+    assert clock.now <= RETRY_FOR + 1e-9  # its budget, to the float
+    assert len(http.timeouts) == 1  # no time was left for a retry
+
+
+def _new_style_error(
+    status: int,
+    *,
+    errors: tuple[str, ...] = (),
+    details: tuple[str, ...] = (),
+    grpc_status: str | None = None,
+) -> HttpError:
+    """An error body as Google's newer front ends send it: `details` holds
+    `ErrorInfo` records, beside or instead of the older `errors` list."""
+    error: dict[str, Any] = {"code": status, "message": "x"}
+    if errors:
+        error["errors"] = [{"reason": reason, "domain": "usageLimits"} for reason in errors]
+    if details:
+        error["details"] = [
+            {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}
+            for reason in details
+        ]
+    if grpc_status is not None:
+        error["status"] = grpc_status
+    content = json.dumps({"error": error}).encode()
+    return HttpError(SimpleNamespace(status=status, reason="x"), content)
+
+
 @pytest.mark.parametrize(
     ("error", "outage"),
     [
@@ -647,6 +799,36 @@ def test_a_client_error_is_not_retried() -> None:
 def test_an_outage_is_told_apart_from_one_messages_failure(error: Exception, outage: bool) -> None:
     """An outage blames no message (D3): it stops the pass and charges no strike."""
     assert is_outage(error) is outage
+
+
+@pytest.mark.parametrize(
+    ("error", "rate_limit"),
+    [
+        # The client library keeps `details` when both lists are sent, so the
+        # older reason in `errors` was never read.
+        (_new_style_error(403, errors=("rateLimitExceeded",), details=("OTHER",)), True),
+        (_new_style_error(403, details=("RATE_LIMIT_EXCEEDED",)), True),
+        (_new_style_error(403, grpc_status="RESOURCE_EXHAUSTED"), True),
+        (_new_style_error(403, errors=("userRateLimitExceeded",)), True),
+        (
+            _new_style_error(
+                403, details=("ACCESS_TOKEN_SCOPE_INSUFFICIENT",), grpc_status="PERMISSION_DENIED"
+            ),
+            False,
+        ),
+        (_new_style_error(403, errors=("insufficientPermissions",)), False),
+    ],
+)
+def test_a_403_rate_limit_is_read_from_either_list_in_the_body(
+    error: HttpError, rate_limit: bool
+) -> None:
+    assert is_outage(error) is rate_limit
+
+
+def test_a_403_whose_body_is_not_json_is_not_a_rate_limit() -> None:
+    error = HttpError(SimpleNamespace(status=403, reason="x"), b"<html>Forbidden</html>")
+
+    assert is_outage(error) is False
 
 
 def test_the_real_client_library_sends_the_mask_and_the_six_headers() -> None:

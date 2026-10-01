@@ -5,8 +5,9 @@ tested against recorded payloads without touching the network -- it is the part
 most likely to be wrong, since real messages nest parts arbitrarily.
 
 Every call goes through `GmailClient._execute` (M20): the process's pacer
-counts what it costs, and a rate limit or a server error is retried there,
-for at most `RETRY_FOR` seconds in all.
+counts what each attempt costs, and a rate limit or a server error is
+retried there. One call -- the pacer's wait, every attempt and the pauses
+between them -- takes at most `RETRY_FOR` seconds.
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ from __future__ import annotations
 import base64
 import binascii
 import html
+import json
 import math
+import random
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -77,20 +80,34 @@ HISTORY_PAGE_SIZE = 500
 """Gmail's largest page of history records."""
 
 RETRY_FOR = 30.0
-"""Seconds a call keeps retrying a rate limit or a server error, in all
-(M20, D3). The pipeline's fetch runs inside a message's run, which must stay
-well inside the platform's kill timeout (120 s)."""
+"""Seconds one call may take in all (M20, D3): the pacer's wait, every
+attempt and the pauses between them. The pipeline's fetch runs inside a
+message's run, which must stay well inside the platform's kill timeout (120 s)."""
+
+SHORTEST_ATTEMPT = 5.0
+"""Seconds an attempt is always given. A retry is not started with less time
+left; a first attempt gets this much even when the pacer's wait left less,
+so a call ends within `RETRY_FOR` plus this, at the very worst."""
 
 _FIRST_RETRY_AFTER = 1.0
-_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+_RATE_LIMIT_REASONS = frozenset(
+    {"rateLimitExceeded", "userRateLimitExceeded", "RATE_LIMIT_EXCEEDED", "RESOURCE_EXHAUSTED"}
+)
+"""A 403 that means "slow down": the older `errors` reasons, and the newer
+`details` reason and status Google's front ends send beside or instead of them."""
 
 
 class MessageGoneError(LookupError):
-    """A fetch answered 404: the message has left the mailbox.
+    """A fetch answered 404: the message has left the mailbox. The pipeline's
+    fetch raises it too for a message now in the trash or spam (`BINNED`).
 
     A LookupError, so LangGraph's default retry rule never retries it either:
     a deleted message stays deleted, however often it is asked for.
     """
+
+
+BINNED = frozenset({"TRASH", "SPAM"})
+"""Labels that take a message out of the pipeline's hands."""
 
 
 class CursorExpiredError(Exception):
@@ -101,7 +118,9 @@ class CursorExpiredError(Exception):
 class Pacing(Protocol):
     """What the client needs of a pacer (`app.mail.quota.Pacer`)."""
 
-    def spend(self, method: str, *, share: str | None = None) -> None: ...
+    def spend(
+        self, method: str, *, share: str | None = None, wait_for: float | None = None
+    ) -> None: ...
 
 
 def is_transient(exc: BaseException) -> bool:
@@ -130,14 +149,59 @@ def is_outage(exc: BaseException) -> bool:
 
 
 def _reasons(exc: Any) -> set[str]:
-    details = getattr(exc, "error_details", None)
-    if not isinstance(details, list):
+    """Every reason an error gives, read from its body.
+
+    Not from the client library's `error_details` alone: when Gmail sends both
+    `error.errors` and `error.details`, it keeps only `details`, so a rate
+    limit named in the other list went unseen and was taken for a refusal.
+    """
+    found = set(_reasons_in(getattr(exc, "error_details", None)))
+    error = _error_body(exc)
+    if error is not None:
+        found.update(_reasons_in(error.get("errors")))
+        found.update(_reasons_in(error.get("details")))
+        if isinstance(error.get("status"), str):
+            found.add(error["status"])
+    return found
+
+
+def _reasons_in(items: Any) -> set[str]:
+    if not isinstance(items, list):
         return set()
-    return {str(item["reason"]) for item in details if isinstance(item, dict) and "reason" in item}
+    return {str(item["reason"]) for item in items if isinstance(item, dict) and "reason" in item}
+
+
+def _error_body(exc: Any) -> dict[str, Any] | None:
+    """The `error` object of a failed call's JSON body, or None."""
+    try:
+        data = json.loads(getattr(exc, "content", b"") or b"")
+    except (TypeError, ValueError):  # not JSON: a proxy's page, say
+        return None
+    error = data.get("error") if isinstance(data, dict) else None
+    return error if isinstance(error, dict) else None
 
 
 def _status(exc: BaseException) -> int | None:
     return int(exc.status_code) if isinstance(exc, HttpError) else None
+
+
+def _cap_timeout(request: Any, seconds: float) -> None:
+    """Give an attempt's sockets at most `seconds`.
+
+    A discovery request runs on an `httplib2.Http`, inside google-auth's
+    wrapper, whose own timeout is a minute. It keeps its connections open
+    between calls, and a connection keeps the timeout it was opened with, so
+    those are capped too. A request of any other shape is left alone.
+    """
+    http = getattr(request, "http", None)
+    http = getattr(http, "http", http)
+    if not isinstance(http, httplib2.Http):
+        return
+    http.timeout = seconds
+    for connection in http.connections.values():
+        connection.timeout = seconds
+        if connection.sock is not None:
+            connection.sock.settimeout(seconds)
 
 
 def epoch_window(after: datetime | None = None, before: datetime | None = None) -> str:
@@ -365,23 +429,34 @@ class GmailClient:
         self._clock = clock
 
     def _execute(self, method: str, request: Any) -> dict[str, Any]:
-        """Run one request: priced first, then retried while Gmail or the
-        network fails for everyone, for at most `retry_for` seconds in all.
+        """Run one request, retried while Gmail or the network fails for
+        everyone, all within `retry_for` seconds.
 
-        Every Gmail call goes through here, so none escapes the pacer. A
-        failure that is not transient -- a 404, a 400 -- is raised at once.
+        Every Gmail call goes through here, so none escapes the pacer, and
+        every attempt is priced: a retry costs quota like any call. The
+        budget starts before the pacer is asked, so its wait counts; each
+        attempt's sockets get only the time left, so one hung attempt cannot
+        outlast it; and the pauses are jittered, so callers that failed
+        together do not come back together. A failure that is not transient
+        -- a 404, a 400 -- is raised at once.
         """
-        (self._pacer if self._pacer is not None else quota.PACER).spend(method, share=self._share)
+        pacer = self._pacer if self._pacer is not None else quota.PACER
         deadline = self._clock() + self._retry_for
         pause = _FIRST_RETRY_AFTER
         while True:
+            pacer.spend(
+                method,
+                share=self._share,
+                wait_for=max(deadline - self._clock() - SHORTEST_ATTEMPT, 0.0),
+            )
+            _cap_timeout(request, max(deadline - self._clock(), SHORTEST_ATTEMPT))
             try:
                 return cast(dict[str, Any], request.execute())
             except Exception as exc:
-                left = deadline - self._clock()
-                if not is_transient(exc) or left <= 0:
+                wait = pause * random.uniform(0.5, 1.5)
+                if not is_transient(exc) or self._clock() + wait + SHORTEST_ATTEMPT > deadline:
                     raise
-            self._sleep(min(pause, left))
+            self._sleep(wait)
             pause *= 2
 
     def profile(self) -> Profile:
@@ -506,8 +581,10 @@ class GmailClient:
 
     def get_message(self, message_id: str) -> EmailMessage:
         """The whole message, for the pipeline. Raises `MessageGoneError` for
-        a 404: a message deleted before its turn is recorded, not retried
-        (M20, D4)."""
+        a 404, and for a message now in the trash or spam: one deleted or
+        binned before its turn is recorded, not processed or retried (M20,
+        D4). The labels come with the message at no extra cost, and are
+        newer than the sync's, which may lag."""
         request = self._service.users().messages().get(userId="me", id=message_id, format="full")
         try:
             response = self._execute("messages.get", request)
@@ -515,6 +592,8 @@ class GmailClient:
             if _status(exc) == 404:
                 raise MessageGoneError(message_id) from exc
             raise
+        if BINNED & set(response.get("labelIds", [])):
+            raise MessageGoneError(message_id)
         return to_email_message(response)
 
     def current_history_id(self) -> str:

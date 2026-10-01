@@ -6,11 +6,18 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, get_args
 
+import pytest
 from pydantic import SecretStr
 
-from app.channel.channels import Channels, TelegramChannel, configured_channels
+from app.channel.channels import (
+    TELEGRAM_ALERTS,
+    AlertCode,
+    Channels,
+    TelegramChannel,
+    configured_channels,
+)
 from app.channel.park import ProposalRecord, proposal_from
 from app.config import Settings
 
@@ -212,3 +219,23 @@ def test_telegram_alerts_in_words_the_owner_can_act_on() -> None:
 
     assert delivered is True
     assert "reauth" in bot.sent[-1]["text"]
+
+
+def test_every_alert_has_words_on_every_channel() -> None:
+    """A code missing from either table would fail its channel at the moment
+    the alert matters. New codes join both."""
+    from app.channel.webpush import ALERT_PUSHES
+
+    codes = set(get_args(AlertCode))
+
+    assert {"mail_sync_missed", "mail_feed_stalled"} <= codes
+    assert set(TELEGRAM_ALERTS) == codes
+    assert set(ALERT_PUSHES) == codes
+
+
+@pytest.mark.parametrize("code", ["mail_sync_missed", "mail_feed_stalled"])
+def test_telegram_tells_the_owner_where_to_look_for_a_mail_alert(code: AlertCode) -> None:
+    bot = FakeBot()
+
+    assert TelegramChannel(bot=bot, chat_id=4242, zone="UTC").alert(code) is True
+    assert "--status" in bot.sent[-1]["text"]

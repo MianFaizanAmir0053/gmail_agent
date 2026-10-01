@@ -91,7 +91,8 @@ def test_status_shows_the_records_as_counts_and_times(
     assert ME in out
     assert "by direction: in 1, out 1" in out
     assert "by category: primary 2" in out
-    assert "by arrived_via: history 1, switch_over 1" in out or "history 2" in out
+    # m1 came before the first run (the switch-over), m2 after it (history).
+    assert "by arrived_via: history 1, switch_over 1" in out
     assert "Latest too-old records: 1" in out and "old" in out
     assert SECRET not in out
 
@@ -144,15 +145,90 @@ def test_catch_up_records_a_gap_and_the_next_runs_work_it_off(
     assert "m1" not in feed.candidates(mail, 10)  # never fed
 
 
+def _unreadable(conn: psycopg.Connection, message_id: str, queued_ago: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO gmail_fetch_queue (message_id, reason, queued_at, strikes, status, failed_at)
+        VALUES (%s, 'fetch_failed', now() - %s::interval, 5, 'unreadable', now())
+        """,
+        (message_id, queued_ago),
+    )
+
+
+def _queue(conn: psycopg.Connection) -> dict[str, tuple[int, str]]:
+    rows = conn.execute("SELECT message_id, strikes, status FROM gmail_fetch_queue").fetchall()
+    return {row[0]: (row[1], row[2]) for row in rows}
+
+
+def test_retry_unreadable_queues_them_again_with_no_strikes(
+    run_main: Any, mail: psycopg.Connection
+) -> None:
+    """Five strikes were for ever: nothing, not even a catch-up, queued an
+    unreadable message again. Within the backfill's reach, this does."""
+    run_main("--once")
+    _unreadable(mail, "recent", "2 days")
+    _unreadable(mail, "ancient", "200 days")  # queued before the backfill's floor
+
+    code, out = run_main("--retry-unreadable")
+
+    assert code == 0 and "1 unreadable message(s) queued again" in out
+    assert _queue(mail) == {"recent": (0, "queued"), "ancient": (5, "unreadable")}
+
+
+def test_a_catch_up_queues_unreadable_mail_again_too(
+    run_main: Any, mail: psycopg.Connection
+) -> None:
+    run_main("--once")
+    _unreadable(mail, "stuck", "1 hour")
+
+    code, out = run_main("--catch-up")
+
+    assert code == 0 and "1 unreadable message(s) queued again" in out
+    assert _queue(mail)["stuck"] == (0, "queued")
+
+
 def test_check_feed_passes_on_a_clean_switch_over(run_main: Any, mail: psycopg.Connection) -> None:
     run_main.box.deliver("m1", labels=PRIMARY, at=NOW)
+    run_main.box.deliver("sent", labels={"SENT"}, at=NOW, sender=ME, to="sara@example.com")
     run_main("--once")
     MessageLedger(mail).claim("m1", "m1")
 
     code, out = run_main("--check-feed")
 
     assert code == 0
-    assert out.count("none (good)") == 2
+    assert out.count("none (good)") == 3
+    assert "m1  processed" in out
+    assert "sent  left out by the feed's rule" in out
+
+
+def test_check_feed_asks_gmail_for_the_switch_over_hour(
+    run_main: Any, mail: psycopg.Connection
+) -> None:
+    """Reading only stored rows, it could never fail for mail the sync
+    missed: Gmail's listing is what the stored rows are checked against."""
+    run_main.box.deliver("missed", labels=PRIMARY, at=NOW)
+    run_main("--once")
+    mail.execute("DELETE FROM gmail_messages WHERE message_id = 'missed'")  # as if never stored
+
+    code, out = run_main("--check-feed")
+
+    assert code == 1
+    assert "never stored: missed" in out
+
+
+def test_check_feed_says_why_switch_over_mail_is_held(
+    run_main: Any, mail: psycopg.Connection
+) -> None:
+    run_main.box.deliver("held", labels=PRIMARY, at=NOW)
+    run_main("--once")
+    mail.execute(
+        "INSERT INTO gmail_fetch_queue (message_id, reason, strikes) VALUES ('held', 'refetch', 1)"
+    )
+
+    code, out = run_main("--check-feed")
+
+    assert code == 0
+    assert "held  held: queued for a fetch (refetch, 1 strike(s))" in out
 
 
 def test_check_feed_finds_older_mail_processed_after_the_switch_over(

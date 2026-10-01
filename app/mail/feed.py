@@ -20,6 +20,12 @@ the fetch queue is held back: a catch-up queues the week's rows to be
 fetched again, and until that answers, their labels may be stale -- a
 message trashed during an outage would otherwise be fed.
 
+Labels are only as current as the sync, so the feed offers nothing at all
+unless a sync pass reached the end of history in the last half hour
+(`caught_up_at`): hours into a failing sync, a message the owner trashed
+meanwhile would still look like Inbox. The pipeline's own fetch reads the
+labels again, and ends a message now in the trash or spam as gone.
+
 A candidate is processed only while it is under seven days old. An older
 one is recorded `SKIPPED` ("too old when reached") without a model call, so
 nothing that meets the rule is ever silently dropped.
@@ -46,30 +52,42 @@ MARGIN = timedelta(hours=1)
 hour is covered twice rather than not at all. The ledger keeps a message
 that both reached from being processed twice."""
 
+SYNCED_WITHIN = timedelta(minutes=30)
+"""The feed offers nothing unless a sync pass reached the end of history
+this recently: fifteen of the sync's two-minute ticks."""
+
 TOO_OLD = "too old when reached"
 GONE = "no longer in the mailbox"
 """Fixed ledger reasons: written by code, quoting no email, kept by the purge."""
 
-_OFFERED = """
+ROW = """
         m.direction = 'in' AND m.category = 'primary' AND NOT m.to_self
     AND m.gone_at IS NULL
     AND NOT (m.label_ids && ARRAY['SPAM', 'TRASH'])
     AND (m.precedence IS NULL OR m.precedence NOT IN ('bulk', 'junk'))
     AND (m.auto_submitted IS NULL OR m.auto_submitted = 'no')
     AND (NOT m.has_list_unsubscribe OR 'CATEGORY_PERSONAL' = ANY(m.label_ids))
-    AND m.internal_at >= c.feed_from - %(margin)s
 """
+"""The rule as far as the row itself goes -- its labels, its headers, whether
+it is gone -- with no parameter: `m` is the row. What keeps the stall clock
+(`offered_since`, `app.mail.messages`) reads it too."""
+
+OFFERED = ROW + "    AND m.internal_at >= c.feed_from - %(margin)s\n"
 """What the feed would offer, ledger aside: `m` is the row, `c` its cursor."""
 
-_WAITING = """
+UNRECORDED = """
     AND NOT EXISTS (SELECT 1 FROM processed_messages p
                      WHERE p.gmail_message_id = m.message_id)
+"""
+"""No ledger row yet."""
+
+_NOT_HELD = """
     AND NOT EXISTS (SELECT 1 FROM gmail_fetch_queue q
                      WHERE q.message_id = m.message_id AND q.status = 'queued')
 """
-"""No ledger row yet, and not held back for a fetch."""
+"""Not held back for a fetch."""
 
-RULE = _OFFERED + _WAITING
+RULE = OFFERED + UNRECORDED + _NOT_HELD
 """The whole rule, for the feed and for the recall and `--check-feed`
 checks that ask whether it held: the same SQL, so they cannot drift apart.
 Its one parameter is `margin`."""
@@ -82,8 +100,14 @@ def active(conn: psycopg.Connection) -> bool:
     return bool(row and row[0])
 
 
+_SYNCED = "AND c.caught_up_at >= %(synced)s"
+"""The sync reached the end of history lately: its labels are current."""
+
+
 def candidates(conn: psycopg.Connection, limit: int, *, now: datetime | None = None) -> list[str]:
-    """Up to `limit` messages for the pipeline, oldest first."""
+    """Up to `limit` messages for the pipeline, oldest first. None while the
+    sync is behind (`SYNCED_WITHIN`)."""
+    now = now or datetime.now(UTC)
     rows = conn.execute(
         f"""
         SELECT m.message_id
@@ -91,10 +115,16 @@ def candidates(conn: psycopg.Connection, limit: int, *, now: datetime | None = N
           JOIN gmail_cursors c ON c.account = m.account
          WHERE {RULE}
            AND m.internal_at >= %(fresh)s
+           {_SYNCED}
          ORDER BY m.internal_at, m.message_id
          LIMIT %(limit)s
         """,
-        {"margin": MARGIN, "fresh": (now or datetime.now(UTC)) - AGE_LIMIT, "limit": limit},
+        {
+            "margin": MARGIN,
+            "fresh": now - AGE_LIMIT,
+            "synced": now - SYNCED_WITHIN,
+            "limit": limit,
+        },
     ).fetchall()
     return [row[0] for row in rows]
 
@@ -105,8 +135,10 @@ def record_too_old(conn: psycopg.Connection, *, now: datetime | None = None) -> 
 
     That covers mail found by a catch-up after a long outage, mail restored
     from the trash, and mail held by M17's pause or spending cap for a week.
-    The ledger's thread id is the message id, as `claim` writes it.
+    The ledger's thread id is the message id, as `claim` writes it. Nothing
+    is recorded while the sync is behind: the rule is read on its labels.
     """
+    now = now or datetime.now(UTC)
     rows = conn.execute(
         f"""
         INSERT INTO processed_messages (gmail_message_id, thread_id, status, error)
@@ -115,12 +147,14 @@ def record_too_old(conn: psycopg.Connection, *, now: datetime | None = None) -> 
           JOIN gmail_cursors c ON c.account = m.account
          WHERE {RULE}
            AND m.internal_at < %(fresh)s
+           {_SYNCED}
         ON CONFLICT (gmail_message_id) DO NOTHING
         RETURNING gmail_message_id
         """,
         {
             "margin": MARGIN,
-            "fresh": (now or datetime.now(UTC)) - AGE_LIMIT,
+            "fresh": now - AGE_LIMIT,
+            "synced": now - SYNCED_WITHIN,
             "skipped": MessageStatus.SKIPPED.value,
             "reason": TOO_OLD,
         },
@@ -129,6 +163,12 @@ def record_too_old(conn: psycopg.Connection, *, now: datetime | None = None) -> 
 
 
 # --- claims stranded by a restart ---------------------------------------------
+
+STRANDED_AFTER = timedelta(minutes=10)
+"""A claim younger than this is not settled. A poller in another process --
+a CLI pass over `fly ssh console` -- may hold it mid-message, and the poller
+has no lock to ask. A message's run stays well inside the kill timeout
+(120 s), so ten minutes leave room to spare."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,23 +182,35 @@ class StrandedClaims:
     failed: int
     """Marked FAILED, as before M20: the feed would not offer them again."""
 
+    errors: int = 0
+    """Claims that could not be settled -- an unreadable checkpoint, say --
+    left `claimed`, for the next pass or the next boot."""
+
 
 def recover_stranded(
     conn: psycopg.Connection,
     *,
     parked: Callable[[str], bool],
     forget: Callable[[str], None],
+    claimed_before: datetime,
     now: datetime | None = None,
 ) -> StrandedClaims:
-    """Settle every `claimed` row. Call at boot, when no run is in flight.
+    """Settle every `claimed` row made before `claimed_before`, when this
+    process has no run in flight: at boot, for claims older than
+    `STRANDED_AFTER`, and again once that has passed, for the rest made
+    before boot. A claim this process made is never touched.
 
     A claim is taken before its graph runs and replaced by the graph's own
-    outcome, so one still `claimed` at boot was left by a process that died
+    outcome, so one still `claimed` then was left by a process that died
     mid-message. A thread that parked is left to reconciliation. One that did
     not is released -- its checkpoint (`forget`) and then its ledger row are
     deleted -- when the feed would offer it again: stored, meeting the rule,
     and under seven days old. Anything else is marked FAILED, so nothing is
     dropped without a trace.
+
+    Each claim is settled in a savepoint of its own. One that cannot be -- a
+    checkpoint that will not read -- is logged and left, and the rest are
+    settled all the same.
     """
     rows = conn.execute(
         f"""
@@ -167,29 +219,36 @@ def recover_stranded(
                          FROM gmail_messages m
                          JOIN gmail_cursors c ON c.account = m.account
                         WHERE m.message_id = p.gmail_message_id
-                          AND {_OFFERED}
+                          AND {OFFERED}
                           AND m.internal_at >= %(fresh)s)
           FROM processed_messages p
-         WHERE p.status = %(claimed)s
+         WHERE p.status = %(claimed)s AND p.created_at < %(claimed_before)s
          ORDER BY p.created_at
         """,
         {
             "margin": MARGIN,
             "fresh": (now or datetime.now(UTC)) - AGE_LIMIT,
             "claimed": MessageStatus.CLAIMED.value,
+            "claimed_before": claimed_before,
         },
     ).fetchall()
     ledger = MessageLedger(conn)
-    left = released = failed = 0
+    left = released = failed = errors = 0
     for message_id, offered in rows:
-        if parked(message_id):
-            left += 1
-        elif offered:
-            # The checkpoint first: a crash between the two leaves a claim with
-            # no thread, which the next boot releases again.
-            forget(message_id)
-            released += ledger.release(message_id)
-        else:
-            ledger.mark(message_id, MessageStatus.FAILED, error=STRANDED_REASON)
-            failed += 1
-    return StrandedClaims(left=left, released=released, failed=failed)
+        try:
+            with conn.transaction():
+                if parked(message_id):
+                    left += 1
+                elif offered:
+                    # The checkpoint first: a crash between the two leaves a
+                    # claim with no thread, which the next pass releases again.
+                    forget(message_id)
+                    released += ledger.release(message_id)
+                else:
+                    ledger.mark(message_id, MessageStatus.FAILED, error=STRANDED_REASON)
+                    failed += 1
+        except Exception as exc:
+            # The type only: exception text can carry message content.
+            log.warning("stranded claim %s left as it is (%s)", message_id, type(exc).__name__)
+            errors += 1
+    return StrandedClaims(left=left, released=released, failed=failed, errors=errors)

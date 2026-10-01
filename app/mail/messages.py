@@ -12,6 +12,9 @@ arrive, for M21) and Forums. Drafts, chats, spam and trash are not.
 **What a label change recomputes.** `direction` and `category` follow the
 labels. `to_self` comes from the headers, so moving a conversation to the
 Inbox -- which labels the owner's own replies `INBOX` too -- changes nothing.
+`offered_since`, the feed recall's stall clock, starts when a row begins to
+meet the feed's rule and is cleared when it stops: reading the message, which
+the rule does not look at, leaves it alone.
 
 Storing is idempotent: storing the same message twice changes nothing, not
 even `updated_at`, and how a row first arrived is kept for diagnosis.
@@ -29,6 +32,7 @@ import psycopg
 
 from app.google.gmail import MessageMeta
 from app.jobs.measure import normalise_address
+from app.mail import feed
 
 Direction = Literal["in", "out"]
 Category = Literal["primary", "updates", "forums", "promotions", "social"]
@@ -51,6 +55,12 @@ D1_QUERY = "-category:promotions -category:social -in:chats -in:drafts"
 """What D1 stores, as a Gmail search, for the catch-up, the backfill and the
 sync recall. Spam and trash are never listed, so they need no term."""
 
+PRIMARY_QUERY = (
+    "-category:promotions -category:social -category:updates -category:forums -in:chats -in:drafts"
+)
+"""Primary, as Gmail lists it, for the recall and `--check-feed`: never
+`category:primary`, which leaves out mail with no category label at all."""
+
 
 def category_of(labels: frozenset[str]) -> Category:
     """`primary` for Primary, or for no category label at all."""
@@ -60,8 +70,13 @@ def category_of(labels: frozenset[str]) -> Category:
     return "primary"
 
 
+OUTBOUND = frozenset({"SENT", "SCHEDULED"})
+"""Labels the owner's own mail carries. A scheduled send may carry SCHEDULED
+without SENT until it goes; it is outbound all the same."""
+
+
 def direction_of(labels: frozenset[str]) -> Direction:
-    return "out" if "SENT" in labels else "in"
+    return "out" if labels & OUTBOUND else "in"
 
 
 def kept(labels: frozenset[str]) -> bool:
@@ -115,8 +130,11 @@ def classify(meta: MessageMeta, owners: frozenset[str]) -> MessageRow:
     `to_self` is mail from the owner to the owner, read from `From` and `To`:
     a forward to yourself would otherwise be fed as if someone else had sent
     it. A copy in `Cc` does not count.
+
+    NUL characters are dropped from every header first: Postgres text cannot
+    hold one, so a row carrying it could never be stored.
     """
-    headers = meta.headers
+    headers = {name: value.replace("\x00", "") for name, value in meta.headers.items()}
     senders = _addresses(headers.get("From", ""))
     to_addrs = _addresses(headers.get("To", ""))
     from_addr = senders[0] if senders else None
@@ -158,7 +176,10 @@ def store(
     The headers' fields and how the row first arrived are written once.
     """
     if not row.kept:
-        return "updated" if _refresh(conn, account, row) else "not_kept"
+        if not _refresh(conn, account, row):
+            return "not_kept"
+        _clock(conn, account, row.message_id)
+        return "updated"
     found = conn.execute(
         """
         INSERT INTO gmail_messages
@@ -199,6 +220,7 @@ def store(
     ).fetchone()
     if found is None:
         return "unchanged"
+    _clock(conn, account, row.message_id)
     return "inserted" if found[0] else "updated"
 
 
@@ -263,6 +285,7 @@ def apply_labels(
         """,
         (sorted(labels), direction_of(labels), category_of(labels), account, message_id),
     )
+    _clock(conn, account, message_id)
     return "changed"
 
 
@@ -270,14 +293,30 @@ def mark_gone(conn: psycopg.Connection, account: str, message_id: str) -> bool:
     """Record that a message left the mailbox: history reported it deleted,
     or a fetch answered 404. Never for not being listed -- archived or
     recategorised mail is not gone. False if not stored, or already gone."""
-    return bool(
-        conn.execute(
-            """
-            UPDATE gmail_messages SET gone_at = now(), updated_at = now()
-             WHERE account = %s AND message_id = %s AND gone_at IS NULL
-            """,
-            (account, message_id),
-        ).rowcount
+    marked = conn.execute(
+        """
+        UPDATE gmail_messages SET gone_at = now(), updated_at = now()
+         WHERE account = %s AND message_id = %s AND gone_at IS NULL
+        """,
+        (account, message_id),
+    ).rowcount
+    if marked:
+        _clock(conn, account, message_id)
+    return bool(marked)
+
+
+def _clock(conn: psycopg.Connection, account: str, message_id: str) -> None:
+    """Keep the row's stall clock (`offered_since`) after its labels or
+    `gone_at` changed: started when it begins to meet the feed's rule, kept
+    while it still does, cleared when it stops. The rule's own SQL decides,
+    so the two cannot drift apart."""
+    conn.execute(
+        f"""
+        UPDATE gmail_messages m
+           SET offered_since = CASE WHEN {feed.ROW} THEN coalesce(m.offered_since, now()) END
+         WHERE m.account = %s AND m.message_id = %s
+        """,
+        (account, message_id),
     )
 
 

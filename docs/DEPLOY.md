@@ -440,9 +440,12 @@ mail from that record, read or not. Spec:
   than before: mail from any of them to any of them is the owner's own
   (`to_self`) and is never fed to the pipeline.
 - Feeding read mail as well as unread means one-time-code and password-reset
-  mail in Primary now reaches the classifier. The ledger records "not a
-  meeting" for it, never the model's reasoning; M18 strips codes before
-  anything stores them.
+  mail in Primary now reaches the classifier. When the classifier finds no
+  meeting, the ledger records "not a meeting", not the model's reasoning.
+  Two reasons are still the model's words: a meeting with no start time
+  records the extractor's reasoning, and a proposal the reviewer rejects
+  records its issues. The purge clears both after a week; M18 strips codes
+  before anything stores them.
 
 ### 10.2 The first runs
 
@@ -457,23 +460,31 @@ The sync runs every two minutes, each run at most a minute.
    last pass. The feed takes mail from `feed_from` less an hour; nothing
    older ever reaches the pipeline.
 3. **The switch-over listing,** once: unread mail outside the four other tabs
-   from the last seven days is stored.
+   from the last seven days, up to the moment of the listing, is stored.
 4. **The backfill** works back 90 days from `feed_from`, one day at a time,
-   in whatever quota is left. A busy mailbox takes hours. Nothing waits for
-   it, and nothing it stores is fed.
+   in whatever quota is left. A busy mailbox takes hours, and nothing waits
+   for it. The feed decides by time: what the backfill stores from the hour
+   before `feed_from` is fed (the old poller's last hour, covered twice
+   rather than not at all), and anything older never is.
 5. If the old poller's history id has expired (about a week), the first run
    is a catch-up instead (10.6).
 
 At every boot, claims a previous process left mid-message are settled: a
 parked one is left to reconciliation, one the feed would offer again is
-released, and the rest are marked FAILED ("stranded by shutdown").
+released, and the rest are marked FAILED ("stranded by shutdown"). A claim
+under ten minutes old waits for a second pass ten minutes after boot, in
+case a poller in another process (a CLI pass) still holds it. A claim that
+cannot be settled is logged and left; boot completes regardless.
 
 ### 10.3 The quota
 
 Gmail allows 6,000 units per user per minute for everything. The sync,
-its queue, its catch-up and its backfill spend at most 2,000; the rest is
-the pipeline's and M17's. A fetch costs 20 units, a listing 5, a history page
-2. The pipeline's fetch retries a 429 or a 5xx for at most 30 seconds in all.
+its queue, its catch-up, its backfill and the daily recall spend at most
+2,000; the rest is the pipeline's and M17's. The recall holds the sync's
+lock while it checks, so the two never run at once. A fetch costs 20 units,
+a listing 5, a history page 2, and every retry costs the same again. One
+Gmail call -- waiting for the quota, retrying a 429 or a 5xx -- takes at
+most about 30 seconds in all.
 
 The pacer counts per process. M15's `measure` runs in its own process, so
 do not run it while a backfill or a catch-up is in progress (`--status`
@@ -484,18 +495,35 @@ says).
 - **`/health`** returns 503 ("no mail sync pass reached the end of history
   in three intervals") when no pass has caught up for six minutes, after a
   two-minute boot grace. A sync stuck behind a backlog counts as down.
+- **Every fetch failing** -- a field mask or a policy Gmail refuses -- still
+  lets each pass reach the end of history. A run that tried three fetches or
+  more and fetched none is recorded not ok ("every fetch failed"), and
+  `/health` returns 503 ("every mail sync fetch has failed for three
+  intervals") until a run fetches a message again.
+- **A stale sync holds the feed.** While no pass has caught up for 30
+  minutes, the feed offers nothing: the stored labels may be out of date. A
+  message the owner trashed or marked as spam meanwhile is also caught by
+  the pipeline's own fetch, and recorded SKIPPED ("no longer in the
+  mailbox").
 - **With the bearer secret** (`Authorization: Bearer $WEB_API_SECRET`),
-  `/health` shows `mail_sync`: the cursor's age, `feed_from`, the
-  backfill's reach, the fetch queue (queued, unreadable), any catch-up, the
-  too-old count, the row count, and the last recall.
+  `/health` shows `mail_sync`: the cursor's age, since when every fetch has
+  failed (`fetches_failing_since`), `feed_from`, the backfill's reach, the
+  fetch queue (queued, unreadable), any catch-up, the too-old count, the row
+  count, the last recall, and the latest recall attempt's failure, if it
+  failed (`last_recall_failure`).
 - **`job_runs`:** `mail_sync` (at most every ten minutes per outcome, and
-  every catch-up), and three rows a day from the recall at 05:15 UTC:
-  `mail_recall_sync`, `mail_recall_feed`, `mail_recall_categories`.
-- **Alerts,** once a day each: "Mail sync missed messages" (Gmail listed mail
-  the sync did not have -- it is stored and fed as it is found -- or a
-  category disagreed), and "The mail feed has stalled" (mail met the feed's
-  rule for over an hour without being processed, outside a pause or a
-  stopped cap, or the age rule skipped mail under a day old).
+  every catch-up), and three rows a day from the recall:
+  `mail_recall_sync`, `mail_recall_feed`, `mail_recall_categories`. The
+  recall job wakes hourly and checks at its first wake after 05:15 UTC; a
+  restart costs an hour at most, and a failed attempt is a `mail_recall` row
+  that is not ok, tried again the next hour.
+- **Alerts,** once a day each, through every configured channel: "Mail sync
+  missed messages" (Gmail listed mail the sync did not have -- it is stored
+  and fed as it is found -- or a category disagreed), and "The mail feed has
+  stalled" (mail met the feed's rule for over an hour without being
+  processed, not counting time paused or stopped by the spending cap; the
+  fetch queue held a message back for over six hours; or the age rule
+  skipped mail under a day old).
 - **Too old:** mail first reached more than seven days after it arrived --
   after a long outage, restored from the trash, held by a pause -- is
   recorded SKIPPED ("too old when reached"), never processed.
@@ -511,6 +539,7 @@ fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --status'"
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --show <message id>'"
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --once'"
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --catch-up'"
+fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --retry-unreadable'"
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --check-feed'"
 ```
 
@@ -519,8 +548,9 @@ fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --check-feed'"
 | `--status` | The cursor, `feed_from`, the backfill, queue and catch-up, counts by direction, category and how rows arrived, the latest too-old records, the last recalls |
 | `--show <id>` | One row's metadata, its ledger status and any queue entry. No content: none is stored |
 | `--once` | One run, as the scheduler does |
-| `--catch-up` | Records a gap from an hour before the last caught-up pass to now, as if the cursor had expired. The scheduled runs work it off |
-| `--check-feed` | The exit criterion's checks; exits 1 if either fails |
+| `--catch-up` | Records a gap from an hour before the last caught-up pass to now, as if the cursor had expired, and queues unreadable mail again. The scheduled runs work it off |
+| `--retry-unreadable` | Queues every unreadable message again with no strikes, within the backfill's 90 days. Run it once whatever failed them is fixed |
+| `--check-feed` | The exit criterion's checks. The second asks Gmail for the switch-over hour and gives each message a verdict -- processed, held (it says why) or left out by the feed's rule; a message never stored, or met by the rule and left waiting, fails it. Exits 1 on any failure |
 
 Locally, against the dev mailbox: `uv run python -m app.mail.sync --once`.
 
@@ -535,9 +565,12 @@ holds back a message until its re-fetch answers, so mail trashed during the
 outage is never fed. Nothing is marked gone for not being listed. Progress
 shows in `--status` and `/health`.
 
-A message that fails to fetch on its own five times is marked unreadable
-and passed over; `/health` counts them. An outage (5xx, 429, the network)
-stops a run without counting against any message.
+A message that fails to fetch or store on its own five times is marked
+unreadable and passed over; `/health` counts them, and `--retry-unreadable`
+queues them again. An outage (5xx, 429, the
+network) stops a run without counting against any message. A fetch that
+fails that way is checked with one cheap call first: if Gmail answers it, the
+message alone is struck, and the run goes on.
 
 ### 10.7 Retention
 

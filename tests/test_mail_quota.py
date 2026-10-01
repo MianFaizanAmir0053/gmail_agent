@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from app.mail import quota
-from app.mail.quota import UNITS, Pacer, ShareExhaustedError
+from app.mail.quota import UNITS, Pacer, PacingTimeoutError, ShareExhaustedError
 
 
 @dataclass
@@ -97,6 +97,22 @@ def test_other_callers_wait_for_the_minute_rather_than_fail() -> None:
 
     assert clock.slept and sum(clock.slept) >= 60.0
     assert pacer.available() == 6000 - 20
+
+
+def test_a_caller_waits_no_longer_than_it_said_it_could() -> None:
+    """The pipeline's fetch has a budget of its own (M20, D3): a wait for the
+    minute that would run past it is refused at once, not slept through."""
+    clock = FakeClock()
+    pacer = _pacer(clock)
+    for _ in range(300):
+        pacer.spend("messages.get")
+
+    with pytest.raises(PacingTimeoutError):
+        pacer.spend("messages.get", wait_for=25.0)
+    assert clock.slept == []
+
+    pacer.spend("messages.get", wait_for=61.0)  # the minute frees up in time
+    assert 59.0 <= sum(clock.slept) <= 61.0
 
 
 def test_the_syncs_share_counts_toward_the_whole_minute() -> None:

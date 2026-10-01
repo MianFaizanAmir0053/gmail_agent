@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS gmail_messages (
     -- Set by `messageDeleted` or a fetch's 404, never for not being listed:
     -- archived or recategorised mail is not gone.
     gone_at               TIMESTAMPTZ,
+    -- When the row last began to meet the feed's rule, as far as the row
+    -- itself goes; NULL while it does not. The feed recall's stall clock
+    -- (D5): a change the rule does not see, such as reading the message,
+    -- leaves it alone.
+    offered_since         TIMESTAMPTZ,
     PRIMARY KEY (account, message_id)
 );
 
@@ -90,8 +95,18 @@ CREATE TABLE IF NOT EXISTS gmail_fetch_queue (
     queued_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     strikes     INT         NOT NULL DEFAULT 0 CHECK (strikes >= 0),
     status      TEXT        NOT NULL DEFAULT 'queued'
-                CHECK (status IN ('queued', 'unreadable'))
+                CHECK (status IN ('queued', 'unreadable')),
+    -- When it last failed on its own. Entries that failed more often, or
+    -- more recently, are tried after the rest: a bad head must not starve
+    -- the queue.
+    failed_at   TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS gmail_fetch_queue_status_idx
     ON gmail_fetch_queue (status, queued_at);
+
+-- Columns added by the review fixes. 011 was never deployed, so they sit in
+-- the tables above; these bring a test database that applied the earlier
+-- 011 up to date when the file is run again.
+ALTER TABLE gmail_fetch_queue ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
+ALTER TABLE gmail_messages ADD COLUMN IF NOT EXISTS offered_since TIMESTAMPTZ;

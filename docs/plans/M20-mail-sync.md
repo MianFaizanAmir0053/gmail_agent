@@ -43,8 +43,11 @@ rounds. The third round's findings were folded in the same day (see Review).
 **A consequence to know.** Feeding read mail as well as unread means
 one-time-code and password-reset mail in Primary now reaches the classifier
 (the paid tier, which does not train on it), where the old unread-only poller
-mostly missed it. M20 keeps the model's reasoning about such mail out of the
-ledger (D4). M18 strips the codes before anything is stored.
+mostly missed it. When the classifier finds no meeting, M20 records a fixed
+phrase in the ledger instead of the model's reasoning (D4). A meeting with no
+start time, and a proposal the reviewer rejects, still record the model's
+words; the purge clears them after a week. M18 strips the codes before
+anything is stored.
 
 ## Scope
 
@@ -80,7 +83,7 @@ per source (Outlook gets its own in M23):
 | `thread_id` | Gmail's thread id |
 | `internal_at` | When Gmail received or sent it (`internalDate`) |
 | `label_ids` | As Gmail reports them, kept current from history |
-| `direction` | `out` when labelled `SENT`; otherwise `in` |
+| `direction` | `out` when labelled `SENT` or `SCHEDULED` (a scheduled send may carry no `SENT` until it goes); otherwise `in` |
 | `to_self` | Sent by the owner to the owner (any of `OWNER_EMAIL` and `OWNER_ALIASES` in `To`) |
 | `category` | `primary`, `updates` or `forums`, from the labels; `primary` when no category label is present |
 | `from_addr`, `to_addrs`, `cc_addrs` | Lower-cased addresses, as written |
@@ -88,6 +91,7 @@ per source (Outlook gets its own in M23):
 | `arrived_via` | `history`, `switch_over`, `catch_up`, `recall`, `queue` or `backfill`: how the row first arrived, for diagnosis only |
 | `first_seen_at`, `updated_at` | Timing |
 | `gone_at` | When history reported the message deleted, or a fetch answered `404` |
+| `offered_since` | When the row last began to meet the feed's rule, as far as the row itself goes (D4), or null while it does not: the feed recall's stall clock (D5) |
 
 **What is stored.** Messages labelled `SENT`, and every other message except
 Promotions and Social: Primary, Updates (where deadlines and money often
@@ -123,7 +127,7 @@ Gmail too for threads that cross the backfill's start or the purge.
 
 `gmail_fetch_queue`: messages to fetch outside the incremental pass (D3):
 `message_id` (primary key), `reason`, `queued_at`, `strikes`, `status`
-(`queued` or `unreadable`).
+(`queued` or `unreadable`), and `failed_at`, when it last failed on its own.
 
 Every write to the cursor is conditional on the value it replaces. Every sync
 run holds a Postgres advisory lock, so a CLI run and the scheduled job never
@@ -149,7 +153,11 @@ catch-up from `sync_state.updated_at`.
 is not in the other four categories (`is:unread -category:promotions
 -category:social -category:updates -category:forums -in:chats`, as an epoch
 window) is fetched and stored. That is what the old poller would still have
-reached, had its page of ten not overflowed. `switch_over_at` records it.
+reached, had its page of ten not overflowed. `switch_over_at` records it. The
+window runs to the moment of the listing, not to the run's start: on a fresh
+database, mail accepted between the run's start (`feed_from`) and the profile
+read that set the cursor is in no history page after the cursor, and newer
+than anything the backfill stores.
 
 **Incremental passes.** `history.list` from the cursor, with types
 `messageAdded`, `messageDeleted`, `labelAdded` and `labelRemoved`, page by
@@ -164,13 +172,18 @@ A crash or a deploy costs at most one page.
 
 **Errors.**
 - Only a failure of `history.list` itself stops a pass. The cursor stays at the last record handled, and the next tick retries.
-- A fetch that fails for one message, other than with a `404`, sends that message to the fetch queue and the pass moves on. So one bad message never holds up the cursor.
-- An outage (5xx, 429 or the network) stops the pass without blaming any message.
+- A fetch that fails for one message, other than with a `404`, sends that message to the fetch queue and the pass moves on. So one bad message never holds up the cursor. A row the database refuses counts the same: each row is stored in a savepoint of its own, so it never rolls back the rest of its page. NUL characters, which Postgres text cannot hold, are dropped from the headers first.
+- An outage (5xx, 429 or the network) stops the pass without blaming any message. A fetch that fails that way is checked first with one cheap call, the profile (1 unit): if Gmail answers it, the failure is the message's own, and it is queued and struck like any other. Otherwise one message that answered 500 every time would stop every pass on it, and with it the cursor, the queue, the backfill and any catch-up. Only if the profile fails too is it an outage.
 
 **The fetch queue** is worked in the background, after the incremental pass,
 within the backfill's share of the quota. A fetch that shows a message older
-than 90 days drops it. A per-message failure counts a strike; five strikes
-mark it `unreadable`, counted in `/health`. Outages count no strikes.
+than the backfill reaches (90 days before `feed_from`, not before today)
+drops it. A per-message failure counts a strike; five strikes
+mark it `unreadable`, counted in `/health`. `--retry-unreadable`, and every
+`--catch-up`, queues unreadable messages again with no strikes, within the
+backfill's reach. Outages count no strikes. Entries
+that never failed come first; those that did follow, fewest strikes and
+longest ago first, so a head that fails every time cannot starve the rest.
 
 **Catching up.** `history.list` answers `404` when Gmail no longer keeps the
 cursor, typically after about a week. Only that `404` starts a catch-up. In
@@ -203,7 +216,9 @@ locally in its own process; the runbook says not to run it during a backfill.
 
 **The pipeline's fetch** retries 429 and 5xx for at most 30 seconds in all, so
 a message's run stays well inside `kill_timeout` (120 s). A rate limit
-therefore rarely ends a message in FAILED.
+therefore rarely ends a message in FAILED. The 30 seconds bound the whole
+call: the pacer's wait, every attempt -- each attempt's sockets get only the
+time left -- and jittered pauses. Every retry is charged to the pacer.
 
 ### D4. The meeting pipeline's feed
 
@@ -216,7 +231,8 @@ these:
   - `auto_submitted` is absent or `no`;
   - for a message with no category label, `has_list_unsubscribe` is false;
 - `internal_at` at or after `feed_from` less an hour;
-- no ledger row yet.
+- no ledger row yet;
+- a sync pass reached the end of history in the last 30 minutes (`caught_up_at`). Labels are only as current as the sync: hours into a failing sync, a message the owner trashed meanwhile would still look like Inbox. While the sync is behind, the feed offers nothing, and records nothing as too old.
 
 They are taken oldest first, up to `POLL_BATCH_SIZE`. Everything after that is
 as it is now: `claim`, `start`, park. The feed decides by time, not by how a
@@ -243,7 +259,9 @@ reasons, so it is kept. That covers:
 **A message gone before its turn.** The pipeline's fetch raises `MessageGone`
 for a `404`, which its retry policy does not retry. Poll records the message
 as `SKIPPED` ("no longer in the mailbox"), a fixed reason too. The graph's
-edges do not change.
+edges do not change. The full message carries its labels at no extra cost,
+so the same happens to a message now labelled `TRASH` or `SPAM`: the owner
+binned it after the sync last saw it.
 
 **The model's reasoning stays out of the ledger.** When classification finds
 no meeting, the ledger now records the fixed phrase "not a meeting" instead of
@@ -252,27 +270,40 @@ now that read mail is fed too.
 
 **Until the first sync run,** poll keeps calling `list_unread`, as now.
 
-**Claims stranded by a restart.** At boot, no run is in flight. For every
-`claimed` row:
+**Claims stranded by a restart.** At boot, no run is in flight in this
+process. For every `claimed` row made before boot:
 - a thread that parked is left to reconciliation, which records it (M16 D3);
 - a thread that did not park, and is younger than the 7 days, is released: its ledger row and checkpoint are deleted, so the feed offers it again;
 - an older one is marked FAILED, as now.
 
 Before M20, a claim younger than an hour was left `claimed` for ever.
 
+A poller in another process -- a CLI pass over `fly ssh console` -- may still
+hold a recent claim, and the poller has no lock to ask. So boot settles only
+claims over ten minutes old, and a second pass ten minutes after boot settles
+the rest made before boot; neither touches a claim this process made. A
+message's run stays well inside the kill timeout (120 s), so ten minutes
+leave room to spare. Each claim is settled on its own: one that cannot be --
+a checkpoint that will not read -- is logged and left, and boot completes.
+
 The sync and the poll stay separate jobs: a slow model call never delays
 seeing mail, and a failing sync shows as its own failing job.
 
 ### D5. Recall, of the sync and of the feed
 
-A daily job looks at the window from 26 hours ago to 2 hours ago, which keeps
-it clear of the sync's own timing:
-- **Sync recall.** The ids Gmail lists for the window, using D1's set, are checked against `gmail_messages`. Missing ones are fetched and stored, so a miss is repaired as well as reported. Repaired inbound mail is fed if the rule takes it.
-- **Feed recall.** A stored row that has met the feed's rule for over an hour, with no ledger row, means the feed stalled. Hours when M17 was paused, or the spending cap had stopped work, are left out; the audit log records both. A `SKIPPED` "too old" record for mail under a day old means the age rule is wrong.
+A daily check looks at the window from 26 hours ago to 2 hours ago, which keeps
+it clear of the sync's own timing. Its job wakes hourly and checks at its first
+wake after 05:15 UTC once that day's check has not completed (`job_runs` says):
+a restart, or a failed attempt, costs an hour at most. A failed attempt is
+recorded, and `/health` shows it to the owner until one completes. The checks:
+- **Sync recall.** The ids Gmail lists for the window, using D1's set, are checked against `gmail_messages`. Missing ones are fetched and stored, so a miss is repaired as well as reported. Repaired inbound mail is fed if the rule takes it. The recall holds the sync's advisory lock, waiting up to three minutes for a run to finish, and its calls are charged to the sync's share. Mail the sync already has in hand is no miss: what the fetch queue holds, mail older than the backfill has reached (the listing starts no earlier than `backfill_until`), and a message that turns out stored when the recall stores it.
+- **Feed recall.** A stored row that has met the feed's rule for over an hour, with no ledger row, means the feed stalled. The hour counts from when the row began to meet the rule (`offered_since`): a change the rule does not see, such as reading the message, does not restart it. Time when M17 was paused, or the spending cap had stopped work, is taken off a row's wait -- the audit log records both, and a pause and a cap at once count once -- so a short pause cannot excuse a long stall. A cap ends at the next `budget_ok` or `budget_warning`, or at the end of its month. A row the fetch queue has held back from the feed for over six hours has stalled too. A `SKIPPED` "too old" record for mail under a day old means the age rule is wrong.
 - **Category agreement, both ways.** Ids Gmail lists as not in the four other categories must be `primary` here. Ids it lists in Updates or Forums must not be.
 
 Each result goes to `job_runs`. Any shortfall sends one alert a day ("Mail sync
-missed messages", or "The mail feed has stalled").
+missed messages", or "The mail feed has stalled") through every configured
+channel, as M16's token alerts are sent: each channel's own `alert`, with its
+own words, and `alerts_sent` keeping it to one a day per channel.
 
 ### D6. Liveness
 
@@ -283,13 +314,19 @@ clock starting one interval after boot, as poll's does. A run that only made
 headway through a backlog does not count. Without this, a dead or lagging sync
 with an empty feed would leave `/health` green while the agent saw nothing.
 
+A pass can also reach the end of history while every fetch fails on its own:
+a field mask or a policy the API refuses. A run that tried at least three
+fetches and had none answer is not ok in `job_runs` ("every fetch failed"),
+and `/health` returns 503 once runs have failed every fetch for three
+intervals; one run that fetches a message clears it.
+
 With the bearer secret, `/health` also shows these, kept in memory and
 refreshed by the jobs that compute them:
-- the cursor's age;
+- the cursor's age, and since when every fetch has failed, if it has;
 - the backfill's, the queue's and any catch-up's progress;
 - unreadable and too-old counts;
 - the table's row count;
-- the last recall.
+- the last recall, and whether the latest attempt at one failed.
 
 ### D7. Retention
 
@@ -315,8 +352,9 @@ command takes the same advisory lock as the scheduled job.
 | `--once` | Runs one pass |
 | `--status` | The cursor, `feed_from`, progress of the backfill, queue and any catch-up, counts by direction, category and `arrived_via`, the latest too-old records, and the last recalls |
 | `--show <message id>` | One row's metadata, without content |
-| `--catch-up` | Forces a catch-up, as if the cursor had expired |
-| `--check-feed` | The switch-over and backfill checks in the exit criterion |
+| `--catch-up` | Forces a catch-up, as if the cursor had expired, and does what `--retry-unreadable` does |
+| `--retry-unreadable` | Queues every unreadable message again, its strikes reset, within the backfill's reach |
+| `--check-feed` | The switch-over and backfill checks in the exit criterion. The second lists the switch-over hour from Gmail, so a message the sync never stored fails it, and gives each message its verdict: processed or recorded, held (and why), or left out by the feed's rule |
 
 ---
 
@@ -375,8 +413,8 @@ uv run --env-file .env.test pytest -m integration -o addopts="" -q -p no:cachepr
   - at boot, a stranded claim is recorded, released or failed as D4 says.
 - **Recall:**
   - a missing id is stored and fed, and gives one alert;
-  - a stalled feed raises its alert, but not during a pause or a stopped cap;
-  - a too-old record for day-old mail raises it;
+  - a stalled feed raises its alert, but not for time paused or stopped by the cap, which is taken off the wait;
+  - a too-old record for day-old mail raises it, and so does a row the queue has held back for over six hours;
   - category disagreement in either direction is caught.
 - **Liveness:** a sync that has not reached the end of history for three intervals gives 503, a backlog included; a fresh boot does not.
 - **Content:** a test seeds a subject, a snippet and a body, and checks none is stored. The request carries the field mask and exactly the six headers.
@@ -421,3 +459,38 @@ Three adversarial rounds, each by a reviewer with fresh context, on 2026-10-01.
 - **The first** found the switch-over gap, the routine fetch `404`s from drafts, the quota cost of `messages.get`, and the feed rule's loss of team mail.
 - **The second** moved the first cursor to the old poller's stored id, recorded the catch-up's gap before moving the cursor, and took liveness out of the database.
 - **The third** made the feed decide by time rather than by how a row arrived, stopped marking rows gone for not being listed, put every window in epoch seconds, moved label-change fetches to a queue, widened storage to Updates and Forums for M21, bounded the pipeline's retries, released stranded claims, and kept the model's reasoning out of the ledger.
+
+## Running notes
+
+### Fixes after the code reviews (2026-10-02)
+
+Two fresh-context reviews of the built module, one of the sync engine and one of the feed and its operations. Each fix has a test that failed without it; the spec and the runbook (`docs/DEPLOY.md` §10) say what changed.
+
+**The sync engine**
+- **One message that answers 5xx every time no longer wedges the sync.** An outage-like failure is checked with one profile read (1 unit). If Gmail answers, the message is queued and struck like any other; only if the probe fails too is it an outage. The queue tries entries that never failed first, then the rest by fewest strikes and longest since they failed (`gmail_fetch_queue.failed_at`).
+- **A row the database refuses no longer replays its page for ever.** NULs are dropped from headers, and each row is stored in a savepoint of its own; a refused row is queued and struck.
+- **A 403 rate limit is read from the whole error body**: `errors`, `details` and `status`. The client library keeps only `details` when both are sent.
+- **The feed offers nothing while the sync is behind:** no pass reached the end of history in the last 30 minutes. `gmail_cursors.caught_up_at` already existed and was set at the end of each such pass, so no column was added for it. The pipeline's own fetch reads the full message, whose labels come free, and ends one now in Trash or Spam as gone. Neither `act` nor `await_approval` changed.
+- **One Gmail call is bounded in all:** the pacer's wait (`wait_for`), every attempt (each charged to the pacer, its sockets capped by the time left) and jittered pauses. At most 30 seconds, 35 at the very worst.
+- **A fresh first run's switch-over listing runs to the moment of the listing,** so mail accepted between the run's start and the profile read is not lost.
+- **`--check-feed` asks Gmail** for the switch-over hour, and gives each message a verdict: processed, held (and why), or left out by the rule. A message never stored fails it.
+- **The queue's horizon is the backfill's floor,** 90 days before `feed_from`, not before today.
+- **SCHEDULED gives `out`,** as SENT does.
+- **Accepted:** a draft added and deleted on different pages of one pass is still fetched once, and answers 404 (S8). The fetch queue has no account column: there is one mailbox, and D2's schema has none (S10).
+
+**The feed and operations**
+- **A sync whose every fetch fails is not ok.** A run that tried three or more fetches and fetched none says so in `job_runs`, and `/health` returns 503 after three intervals of it. `--retry-unreadable`, and every `--catch-up`, queue unreadable mail again with no strikes, within the backfill's reach. An entry's age is read from `queued_at`: mail queued before the floor is older than it.
+- **The stall clock is `gmail_messages.offered_since`:** set when a row begins to meet the rule as far as the row goes, cleared when it stops. It is kept from the feed's own SQL (`feed.ROW`), so reading a message no longer restarts it.
+- **Held time is taken off a row's wait,** a pause and a cap at once counted once. A cap ends at `budget_ok` too. A row the queue holds back for over six hours counts as stalled.
+- **The recall job wakes hourly** and checks once a day after 05:15 UTC, once `job_runs` shows the day's check has not completed. A failed attempt is recorded, and `/health` shows it until one completes.
+- **The recall holds the sync's lock,** waiting up to three minutes, and spends the sync's share after waiting up to a minute for room in it. It leaves out what the queue holds, mail older than `backfill_until`, and a store that finds the row there already.
+- **Mail alerts are channel alert codes** (`mail_sync_missed`, `mail_feed_stalled`), sent through `Channels.alert` and still once a day per channel; `deliver_through` is gone. Each has a web push tag of its own (`mail-sync`, `mail-feed`) that the service worker knows, so neither replaces an unread sign-in alert, or the other.
+- **Boot always completes.** Each stranded claim is settled in a savepoint of its own; one that cannot be is logged and left. The poller has no lock to ask, so boot settles only claims over ten minutes old, and a second pass ten minutes after boot settles the rest made before boot. A message's run stays well inside the 120-second kill timeout, so ten minutes leave room. A lock taken by every poll would have changed how two pollers share work, so none was added.
+- **The runbook was wrong twice:** what the backfill stores from the margin hour is fed, and two ledger reasons remain the model's words until the purge clears them.
+
+**Schema.** `011` gains `gmail_fetch_queue.failed_at` and `gmail_messages.offered_since`. It was never deployed, so the columns sit in its `CREATE TABLE`s. `ALTER ... ADD COLUMN IF NOT EXISTS` lines bring a test database that applied the earlier `011` up to date when the file is run again; the Neon test database was brought up to date that way.
+
+**Left as they are**
+- A socket timeout bounds each wait on the socket, not a whole attempt, and httplib2 reconnects once on a dropped connection. A trickling answer can outlast the cap.
+- A 429 that outlasts the client's retries, while the profile read still answers, strikes the message. Five strikes take a sustained rate limit, and `--retry-unreadable` undoes them.
+- Three messages that each fail on their own keep `/health` at 503 until a fetch succeeds, which can be hours on a quiet night. A false alarm is preferred to a silent miss.

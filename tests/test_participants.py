@@ -196,7 +196,9 @@ def _gmail(threads: _Threads) -> Any:
     from app.google.gmail import GmailClient
 
     class Free:
-        def spend(self, method: str, *, share: str | None = None) -> None:
+        def spend(
+            self, method: str, *, share: str | None = None, wait_for: float | None = None
+        ) -> None:
             pass
 
     return GmailClient(_Service(threads), pacer=Free(), retry_for=0)

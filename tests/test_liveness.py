@@ -97,6 +97,42 @@ def test_a_pass_that_reached_the_end_resets_the_clock() -> None:
     assert live.overdue(BOOT + timedelta(hours=3, minutes=6, seconds=1), TWO)
 
 
+def test_runs_whose_every_fetch_fails_degrade_after_three_intervals() -> None:
+    """Every pass can reach the end of history while no message is read."""
+    live = MailSyncLiveness(booted_at=BOOT)
+    live.fetches_tried(tried=3, failed=3, at=BOOT)
+    live.fetches_tried(tried=0, failed=0, at=BOOT + TWO)  # a quiet run changes nothing
+    live.fetches_tried(tried=2, failed=2, at=BOOT + 2 * TWO)  # too few to judge
+
+    assert not live.fetches_failing(BOOT + timedelta(minutes=6), TWO)
+    assert live.fetches_failing(BOOT + timedelta(minutes=6, seconds=1), TWO)
+    assert live.report(BOOT)["fetches_failing_since"] == BOOT.isoformat()
+
+
+def test_one_fetch_that_answers_clears_the_failing_state() -> None:
+    live = MailSyncLiveness(booted_at=BOOT)
+    live.fetches_tried(tried=4, failed=4, at=BOOT)
+    live.fetches_tried(tried=3, failed=2, at=BOOT + TWO)
+
+    assert not live.fetches_failing(BOOT + timedelta(hours=1), TWO)
+    assert live.report(BOOT)["fetches_failing_since"] is None
+
+
+def test_a_failed_recall_shows_until_one_completes() -> None:
+    live = MailSyncLiveness(booted_at=BOOT)
+    live.recall_failed(at=BOOT, error="SyncBusyError")
+
+    assert live.report(BOOT)["last_recall_failure"] == {
+        "at": BOOT.isoformat(),
+        "error": "SyncBusyError",
+    }
+
+    live.recall_finished({"missed": 0})
+
+    assert live.report(BOOT)["last_recall_failure"] is None
+    assert live.report(BOOT)["last_recall"] == {"missed": 0}
+
+
 def test_the_owners_view_has_the_cursors_age_the_records_and_the_last_recall() -> None:
     live = MailSyncLiveness(booted_at=BOOT)
     live.reached_end(BOOT)

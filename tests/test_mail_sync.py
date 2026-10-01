@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -18,8 +18,8 @@ import pytest
 from fake_gmail import SECRET, FakeMailbox, http_error
 
 from app.google.gmail import GmailClient
-from app.mail import quota, sync
-from app.mail.messages import store
+from app.mail import feed, quota, sync
+from app.mail.messages import MessageRow, classify, store
 from app.mail.quota import Pacer
 from app.mail.sync import Cursor, SyncReport, load_cursor, sync_lock, sync_once
 
@@ -100,7 +100,13 @@ def _old_poller(conn: psycopg.Connection, history_id: str | None, at: datetime) 
     )
 
 
-def _started(conn: psycopg.Connection, box: FakeMailbox, *, backfilled: bool = True) -> None:
+def _started(
+    conn: psycopg.Connection,
+    box: FakeMailbox,
+    *,
+    backfilled: bool = True,
+    feed_from: datetime = NOW,
+) -> None:
     """A mailbox already synced: the cursor at its current id, caught up and
     switched over at NOW, and -- unless asked otherwise -- nothing left to
     backfill."""
@@ -110,7 +116,14 @@ def _started(conn: psycopg.Connection, box: FakeMailbox, *, backfilled: bool = T
                                    caught_up_at, backfill_until)
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        (ME, str(box.history_id), NOW, NOW, NOW, NOW - timedelta(days=91) if backfilled else NOW),
+        (
+            ME,
+            str(box.history_id),
+            feed_from,
+            NOW,
+            NOW,
+            feed_from - timedelta(days=91) if backfilled else feed_from,
+        ),
     )
 
 
@@ -145,6 +158,38 @@ def test_a_fresh_database_starts_from_the_mailbox_as_it_is_now(mail: psycopg.Con
 
     cursor = _cursor(mail)
     assert (cursor.history_id, cursor.feed_from) == ("4242", NOW)
+
+
+def test_mail_accepted_while_a_fresh_first_run_reads_the_profile_is_not_lost(
+    mail: psycopg.Connection,
+) -> None:
+    """`feed_from` is the run's start, and the cursor is the profile's id,
+    read a moment later. Mail accepted in between is in no history page after
+    the cursor and newer than anything the backfill stores, so the
+    switch-over listing must reach past the profile read."""
+    box = FakeMailbox()
+    _old_poller(mail, None, NOW - timedelta(days=30))
+    read_profile = box._profile
+
+    def profile_after_a_delivery(**kwargs: Any) -> Any:
+        if "in-between" not in box.messages:
+            box.deliver("in-between", labels=PRIMARY, at=NOW + timedelta(seconds=20))
+        return read_profile(**kwargs)
+
+    box._profile = profile_after_a_delivery  # type: ignore[method-assign]
+    readings = iter([NOW])  # the run's start; a minute later from then on
+
+    sync_once(
+        mail,
+        _client(box),
+        owners=(ME,),
+        now=lambda: next(readings, NOW + timedelta(minutes=1)),
+        clock=Clock(),
+    )
+
+    assert _cursor(mail).feed_from == NOW
+    assert "in-between" in _rows(mail)
+    assert feed.candidates(mail, 10, now=NOW + timedelta(minutes=1)) == ["in-between"]
 
 
 def test_an_expired_old_cursor_makes_the_first_run_a_catch_up(mail: psycopg.Connection) -> None:
@@ -324,13 +369,64 @@ def test_a_message_that_fails_on_its_own_is_queued_and_the_pass_goes_on(
     assert set(_rows(mail)) == {"good", "bad"} and _queue(mail) == {}
 
 
+def test_a_header_with_a_nul_is_stored_without_it(mail: psycopg.Connection) -> None:
+    """Postgres text cannot hold NUL. Kept, it failed the row's insert, which
+    rolled back its whole page, and every run replayed that page for ever."""
+    box = FakeMailbox()
+    _started(mail, box)
+    box.deliver("nul", labels=PRIMARY, at=NOW, to="me@exam\x00ple.com", Auto_Submitted="n\x00o")
+    box.deliver("next", labels=PRIMARY, at=NOW)
+
+    report = _sync(mail, box)
+
+    rows = _rows(mail)
+    assert rows["nul"]["to_addrs"] == ["me@example.com"]
+    assert rows["nul"]["auto_submitted"] == "no"
+    assert "next" in rows and report.reached_end
+
+
+def _refusing(monkeypatch: pytest.MonkeyPatch, *refused: str) -> None:
+    """The database refuses these messages' rows: a category its CHECK rejects."""
+
+    def classify_badly(meta: Any, owners: frozenset[str]) -> MessageRow:
+        row = classify(meta, owners)
+        return replace(row, category="nonsense") if meta.id in refused else row  # type: ignore[arg-type]
+
+    monkeypatch.setattr("app.mail.sync.classify", classify_badly)
+
+
+def test_a_row_the_database_refuses_is_queued_and_its_page_goes_on(
+    mail: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each row is stored in a savepoint of its own: a refused one is struck
+    like a failed fetch, and the cursor moves past it."""
+    box = FakeMailbox()
+    _started(mail, box)
+    box.deliver("refused", labels=PRIMARY, at=NOW)
+    box.deliver("next", labels=PRIMARY, at=NOW)
+    _refusing(monkeypatch, "refused")
+
+    report = _sync(mail, box)
+
+    assert set(_rows(mail)) == {"next"}
+    assert _queue(mail)["refused"] == ("fetch_failed", 1, "queued")
+    assert _cursor(mail).history_id == str(box.history_id)
+    assert report.reached_end and report.ok
+
+    for _ in range(4):  # the queue tries it again at each run, and strikes it
+        _sync(mail, box)
+    assert _queue(mail)["refused"] == ("fetch_failed", 5, "unreadable")
+
+
 def test_an_outage_stops_the_pass_and_blames_no_message(mail: psycopg.Connection) -> None:
+    """Gmail down: the fetch fails, and so does the probe after it."""
     box = FakeMailbox()
     _started(mail, box)
     box.deliver("first", labels=PRIMARY, at=NOW)
     first_record = box.history_id
     box.deliver("second", labels=PRIMARY, at=NOW)
     box.fail("messages.get:second", http_error(503))
+    box.fail("getProfile", None, http_error(503))  # the run's own read answers
 
     report = _sync(mail, box)
 
@@ -341,6 +437,81 @@ def test_an_outage_stops_the_pass_and_blames_no_message(mail: psycopg.Connection
 
     _sync(mail, box)  # the next tick picks up where it stopped
     assert set(_rows(mail)) == {"first", "second"}
+
+
+def test_one_message_that_answers_500_every_time_does_not_wedge_the_sync(
+    mail: psycopg.Connection,
+) -> None:
+    """Gmail answers the probe, so the failure is the message's own: it is
+    queued and struck, and passes, queue and feed carry on without it."""
+    box = FakeMailbox()
+    _started(mail, box)
+    box.deliver("bad", labels=PRIMARY, at=NOW)
+    box.deliver("good", labels=PRIMARY, at=NOW)
+    box.fail("messages.get:bad", *[http_error(500)] * 20)
+
+    report = _sync(mail, box)
+
+    assert _cursor(mail).history_id == str(box.history_id)
+    assert set(_rows(mail)) == {"good"}
+    assert _queue(mail)["bad"] == ("fetch_failed", 1, "queued")
+    assert report.reached_end and report.stopped is None
+    after_the_failure = [name for name, _ in box.calls][box.fetched().index("bad") :]
+    assert "getProfile" in after_the_failure  # the one cheap probe
+
+    for _ in range(4):
+        _sync(mail, box)
+    assert _queue(mail)["bad"] == ("fetch_failed", 5, "unreadable")
+
+    box.deliver("later", labels=PRIMARY, at=NOW)
+    report = _sync(mail, box)
+
+    assert report.reached_end and "later" in _rows(mail)
+    assert feed.candidates(mail, 10, now=NOW) == ["good", "later"]
+
+
+def test_a_queue_entry_that_failed_before_waits_behind_the_rest(mail: psycopg.Connection) -> None:
+    """A bad head must not starve the queue: entries that failed more often,
+    or more recently, are tried after the others."""
+    box = FakeMailbox()
+    _started(mail, box)
+    for message_id in ("struck-twice", "struck-lately", "struck-long-ago", "clean"):
+        box.put(message_id, labels=PRIMARY, at=NOW - timedelta(hours=1))
+    mail.execute(
+        """
+        INSERT INTO gmail_fetch_queue (message_id, reason, queued_at, strikes, failed_at) VALUES
+            ('struck-twice', 'refetch', now() - interval '3h', 2, now() - interval '2h'),
+            ('struck-lately', 'refetch', now() - interval '3h', 1, now()),
+            ('struck-long-ago', 'refetch', now() - interval '3h', 1, now() - interval '1h'),
+            ('clean', 'fetch_failed', now(), 0, NULL)
+        """
+    )
+    # The run's profile read and history page, then three fetches.
+    pacer = Pacer(shares={quota.SYNC: 1 + 2 + 3 * 20}, clock=lambda: 0.0)
+
+    report = _sync(mail, box, pacer=pacer)
+
+    assert report.stopped == "quota"
+    # The fourth was asked for, and refused by the pacer.
+    assert box.fetched() == ["clean", "struck-long-ago", "struck-lately", "struck-twice"]
+    assert set(_rows(mail)) == {"clean", "struck-long-ago", "struck-lately"}
+
+
+def test_a_backfilled_message_that_answers_500_every_time_is_queued_and_the_backfill_goes_on(
+    mail: psycopg.Connection,
+) -> None:
+    box = FakeMailbox()
+    _started(mail, box, backfilled=False)
+    box.put("bad", labels={"INBOX", "CATEGORY_PERSONAL"}, at=NOW - timedelta(days=2))
+    box.put("older", labels={"INBOX", "CATEGORY_PERSONAL"}, at=NOW - timedelta(days=3))
+    box.fail("messages.get:bad", *[http_error(503)] * 20)
+
+    report = _sync(mail, box)
+
+    assert set(_rows(mail)) == {"older"}
+    assert _queue(mail)["bad"] == ("fetch_failed", 1, "queued")
+    assert _cursor(mail).backfill_until == NOW - timedelta(days=90)
+    assert report.stopped is None
 
 
 def test_a_failing_history_list_stops_the_pass_where_it_is(mail: psycopg.Connection) -> None:
@@ -354,6 +525,42 @@ def test_a_failing_history_list_stops_the_pass_where_it_is(mail: psycopg.Connect
 
     assert _cursor(mail).history_id == before.history_id
     assert report.error == "HttpError" and not report.reached_end
+
+
+def test_a_run_whose_every_fetch_fails_is_not_ok(mail: psycopg.Connection) -> None:
+    """A field mask or a policy the API refuses fails every message on its
+    own: each pass still reaches the end, and was reported ok while the
+    agent read nothing."""
+    box = FakeMailbox()
+    _started(mail, box)
+    for message_id in ("a", "b", "c"):
+        box.deliver(message_id, labels=PRIMARY, at=NOW)
+        box.fail(f"messages.get:{message_id}", http_error(403, "insufficientPermissions"))
+
+    report = _sync(mail, box)
+
+    assert report.reached_end and report.error is None
+    assert (report.fetches, report.failures) == (3, 3)
+    assert not report.ok and report.problem == "every fetch failed"
+
+
+@pytest.mark.parametrize(
+    ("delivered", "failing"),
+    [(["a", "b"], ["a", "b"]), (["a", "b", "c"], ["a", "b"])],
+)
+def test_fewer_than_three_fetches_or_one_that_answers_is_still_ok(
+    mail: psycopg.Connection, delivered: list[str], failing: list[str]
+) -> None:
+    box = FakeMailbox()
+    _started(mail, box)
+    for message_id in delivered:
+        box.deliver(message_id, labels=PRIMARY, at=NOW)
+    for message_id in failing:
+        box.fail(f"messages.get:{message_id}", http_error(400))
+
+    report = _sync(mail, box)
+
+    assert report.ok and report.problem is None
 
 
 def test_five_strikes_make_a_queued_message_unreadable(mail: psycopg.Connection) -> None:
@@ -376,6 +583,8 @@ def test_an_outage_in_the_queue_charges_no_strike(mail: psycopg.Connection) -> N
     _started(mail, box)
     box.deliver("bad", labels=PRIMARY, at=NOW)
     box.fail("messages.get:bad", http_error(400), http_error(503))
+    # Both runs' own profile reads answer; the probe after the 503 does not.
+    box.fail("getProfile", None, None, http_error(503))
 
     _sync(mail, box)  # the pass's strike
     report = _sync(mail, box)  # an outage while the queue fetches it
@@ -701,6 +910,41 @@ def test_the_backfill_only_spends_what_the_incremental_pass_left(
     assert "history.list" not in names[first_listing:]
 
 
+def test_a_backfilled_row_the_database_refuses_is_queued_and_the_backfill_goes_on(
+    mail: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    box = FakeMailbox()
+    _started(mail, box, backfilled=False)
+    box.put("refused", labels=READ, at=NOW - timedelta(days=2))
+    box.put("older", labels=READ, at=NOW - timedelta(days=3))
+    _refusing(monkeypatch, "refused")
+
+    _sync(mail, box)
+
+    assert set(_rows(mail)) == {"older"}
+    assert _queue(mail)["refused"] == ("fetch_failed", 1, "queued")
+    assert _cursor(mail).backfill_until == NOW - timedelta(days=90)
+
+
+def test_the_queue_keeps_what_the_backfill_reaches(mail: psycopg.Connection) -> None:
+    """The backfill reaches 90 days back from `feed_from`, so the queue's
+    horizon is the same, not 90 days back from today: weeks after the
+    switch-over, a message the backfill stored must not be dropped when a
+    label change brings its neighbour in."""
+    box = FakeMailbox()
+    _started(mail, box, feed_from=NOW - timedelta(days=30))
+    promo = {"INBOX", "CATEGORY_PROMOTIONS"}
+    box.put("within", labels=promo, at=NOW - timedelta(days=100))
+    box.put("beyond", labels=promo, at=NOW - timedelta(days=125))
+    for message_id in ("within", "beyond"):
+        box.relabel(message_id, remove={"CATEGORY_PROMOTIONS"}, add={"CATEGORY_PERSONAL"})
+
+    _sync(mail, box)
+
+    assert "within" in _rows(mail) and "beyond" not in _rows(mail)
+    assert _queue(mail) == {}
+
+
 def test_a_queued_message_older_than_ninety_days_is_dropped(mail: psycopg.Connection) -> None:
     """A label change can touch years-old mail; only the last 90 days matter."""
     box = FakeMailbox()
@@ -750,6 +994,20 @@ def test_a_scheduled_run_skips_its_turn_while_another_holds_the_lock(
                 assert not second
         with sync_lock(mail, wait=False) as after:
             assert after
+
+
+def test_a_wait_for_the_lock_can_be_bounded(migrated_database: str) -> None:
+    """The recall waits for a sync run to finish, but not for ever."""
+    with (
+        psycopg.connect(migrated_database, autocommit=True) as other,
+        psycopg.connect(migrated_database, autocommit=True) as conn,
+    ):
+        with sync_lock(other, wait=False) as held:
+            assert held
+            with sync_lock(conn, wait=True, timeout=0.3) as waited:
+                assert not waited
+        with sync_lock(conn, wait=True, timeout=0.3) as waited:
+            assert waited
 
 
 def test_a_cli_run_waits_for_the_scheduled_run(migrated_database: str) -> None:
