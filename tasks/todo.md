@@ -839,8 +839,8 @@ A settle is one transaction of conditional writes.
 - **[owner]** Sets the `LOGIN PASSWORD` in Supabase's SQL editor at deploy (16.23).
 
 **Acceptance criteria:**
-- [ ] 008 applies and re-runs on Neon.
-- [ ] As `web_reader`, `SELECT` works and `INSERT` fails.
+- [x] 008 applies and re-runs on Neon. The role is created `NOLOGIN` until the owner sets its password.
+- [x] As `web_reader`, `SELECT` works on exactly what the app shows: `runs`, `spans` and `eval_runs` for the analytics pages, `proposals` and `decisions` for the timeline. Every other table is refused, including the ledger, the checkpoints and the push subscriptions. `INSERT`, `UPDATE` and `DELETE` fail (16 tests on Neon).
 
 **Verification:** the integration tests on Neon.
 
