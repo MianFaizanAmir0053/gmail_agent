@@ -61,3 +61,31 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build -t mailagent:ci .
+
+  # The web app (M16). Node 24, because its tests are TypeScript run by
+  # `node --test` with no test framework, which Node 24 does natively.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
