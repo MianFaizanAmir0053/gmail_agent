@@ -481,9 +481,10 @@ cannot be settled is logged and left; boot completes regardless.
 Gmail allows 6,000 units per user per minute for everything. The sync,
 its queue, its catch-up, its backfill and the daily recall spend at most
 2,000; the rest is the pipeline's and M17's. The recall holds the sync's
-lock while it checks, so the two never run at once. A fetch costs 20 units, a listing 5, a history page
-2, and every retry costs the same again. One Gmail call -- waiting for the
-quota, retrying a 429 or a 5xx -- takes at most about 30 seconds in all.
+lock while it checks, so the two never run at once. A fetch costs 20 units,
+a listing 5, a history page 2, and every retry costs the same again. One
+Gmail call -- waiting for the quota, retrying a 429 or a 5xx -- takes at
+most about 30 seconds in all.
 
 The pacer counts per process. M15's `measure` runs in its own process, so
 do not run it while a backfill or a catch-up is in progress (`--status`
