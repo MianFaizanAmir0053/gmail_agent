@@ -60,7 +60,7 @@ TOO_OLD = "too old when reached"
 GONE = "no longer in the mailbox"
 """Fixed ledger reasons: written by code, quoting no email, kept by the purge."""
 
-_OFFERED = """
+OFFERED = """
         m.direction = 'in' AND m.category = 'primary' AND NOT m.to_self
     AND m.gone_at IS NULL
     AND NOT (m.label_ids && ARRAY['SPAM', 'TRASH'])
@@ -79,7 +79,7 @@ _WAITING = """
 """
 """No ledger row yet, and not held back for a fetch."""
 
-RULE = _OFFERED + _WAITING
+RULE = OFFERED + _WAITING
 """The whole rule, for the feed and for the recall and `--check-feed`
 checks that ask whether it held: the same SQL, so they cannot drift apart.
 Its one parameter is `margin`."""
@@ -193,7 +193,7 @@ def recover_stranded(
                          FROM gmail_messages m
                          JOIN gmail_cursors c ON c.account = m.account
                         WHERE m.message_id = p.gmail_message_id
-                          AND {_OFFERED}
+                          AND {OFFERED}
                           AND m.internal_at >= %(fresh)s)
           FROM processed_messages p
          WHERE p.status = %(claimed)s

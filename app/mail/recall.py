@@ -34,7 +34,7 @@ from app.config import Settings
 from app.google.auth import build_service, load_credentials
 from app.google.gmail import GmailClient, MessageGoneError, is_outage
 from app.mail import feed
-from app.mail.messages import D1_QUERY, classify, owner_addresses, store, stored_ids
+from app.mail.messages import D1_QUERY, PRIMARY_QUERY, classify, owner_addresses, store, stored_ids
 from app.mail.sync import owners_of
 
 log = logging.getLogger(__name__)
@@ -47,12 +47,6 @@ sync's own lag never reads as a miss."""
 STALLED_AFTER = timedelta(hours=1)
 """How long a row may meet the feed's rule with no ledger row. Poll runs every
 ten minutes, so an hour is six chances."""
-
-NOT_IN_THE_OTHER_TABS = (
-    "-category:promotions -category:social -category:updates -category:forums -in:chats -in:drafts"
-)
-"""Primary, as Gmail lists it: never `category:primary`, which leaves out
-mail with no category label at all."""
 
 IN_UPDATES = "category:updates -in:chats -in:drafts"
 IN_FORUMS = "category:forums -in:chats -in:drafts"
@@ -281,7 +275,7 @@ def _category_agreement(
 ) -> tuple[int, int]:
     """(checked, mismatched), over rows stored here: what is missing is the
     sync recall's to report."""
-    primary = gmail.message_ids(NOT_IN_THE_OTHER_TABS, after=since, before=until)
+    primary = gmail.message_ids(PRIMARY_QUERY, after=since, before=until)
     other = gmail.message_ids(IN_UPDATES, after=since, before=until) + gmail.message_ids(
         IN_FORUMS, after=since, before=until
     )

@@ -534,7 +534,7 @@ fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --check-feed'"
 | `--once` | One run, as the scheduler does |
 | `--catch-up` | Records a gap from an hour before the last caught-up pass to now, as if the cursor had expired, and queues unreadable mail again. The scheduled runs work it off |
 | `--retry-unreadable` | Queues every unreadable message again with no strikes, within the backfill's 90 days. Run it once whatever failed them is fixed |
-| `--check-feed` | The exit criterion's checks; exits 1 if either fails |
+| `--check-feed` | The exit criterion's checks. The second asks Gmail for the switch-over hour and gives each message a verdict -- processed, held (it says why) or left out by the feed's rule; a message never stored, or met by the rule and left waiting, fails it. Exits 1 on any failure |
 
 Locally, against the dev mailbox: `uv run python -m app.mail.sync --once`.
 

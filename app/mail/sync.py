@@ -57,6 +57,7 @@ from app.google.gmail import (
 from app.mail import feed, quota
 from app.mail.messages import (
     D1_QUERY,
+    PRIMARY_QUERY,
     ArrivedVia,
     MessageRow,
     apply_labels,
@@ -1130,46 +1131,101 @@ def retry_unreadable(conn: psycopg.Connection) -> int:
     ).rowcount
 
 
-def check_feed(conn: psycopg.Connection, out: Out = print) -> bool:
+def check_feed(
+    conn: psycopg.Connection,
+    gmail: GmailClient,
+    out: Out = print,
+    *,
+    now: datetime | None = None,
+) -> bool:
     """`--check-feed`: the exit criterion's checks of the switch-over (D8).
 
     1. No message older than `feed_from` less an hour has a ledger row made
        after the switch-over: the backfill never reached the pipeline.
-    2. Every Primary message from the switch-over hour -- an hour either side
-       of `feed_from` -- was processed, or recorded with a reason.
+    2. Every Primary message Gmail lists for the switch-over hour -- an hour
+       either side of `feed_from` -- is stored, and was processed or
+       recorded, is held back (and why), or is one the feed's rule leaves out.
+       Asked of Gmail, not of the stored rows: those cannot show a message
+       the sync never stored.
     """
+    now = now or datetime.now(UTC)
+    cursor = load_cursor(conn, gmail.profile().address)
+    if cursor is None:
+        out("No sync has run for this mailbox yet: run --once first.")
+        return False
     early = conn.execute(
         """
         SELECT m.message_id
           FROM gmail_messages m
-          JOIN gmail_cursors c ON c.account = m.account
           JOIN processed_messages p ON p.gmail_message_id = m.message_id
-         WHERE m.internal_at < c.feed_from - %(margin)s AND p.created_at >= c.created_at
+         WHERE m.account = %(account)s
+           AND m.internal_at < %(feed_from)s - %(margin)s AND p.created_at >= %(created)s
          ORDER BY m.internal_at
         """,
-        {"margin": feed.MARGIN},
+        {
+            "account": cursor.account,
+            "feed_from": cursor.feed_from,
+            "margin": feed.MARGIN,
+            "created": cursor.created_at,
+        },
     ).fetchall()
-    waiting = conn.execute(
-        f"""
-        SELECT m.message_id
-          FROM gmail_messages m
-          JOIN gmail_cursors c ON c.account = m.account
-         WHERE {feed.RULE}
-           AND m.internal_at >= c.feed_from - %(margin)s
-           AND m.internal_at < c.feed_from + %(margin)s
-         ORDER BY m.internal_at
-        """,
-        {"margin": feed.MARGIN},
-    ).fetchall()
+    listed = gmail.message_ids(
+        PRIMARY_QUERY, after=cursor.feed_from - feed.MARGIN, before=cursor.feed_from + feed.MARGIN
+    )
+    stale = cursor.caught_up_at is None or cursor.caught_up_at < now - feed.SYNCED_WITHIN
+    verdicts = _switch_over_hour(conn, cursor.account, listed, stale=stale)
+    missing = [message_id for message_id in listed if message_id not in verdicts]
+    waiting = [message_id for message_id, verdict in verdicts.items() if verdict is None]
+
     out(
         "Older mail processed after the switch-over: "
         + (", ".join(row[0] for row in early) if early else "none (good)")
     )
+    out(f"The switch-over hour, as Gmail lists it: {len(listed)} message(s)")
+    for message_id, verdict in verdicts.items():
+        if verdict is not None:
+            out(f"  {message_id}  {verdict}")
+    out("Switch-over hour mail never stored: " + (", ".join(missing) or "none (good)"))
     out(
         "Switch-over hour mail neither processed nor recorded: "
-        + (", ".join(row[0] for row in waiting) if waiting else "none (good)")
+        + (", ".join(waiting) or "none (good)")
     )
-    return not early and not waiting
+    return not early and not missing and not waiting
+
+
+def _switch_over_hour(
+    conn: psycopg.Connection, account: str, listed: list[str], *, stale: bool
+) -> dict[str, str | None]:
+    """Each stored listed message's verdict, oldest first: what became of
+    it, or None if it meets the feed's rule and nothing has taken it."""
+    rows = conn.execute(
+        f"""
+        SELECT m.message_id,
+               EXISTS (SELECT 1 FROM processed_messages p
+                        WHERE p.gmail_message_id = m.message_id),
+               q.reason, q.strikes,
+               ({feed.OFFERED})
+          FROM gmail_messages m
+          JOIN gmail_cursors c ON c.account = m.account
+          LEFT JOIN gmail_fetch_queue q ON q.message_id = m.message_id AND q.status = 'queued'
+         WHERE m.account = %(account)s AND m.message_id = ANY(%(listed)s)
+         ORDER BY m.internal_at, m.message_id
+        """,
+        {"account": account, "listed": listed, "margin": feed.MARGIN},
+    ).fetchall()
+    verdicts: dict[str, str | None] = {}
+    for message_id, processed, reason, strikes, offered in rows:
+        if processed:
+            verdicts[message_id] = "processed"
+        elif reason is not None:
+            verdicts[message_id] = f"held: queued for a fetch ({reason}, {strikes} strike(s))"
+        elif not offered:
+            verdicts[message_id] = "left out by the feed's rule"
+        elif stale:
+            verdicts[message_id] = "held: the sync has not reached the end of history lately"
+        else:
+            verdicts[message_id] = None
+    return verdicts
 
 
 @contextmanager
@@ -1239,7 +1295,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.catch_up or args.retry_unreadable:
             print(f"{retry_unreadable(conn)} unreadable message(s) queued again.")
             return 0
-        return 0 if check_feed(conn) else 1
+        return 0 if check_feed(conn, sync_client(settings)) else 1
 
 
 if __name__ == "__main__":

@@ -337,7 +337,7 @@ command takes the same advisory lock as the scheduled job.
 | `--show <message id>` | One row's metadata, without content |
 | `--catch-up` | Forces a catch-up, as if the cursor had expired, and does what `--retry-unreadable` does |
 | `--retry-unreadable` | Queues every unreadable message again, its strikes reset, within the backfill's reach |
-| `--check-feed` | The switch-over and backfill checks in the exit criterion |
+| `--check-feed` | The switch-over and backfill checks in the exit criterion. The second lists the switch-over hour from Gmail, so a message the sync never stored fails it, and gives each message its verdict: processed or recorded, held (and why), or left out by the feed's rule |
 
 ---
 

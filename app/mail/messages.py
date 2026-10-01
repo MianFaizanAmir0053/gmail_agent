@@ -51,6 +51,12 @@ D1_QUERY = "-category:promotions -category:social -in:chats -in:drafts"
 """What D1 stores, as a Gmail search, for the catch-up, the backfill and the
 sync recall. Spam and trash are never listed, so they need no term."""
 
+PRIMARY_QUERY = (
+    "-category:promotions -category:social -category:updates -category:forums -in:chats -in:drafts"
+)
+"""Primary, as Gmail lists it, for the recall and `--check-feed`: never
+`category:primary`, which leaves out mail with no category label at all."""
+
 
 def category_of(labels: frozenset[str]) -> Category:
     """`primary` for Primary, or for no category label at all."""

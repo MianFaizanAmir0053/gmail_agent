@@ -188,13 +188,46 @@ def test_a_catch_up_queues_unreadable_mail_again_too(
 
 def test_check_feed_passes_on_a_clean_switch_over(run_main: Any, mail: psycopg.Connection) -> None:
     run_main.box.deliver("m1", labels=PRIMARY, at=NOW)
+    run_main.box.deliver("sent", labels={"SENT"}, at=NOW, sender=ME, to="sara@example.com")
     run_main("--once")
     MessageLedger(mail).claim("m1", "m1")
 
     code, out = run_main("--check-feed")
 
     assert code == 0
-    assert out.count("none (good)") == 2
+    assert out.count("none (good)") == 3
+    assert "m1  processed" in out
+    assert "sent  left out by the feed's rule" in out
+
+
+def test_check_feed_asks_gmail_for_the_switch_over_hour(
+    run_main: Any, mail: psycopg.Connection
+) -> None:
+    """Reading only stored rows, it could never fail for mail the sync
+    missed: Gmail's listing is what the stored rows are checked against."""
+    run_main.box.deliver("missed", labels=PRIMARY, at=NOW)
+    run_main("--once")
+    mail.execute("DELETE FROM gmail_messages WHERE message_id = 'missed'")  # as if never stored
+
+    code, out = run_main("--check-feed")
+
+    assert code == 1
+    assert "never stored: missed" in out
+
+
+def test_check_feed_says_why_switch_over_mail_is_held(
+    run_main: Any, mail: psycopg.Connection
+) -> None:
+    run_main.box.deliver("held", labels=PRIMARY, at=NOW)
+    run_main("--once")
+    mail.execute(
+        "INSERT INTO gmail_fetch_queue (message_id, reason, strikes) VALUES ('held', 'refetch', 1)"
+    )
+
+    code, out = run_main("--check-feed")
+
+    assert code == 0
+    assert "held  held: queued for a fetch (refetch, 1 strike(s))" in out
 
 
 def test_check_feed_finds_older_mail_processed_after_the_switch_over(
