@@ -28,8 +28,9 @@ from datetime import timedelta
 import psycopg
 
 from app.graph.checkpointer import postgres_checkpointer
-from app.graph.nodes import SWEEP_REASON
+from app.graph.nodes import NOT_A_MEETING, SWEEP_REASON
 from app.jobs.poll import CLAIMED_NOT_RUN
+from app.mail.feed import GONE, TOO_OLD
 from app.store.ledger import STRANDED_REASON, MessageStatus
 
 FINAL_STATUSES = (MessageStatus.SKIPPED, MessageStatus.REJECTED, MessageStatus.CREATED)
@@ -46,6 +47,11 @@ FIXED_REASONS = (
     SWEEP_REASON,
     STRANDED_REASON,
     CLAIMED_NOT_RUN,
+    # The mail feed's (M20, D4): mail reached too late, mail deleted before
+    # its turn, and the classifier's no in place of its reasoning.
+    TOO_OLD,
+    GONE,
+    NOT_A_MEETING,
 )
 """Ledger reasons written by code rather than by a model. They quote no email,
 and they are what the failures view and M24's statistics are built from."""
@@ -67,6 +73,9 @@ class PurgeResult:
 
     pairing_codes_deleted: int
     """Expired pairing codes."""
+
+    mail_messages_deleted: int = 0
+    """Mail sync rows past their 180 days, or a week gone (M20, D7)."""
 
 
 def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
@@ -104,7 +113,26 @@ def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
         proposals_cleared=proposals_cleared,
         corrections_cleared=corrections_cleared,
         pairing_codes_deleted=pairing_codes_deleted,
+        mail_messages_deleted=_purge_mail(conn),
     )
+
+
+MAIL_KEPT_FOR = timedelta(days=180)
+"""The owner's decision (M20, D7): mail metadata older than this is deleted."""
+
+GONE_KEPT_FOR = timedelta(days=7)
+"""A row whose message left the mailbox is kept this long after it went."""
+
+
+def _purge_mail(conn: psycopg.Connection) -> int:
+    """Delete mail sync rows past their 180 days, and rows a week gone.
+
+    The ledger is untouched: it records what was done, and quotes nothing.
+    """
+    return conn.execute(
+        "DELETE FROM gmail_messages WHERE internal_at < now() - %s OR gone_at < now() - %s",
+        (MAIL_KEPT_FOR, GONE_KEPT_FOR),
+    ).rowcount
 
 
 def _clear_reasons(conn: psycopg.Connection) -> int:

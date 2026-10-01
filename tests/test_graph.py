@@ -109,6 +109,7 @@ class FakeRegistry:
 @dataclass
 class FakeLedger:
     marks: list[tuple[str, MessageStatus, str | None]] = field(default_factory=list)
+    errors: list[str | None] = field(default_factory=list)
 
     def mark(
         self,
@@ -119,6 +120,7 @@ class FakeLedger:
         error: str | None = None,
     ) -> None:
         self.marks.append((message_id, status, calendar_event_id))
+        self.errors.append(error)
 
     @property
     def statuses(self) -> list[MessageStatus]:
@@ -195,6 +197,53 @@ def test_non_meeting_skips_extraction_and_ends() -> None:
 
     assert _interrupt_payload(graph, config) is None
     assert ledger.statuses == [MessageStatus.SKIPPED]
+
+
+def test_a_classification_skip_records_a_fixed_phrase_not_the_models_reasoning() -> None:
+    """The reasoning can quote the email, and since M20 read mail -- one-time
+    codes included -- reaches the classifier (D4)."""
+    ledger = FakeLedger()
+    _run(_deps(pipeline=FakePipeline(is_meeting=False), ledger=ledger))
+
+    assert ledger.errors == ["not a meeting"]
+
+
+@dataclass
+class FailingGmail:
+    """Fails every fetch with `error`, counting the attempts."""
+
+    error: Exception
+    calls: int = 0
+
+    def get_message(self, message_id: str) -> EmailMessage:
+        self.calls += 1
+        raise self.error
+
+
+def test_a_message_gone_before_its_turn_is_not_retried() -> None:
+    from app.google.gmail import MessageGoneError
+
+    gmail = FailingGmail(MessageGoneError("m1"))
+
+    with pytest.raises(MessageGoneError):
+        _run(_deps(gmail=gmail))
+
+    assert gmail.calls == 1
+
+
+def test_the_fetch_adds_no_retries_to_the_gmail_clients_own() -> None:
+    """The client retries a 5xx for at most 30 seconds in all (M20, D3); a
+    node retry on top would multiply that towards the kill timeout."""
+    from types import SimpleNamespace
+
+    from googleapiclient.errors import HttpError
+
+    gmail = FailingGmail(HttpError(SimpleNamespace(status=503, reason="x"), b"{}"))
+
+    with pytest.raises(HttpError):
+        _run(_deps(gmail=gmail))
+
+    assert gmail.calls == 1
 
 
 def test_confirm_creates_the_event_and_records_the_id() -> None:

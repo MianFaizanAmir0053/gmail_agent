@@ -93,7 +93,11 @@ def build_graph(
         """
         return traced(tracer, name, partial(fn, deps))
 
-    builder.add_node("fetch", node("fetch", nodes.fetch), retry_policy=NETWORK_RETRY)
+    # No retry policy of its own (M20, D3): the Gmail client already retries
+    # a 429 or a 5xx, for at most 30 seconds in all, and retrying that here
+    # would multiply it towards the platform's kill timeout. A message gone
+    # before its turn (`MessageGoneError`) is final either way.
+    builder.add_node("fetch", node("fetch", nodes.fetch))
     builder.add_node("classify", node("classify", nodes.classify), retry_policy=NETWORK_RETRY)
     builder.add_node("extract", node("extract", nodes.extract), retry_policy=NETWORK_RETRY)
     builder.add_node("review", node("review", nodes.review))

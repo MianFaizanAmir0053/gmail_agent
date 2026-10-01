@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from app.obs.liveness import Liveness, configure_logging
+from app.obs.liveness import Liveness, MailSyncLiveness, configure_logging
 
 BOOT = datetime(2026, 10, 6, 0, 0, tzinfo=UTC)
 TEN = timedelta(minutes=10)
@@ -73,6 +73,43 @@ def test_the_subscription_count_is_unknown_until_counted() -> None:
     live.subscriptions_counted(0)
 
     assert live.push_subscriptions == 0
+
+
+# --- the mail sync (M20, D6) -----------------------------------------------------
+
+TWO = timedelta(minutes=2)
+
+
+def test_a_freshly_booted_sync_is_not_overdue_during_its_grace() -> None:
+    assert not MailSyncLiveness(booted_at=BOOT).overdue(BOOT + timedelta(minutes=8), TWO)
+
+
+def test_a_sync_that_never_reached_the_end_is_overdue_after_three_intervals() -> None:
+    """Dead, or alive but lagging behind a backlog: the agent sees nothing either way."""
+    assert MailSyncLiveness(booted_at=BOOT).overdue(BOOT + timedelta(minutes=8, seconds=1), TWO)
+
+
+def test_a_pass_that_reached_the_end_resets_the_clock() -> None:
+    live = MailSyncLiveness(booted_at=BOOT)
+    live.reached_end(BOOT + timedelta(hours=3))
+
+    assert not live.overdue(BOOT + timedelta(hours=3, minutes=6), TWO)
+    assert live.overdue(BOOT + timedelta(hours=3, minutes=6, seconds=1), TWO)
+
+
+def test_the_owners_view_has_the_cursors_age_the_records_and_the_last_recall() -> None:
+    live = MailSyncLiveness(booted_at=BOOT)
+    live.reached_end(BOOT)
+    live.status = {"rows": 12, "queue": {"queued": 0, "unreadable": 1}, "too_old": 2}
+    live.recall = {"missed": 0}
+
+    report = live.report(BOOT + timedelta(seconds=90))
+
+    assert report["cursor_age_seconds"] == 90
+    assert report["rows"] == 12
+    assert report["queue"]["unreadable"] == 1
+    assert report["too_old"] == 2
+    assert report["last_recall"] == {"missed": 0}
 
 
 def test_logging_makes_the_apps_info_lines_visible() -> None:

@@ -3,6 +3,10 @@
 Body extraction is deliberately a pure function (`extract_body`) so it can be
 tested against recorded payloads without touching the network -- it is the part
 most likely to be wrong, since real messages nest parts arbitrarily.
+
+Every call goes through `GmailClient._execute` (M20): the process's pacer
+counts what it costs, and a rate limit or a server error is retried there,
+for at most `RETRY_FOR` seconds in all.
 """
 
 from __future__ import annotations
@@ -10,15 +14,22 @@ from __future__ import annotations
 import base64
 import binascii
 import html
+import math
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import getaddresses
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Literal, Protocol, cast
+
+import httplib2  # type: ignore[import-untyped]
+from google.auth.exceptions import RefreshError, TransportError
+from googleapiclient.errors import HttpError
 
 from app.contracts import EmailMessage
+from app.mail import quota
 
 METADATA_HEADERS = (
     "From",
@@ -36,6 +47,172 @@ Subject is used to recognise calendar notifications and for the owner's own
 on-screen labelling. It is never written anywhere.
 """
 
+SYNC_HEADERS = (
+    "From",
+    "To",
+    "Cc",
+    "List-Unsubscribe",
+    "Auto-Submitted",
+    "Precedence",
+)
+"""The only headers the mail sync asks for (M20, D1): who, to whom, and the
+bulk signals. Unlike `METADATA_HEADERS` there is no Subject -- a subject can
+carry a one-time code, and nothing stores one until M18 can strip it."""
+
+SYNC_FIELDS = "id,threadId,labelIds,internalDate,payload/headers"
+"""The field mask on every sync fetch. Without it Gmail also sends the
+snippet, which can quote a code; with it, a snippet is never even received."""
+
+HISTORY_TYPES = ("messageAdded", "messageDeleted", "labelAdded", "labelRemoved")
+
+HISTORY_PAGE_SIZE = 500
+"""Gmail's largest page of history records."""
+
+RETRY_FOR = 30.0
+"""Seconds a call keeps retrying a rate limit or a server error, in all
+(M20, D3). The pipeline's fetch runs inside a message's run, which must stay
+well inside the platform's kill timeout (120 s)."""
+
+_FIRST_RETRY_AFTER = 1.0
+_RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+
+
+class MessageGoneError(LookupError):
+    """A fetch answered 404: the message has left the mailbox.
+
+    A LookupError, so LangGraph's default retry rule never retries it either:
+    a deleted message stays deleted, however often it is asked for.
+    """
+
+
+class CursorExpiredError(Exception):
+    """`history.list` answered 404: Gmail no longer keeps the cursor's history.
+    The only thing that starts a catch-up (M20, D3)."""
+
+
+class Pacing(Protocol):
+    """What the client needs of a pacer (`app.mail.quota.Pacer`)."""
+
+    def spend(self, method: str, *, share: str | None = None) -> None: ...
+
+
+def is_transient(exc: BaseException) -> bool:
+    """Gmail or the network failing for everyone, for now: worth retrying."""
+    if isinstance(exc, HttpError):
+        status = int(exc.status_code)
+        if status == 429 or status >= 500:
+            return True
+        return status == 403 and bool(_reasons(exc) & _RATE_LIMIT_REASONS)
+    return isinstance(exc, OSError | httplib2.HttpLib2Error | TransportError)
+
+
+def is_outage(exc: BaseException) -> bool:
+    """A failure that says nothing about any one message (M20, D3).
+
+    Gmail or the network unavailable, or the token refused: every message
+    would fail the same way, so the pass stops and nobody is charged a
+    strike. Anything else -- a 400 for one id, a malformed response -- is that
+    message's own failure.
+    """
+    if isinstance(exc, RefreshError):
+        return True
+    if isinstance(exc, HttpError) and int(exc.status_code) == 401:
+        return True
+    return is_transient(exc)
+
+
+def _reasons(exc: Any) -> set[str]:
+    details = getattr(exc, "error_details", None)
+    if not isinstance(details, list):
+        return set()
+    return {str(item["reason"]) for item in details if isinstance(item, dict) and "reason" in item}
+
+
+def _status(exc: BaseException) -> int | None:
+    return int(exc.status_code) if isinstance(exc, HttpError) else None
+
+
+def epoch_window(after: datetime | None = None, before: datetime | None = None) -> str:
+    """A Gmail search window in epoch seconds (M20, D3).
+
+    Gmail reads `after:2026/10/01` as Pacific midnight, whatever the mailbox's
+    zone, so a date would shift every window by hours. The operators work in
+    whole seconds, so the window is widened by a second at each end: an
+    overlap stores nothing twice, where a gap could lose a message.
+    """
+    parts = []
+    if after is not None:
+        parts.append(f"after:{math.floor(after.timestamp()) - 1}")
+    if before is not None:
+        parts.append(f"before:{math.ceil(before.timestamp())}")
+    return " ".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class Profile:
+    address: str
+    """Lower-cased: the mailbox's own address, and the sync's account key."""
+
+    history_id: str
+
+
+ChangeKind = Literal["added", "deleted", "labels_added", "labels_removed"]
+
+_CHANGE_KEYS: tuple[tuple[ChangeKind, str], ...] = (
+    ("added", "messagesAdded"),
+    ("labels_added", "labelsAdded"),
+    ("labels_removed", "labelsRemoved"),
+    ("deleted", "messagesDeleted"),
+)
+"""A record's change lists, in the order they are applied."""
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryChange:
+    kind: ChangeKind
+    message_id: str
+    thread_id: str
+    label_ids: frozenset[str] = frozenset()
+    """The labels added or removed. Empty for an addition or a deletion:
+    history carries ids, not a message's labels, so an addition is fetched."""
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRecord:
+    id: str
+    changes: tuple[HistoryChange, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryPage:
+    records: tuple[HistoryRecord, ...]
+    next_page_token: str | None
+    history_id: str
+    """The mailbox's current history id: the cursor after the last page."""
+
+
+def to_history_page(response: dict[str, Any]) -> HistoryPage:
+    records: list[HistoryRecord] = []
+    for record in response.get("history", []):
+        changes: list[HistoryChange] = []
+        for kind, key in _CHANGE_KEYS:
+            for item in record.get(key, []):
+                message = cast(dict[str, Any], item.get("message", {}))
+                changes.append(
+                    HistoryChange(
+                        kind=kind,
+                        message_id=str(message["id"]),
+                        thread_id=str(message.get("threadId", "")),
+                        label_ids=frozenset(cast(list[str], item.get("labelIds", []))),
+                    )
+                )
+        records.append(HistoryRecord(id=str(record["id"]), changes=tuple(changes)))
+    return HistoryPage(
+        records=tuple(records),
+        next_page_token=cast(str | None, response.get("nextPageToken")),
+        history_id=str(response["historyId"]),
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class MessageMeta:
@@ -48,11 +225,14 @@ class MessageMeta:
     headers: Mapping[str, str]
 
 
-def to_message_meta(message: dict[str, Any]) -> MessageMeta:
-    """Convert a `format=metadata` message. Headers outside
-    `METADATA_HEADERS` are dropped even if Gmail sends them."""
+def to_message_meta(
+    message: dict[str, Any], names: tuple[str, ...] = METADATA_HEADERS
+) -> MessageMeta:
+    """Convert a `format=metadata` message. Headers outside `names` are
+    dropped even if Gmail sends them, and so is anything else it sends: a
+    snippet, a body."""
     payload = cast(dict[str, Any], message.get("payload", {}))
-    wanted = {name.lower(): name for name in METADATA_HEADERS}
+    wanted = {name.lower(): name for name in names}
     headers: dict[str, str] = {}
     for header in payload.get("headers", []):
         name = wanted.get(str(header.get("name", "")).lower())
@@ -156,17 +336,132 @@ def to_email_message(message: dict[str, Any]) -> EmailMessage:
 
 
 class GmailClient:
-    def __init__(self, service: Any) -> None:
+    def __init__(
+        self,
+        service: Any,
+        *,
+        pacer: Pacing | None = None,
+        share: str | None = None,
+        retry_for: float = RETRY_FOR,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """`pacer` defaults to the process's own (`app.mail.quota.PACER`), read
+        at each call. `share` charges every call to a share of the minute: the
+        sync's client is built with `share=quota.SYNC`."""
         self._service = service
+        self._pacer = pacer
+        self._share = share
+        self._retry_for = retry_for
+        self._sleep = sleep
+        self._clock = clock
+
+    def _execute(self, method: str, request: Any) -> dict[str, Any]:
+        """Run one request: priced first, then retried while Gmail or the
+        network fails for everyone, for at most `retry_for` seconds in all.
+
+        Every Gmail call goes through here, so none escapes the pacer. A
+        failure that is not transient -- a 404, a 400 -- is raised at once.
+        """
+        (self._pacer if self._pacer is not None else quota.PACER).spend(method, share=self._share)
+        deadline = self._clock() + self._retry_for
+        pause = _FIRST_RETRY_AFTER
+        while True:
+            try:
+                return cast(dict[str, Any], request.execute())
+            except Exception as exc:
+                left = deadline - self._clock()
+                if not is_transient(exc) or left <= 0:
+                    raise
+            self._sleep(min(pause, left))
+            pause *= 2
+
+    def profile(self) -> Profile:
+        """The mailbox's address and current history id, in one call."""
+        response = self._execute("getProfile", self._service.users().getProfile(userId="me"))
+        return Profile(
+            address=str(response["emailAddress"]).lower(),
+            history_id=str(response["historyId"]),
+        )
+
+    def history_page(self, start_history_id: str, page_token: str | None = None) -> HistoryPage:
+        """One page of the records after `start_history_id`, which Gmail leaves out.
+
+        Raises `CursorExpiredError` when Gmail no longer keeps that history.
+        """
+        request = (
+            self._service.users()
+            .history()
+            .list(
+                userId="me",
+                startHistoryId=start_history_id,
+                historyTypes=list(HISTORY_TYPES),
+                maxResults=HISTORY_PAGE_SIZE,
+                pageToken=page_token,
+            )
+        )
+        try:
+            response = self._execute("history.list", request)
+        except HttpError as exc:
+            if _status(exc) == 404:
+                raise CursorExpiredError(start_history_id) from exc
+            raise
+        return to_history_page(response)
+
+    def message_metadata(self, message_id: str) -> MessageMeta:
+        """A message's labels, time and six headers, through the field mask.
+
+        Raises `MessageGoneError` for a 404.
+        """
+        request = (
+            self._service.users()
+            .messages()
+            .get(
+                userId="me",
+                id=message_id,
+                format="metadata",
+                metadataHeaders=list(SYNC_HEADERS),
+                fields=SYNC_FIELDS,
+            )
+        )
+        try:
+            response = self._execute("messages.get", request)
+        except HttpError as exc:
+            if _status(exc) == 404:
+                raise MessageGoneError(message_id) from exc
+            raise
+        return to_message_meta(response, SYNC_HEADERS)
+
+    def message_ids(
+        self, query: str, *, after: datetime | None = None, before: datetime | None = None
+    ) -> list[str]:
+        """Every message matching `query`, in an epoch-second window, across all pages.
+
+        Unbounded, like `thread_ids`: the window bounds it. Spam and trash are
+        never listed (Gmail's default).
+        """
+        q = f"{query} {epoch_window(after, before)}".strip()
+        ids: list[str] = []
+        page_token: str | None = None
+        while True:
+            response = self._execute(
+                "messages.list",
+                self._service.users()
+                .messages()
+                .list(userId="me", q=q, maxResults=500, pageToken=page_token),
+            )
+            ids.extend(str(message["id"]) for message in response.get("messages", []))
+            page_token = cast(str | None, response.get("nextPageToken"))
+            if not page_token:
+                return ids
 
     def list_unread(self, max_results: int = 10) -> list[str]:
         """Return unread message IDs, newest first."""
-        response = cast(
-            dict[str, Any],
+        response = self._execute(
+            "messages.list",
             self._service.users()
             .messages()
-            .list(userId="me", q="is:unread", maxResults=max_results)
-            .execute(),
+            .list(userId="me", q="is:unread", maxResults=max_results),
         )
         return [cast(str, m["id"]) for m in response.get("messages", [])]
 
@@ -182,8 +477,8 @@ class GmailClient:
         page_token: str | None = None
 
         while len(ids) < limit:
-            response = cast(
-                dict[str, Any],
+            response = self._execute(
+                "messages.list",
                 self._service.users()
                 .messages()
                 .list(
@@ -191,8 +486,7 @@ class GmailClient:
                     q=query,
                     maxResults=min(500, limit - len(ids)),
                     pageToken=page_token,
-                )
-                .execute(),
+                ),
             )
             ids.extend(cast(str, m["id"]) for m in response.get("messages", []))
 
@@ -203,24 +497,25 @@ class GmailClient:
         return ids[:limit]
 
     def get_message(self, message_id: str) -> EmailMessage:
-        response = cast(
-            dict[str, Any],
-            self._service.users()
-            .messages()
-            .get(userId="me", id=message_id, format="full")
-            .execute(),
-        )
+        """The whole message, for the pipeline. Raises `MessageGoneError` for
+        a 404: a message deleted before its turn is recorded, not retried
+        (M20, D4)."""
+        request = self._service.users().messages().get(userId="me", id=message_id, format="full")
+        try:
+            response = self._execute("messages.get", request)
+        except HttpError as exc:
+            if _status(exc) == 404:
+                raise MessageGoneError(message_id) from exc
+            raise
         return to_email_message(response)
 
     def current_history_id(self) -> str:
         """Mailbox history cursor. M04 seeds incremental sync from this."""
-        profile = cast(dict[str, Any], self._service.users().getProfile(userId="me").execute())
-        return cast(str, profile["historyId"])
+        return self.profile().history_id
 
     def profile_address(self) -> str:
         """The mailbox's own address, lower-cased for comparison."""
-        profile = cast(dict[str, Any], self._service.users().getProfile(userId="me").execute())
-        return cast(str, profile["emailAddress"]).lower()
+        return self.profile().address
 
     def thread_ids(self, query: str) -> list[str]:
         """Every thread matching a Gmail search query, across all pages.
@@ -232,12 +527,11 @@ class GmailClient:
         ids: list[str] = []
         page_token: str | None = None
         while True:
-            response = cast(
-                dict[str, Any],
+            response = self._execute(
+                "threads.list",
                 self._service.users()
                 .threads()
-                .list(userId="me", q=query, maxResults=500, pageToken=page_token)
-                .execute(),
+                .list(userId="me", q=query, maxResults=500, pageToken=page_token),
             )
             ids.extend(cast(str, thread["id"]) for thread in response.get("threads", []))
             page_token = cast(str | None, response.get("nextPageToken"))
@@ -246,8 +540,8 @@ class GmailClient:
 
     def thread_metadata(self, thread_id: str) -> list[MessageMeta]:
         """A thread's messages as metadata only: no bodies are requested."""
-        response = cast(
-            dict[str, Any],
+        response = self._execute(
+            "threads.get",
             self._service.users()
             .threads()
             .get(
@@ -255,7 +549,6 @@ class GmailClient:
                 id=thread_id,
                 format="metadata",
                 metadataHeaders=list(METADATA_HEADERS),
-            )
-            .execute(),
+            ),
         )
         return [to_message_meta(message) for message in response.get("messages", [])]

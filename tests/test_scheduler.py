@@ -22,12 +22,16 @@ from app.jobs.scheduler import (
     record_tick,
     run_decisions,
     run_ingest,
+    run_mail_recall,
+    run_mail_sync,
     run_poll,
     run_purge,
     run_reconcile,
     wake_decisions,
 )
-from app.obs.liveness import Liveness, TokenEvidence
+from app.mail.recall import RecallResult
+from app.mail.sync import Gap, SyncReport
+from app.obs.liveness import Liveness, MailSyncLiveness, TokenEvidence
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -47,6 +51,8 @@ def test_the_standing_jobs_are_registered() -> None:
         "token_health",
         "reconcile",
         "decisions",
+        "mail_sync",
+        "mail_recall",
     }
 
 
@@ -498,3 +504,187 @@ def test_a_purge_tick_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
     run_purge(_settings())
 
     assert recorded == [{"job": "purge", "ok": True}]
+
+
+# --- the mail sync (M20) -------------------------------------------------------
+
+
+def test_the_mail_sync_runs_every_two_minutes_one_run_at_a_time() -> None:
+    job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "mail_sync")
+
+    assert "0:02:00" in str(job.trigger)
+    assert job.max_instances == 1
+    assert job.coalesce is True
+
+
+def _mail_sync(monkeypatch: pytest.MonkeyPatch, *outcomes: Any) -> list[dict[str, Any]]:
+    """Each run returns (or raises) the next outcome; ticks are captured."""
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler._mail_sync_recorded", {})
+    queue = list(outcomes)
+
+    def _run(settings: Settings, *, stop: Any = None) -> Any:
+        assert stop is STOPPING  # a shutdown stops the run between pages
+        outcome = queue.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr("app.jobs.scheduler.run_sync", _run)
+    return recorded
+
+
+def test_a_failing_mail_sync_does_not_escape_and_is_recorded_once_per_ten_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every two minutes, a failure recorded every time would bury job_runs."""
+    recorded = _mail_sync(monkeypatch, RuntimeError("gmail is down"), RuntimeError("again"))
+
+    run_mail_sync(_settings())  # must not raise
+    run_mail_sync(_settings())
+
+    assert recorded == [{"job": "mail_sync", "ok": False, "error": "RuntimeError"}]
+
+
+def test_a_turn_skipped_for_the_lock_records_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CLI run holds the lock; the scheduled run skips its turn."""
+    recorded = _mail_sync(monkeypatch, None)
+
+    run_mail_sync(_settings())
+
+    assert recorded == []
+
+
+def test_a_quiet_mail_sync_is_recorded_at_most_every_ten_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = SyncReport(account="me@example.com", records=2, stored=1, reached_end=True)
+    recorded = _mail_sync(monkeypatch, report, report)
+
+    run_mail_sync(_settings())
+    run_mail_sync(_settings())
+
+    assert recorded == [{"job": "mail_sync", "ok": True, "seen": 2, "started": 1, "error": None}]
+
+
+def test_a_catch_up_is_always_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    quiet = SyncReport(account="me@example.com", reached_end=True)
+    at = datetime(2026, 10, 1, tzinfo=UTC)
+    caught_up = SyncReport(account="me@example.com", catch_up=Gap(at, at + timedelta(days=8)))
+    recorded = _mail_sync(monkeypatch, quiet, caught_up)
+
+    run_mail_sync(_settings())
+    run_mail_sync(_settings())
+
+    assert len(recorded) == 2
+
+
+def test_a_mail_sync_stopped_by_an_outage_is_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    report = SyncReport(account="me@example.com", stopped="outage", error="HttpError")
+    recorded = _mail_sync(monkeypatch, report)
+
+    run_mail_sync(_settings())
+
+    assert recorded == [
+        {"job": "mail_sync", "ok": False, "seen": 0, "started": 0, "error": "HttpError"}
+    ]
+
+
+def _mail_liveness(monkeypatch: pytest.MonkeyPatch) -> MailSyncLiveness:
+    live = MailSyncLiveness(booted_at=datetime.now(UTC))
+    monkeypatch.setattr("app.jobs.scheduler.MAIL_SYNC", live)
+    return live
+
+
+def test_only_a_pass_that_reached_the_end_of_history_counts_for_liveness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that only made headway through a backlog does not (M20, D6)."""
+    live = _mail_liveness(monkeypatch)
+    at = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    behind = SyncReport(account="me@example.com", records=500, stopped="time")
+    caught_up = SyncReport(
+        account="me@example.com", reached_end=True, caught_up_at=at, status={"rows": 3}
+    )
+    _mail_sync(monkeypatch, behind, caught_up)
+
+    run_mail_sync(_settings())
+    assert live.caught_up_at is None
+    run_mail_sync(_settings())
+
+    assert live.caught_up_at == at
+    assert live.status == {"rows": 3}
+
+
+def test_the_mail_recall_runs_daily() -> None:
+    job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "mail_recall")
+
+    assert str(job.trigger).startswith("cron")
+    assert job.max_instances == 1
+
+
+def _recall_result(**overrides: Any) -> RecallResult:
+    at = datetime(2026, 10, 1, tzinfo=UTC)
+    values: dict[str, Any] = {
+        "since": at - timedelta(hours=26),
+        "until": at - timedelta(hours=2),
+        "listed": 9,
+        "missed": 0,
+        "repaired": 0,
+        "eligible": 4,
+        "stalled": 0,
+        "held": 0,
+        "too_old_young": 0,
+        "categories_checked": 9,
+        "categories_mismatched": 0,
+    }
+    return RecallResult(**(values | overrides))
+
+
+def test_each_recall_check_is_its_own_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _capture(monkeypatch)
+    live = _mail_liveness(monkeypatch)
+    result = _recall_result(missed=1, repaired=1)
+    monkeypatch.setattr("app.jobs.scheduler.run_recall", lambda settings: result)
+
+    run_mail_recall(_settings())
+
+    assert recorded == [
+        {
+            "job": "mail_recall_sync",
+            "ok": False,
+            "seen": 9,
+            "started": 1,
+            "failed": 1,
+            "error": "Mail sync missed messages",
+        },
+        {"job": "mail_recall_feed", "ok": True, "seen": 4, "failed": 0, "error": None},
+        {"job": "mail_recall_categories", "ok": True, "seen": 9, "failed": 0, "error": None},
+    ]
+    assert live.recall is not None and live.recall["missed"] == 1
+
+
+def test_a_failing_recall_does_not_escape_and_is_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _capture(monkeypatch)
+
+    def _explode(settings: Settings) -> Any:
+        raise RuntimeError("gmail is down")
+
+    monkeypatch.setattr("app.jobs.scheduler.run_recall", _explode)
+
+    run_mail_recall(_settings())  # must not raise
+
+    assert recorded == [{"job": "mail_recall", "ok": False, "error": "RuntimeError"}]
+
+
+def test_before_the_first_sync_run_the_recall_records_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler.run_recall", lambda settings: None)
+
+    run_mail_recall(_settings())
+
+    assert recorded == []

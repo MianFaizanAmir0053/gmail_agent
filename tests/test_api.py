@@ -21,7 +21,7 @@ from app.api import router
 from app.bootstrap import SecretDecodeError, materialise_secrets
 from app.config import Settings
 from app.google.tokens import TokenMetadata
-from app.obs.liveness import Liveness
+from app.obs.liveness import Liveness, MailSyncLiveness
 
 SECRET = "s3cret-token"
 OWNER = "web-api-secret"
@@ -238,8 +238,13 @@ def _scheduler_on(monkeypatch: pytest.MonkeyPatch, booted_ago: timedelta) -> Liv
             run_scheduler=True, poll_interval_minutes=10, web_api_secret=SecretStr(OWNER)
         ),
     )
-    live = Liveness(booted_at=datetime.now(UTC) - booted_ago)
+    booted_at = datetime.now(UTC) - booted_ago
+    live = Liveness(booted_at=booted_at)
     monkeypatch.setattr("app.api.LIVENESS", live)
+    # The mail sync caught up just now, unless a test says otherwise.
+    mail = MailSyncLiveness(booted_at=booted_at)
+    mail.reached_end(datetime.now(UTC))
+    monkeypatch.setattr("app.api.MAIL_SYNC", mail)
     return live
 
 
@@ -328,6 +333,59 @@ def test_the_api_documents_nothing_to_strangers() -> None:
 
     assert client.get("/docs").status_code == 404
     assert client.get("/openapi.json").status_code == 404
+
+
+def _mail_sync(
+    monkeypatch: pytest.MonkeyPatch, booted_ago: timedelta, caught_up_ago: timedelta | None
+) -> MailSyncLiveness:
+    mail = MailSyncLiveness(booted_at=datetime.now(UTC) - booted_ago)
+    if caught_up_ago is not None:
+        mail.reached_end(datetime.now(UTC) - caught_up_ago)
+    monkeypatch.setattr("app.api.MAIL_SYNC", mail)
+    return mail
+
+
+def test_a_mail_sync_that_has_not_reached_the_end_for_three_intervals_is_a_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dead, or alive but behind a backlog: either way the agent sees nothing,
+    and an empty feed would otherwise leave /health green (M20, D6)."""
+    live = _scheduler_on(monkeypatch, booted_ago=timedelta(hours=2))
+    live.poll_finished(ok=True, at=datetime.now(UTC))
+    _mail_sync(monkeypatch, timedelta(hours=2), caught_up_ago=timedelta(minutes=7))
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["problems"] == [
+        "no mail sync pass reached the end of history in three intervals"
+    ]
+
+
+def test_a_fresh_boot_is_not_blamed_for_the_mail_sync(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=3))
+    _mail_sync(monkeypatch, timedelta(minutes=3), caught_up_ago=None)
+
+    assert client.get("/health").status_code == 200
+
+
+def test_the_owner_sees_the_mail_syncs_records_and_a_stranger_does_not(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    mail = _mail_sync(monkeypatch, timedelta(minutes=1), caught_up_ago=timedelta(seconds=5))
+    mail.status = {"rows": 40, "queue": {"queued": 1, "unreadable": 0}}
+    mail.recall = {"missed": 0}
+
+    owner = client.get("/health", headers=_owner()).json()
+    stranger = client.get("/health").json()
+
+    assert owner["mail_sync"]["rows"] == 40
+    assert owner["mail_sync"]["last_recall"] == {"missed": 0}
+    assert 0 <= owner["mail_sync"]["cursor_age_seconds"] < 60
+    assert "mail_sync" not in stranger
 
 
 def test_a_recent_open_decision_is_reported_but_healthy(

@@ -20,8 +20,9 @@ from app.channel.decide import decide
 from app.channel.park import proposal_from, write_park
 from app.channel.worker import ATTEMPTS_EXHAUSTED, settle_decided, settle_failed
 from app.graph.checkpointer import postgres_checkpointer
-from app.graph.nodes import SWEEP_REASON
+from app.graph.nodes import NOT_A_MEETING, SWEEP_REASON
 from app.jobs.purge import purge
+from app.mail.feed import GONE, TOO_OLD
 from app.store.ledger import STRANDED_REASON, MessageLedger, MessageStatus
 
 pytestmark = pytest.mark.integration
@@ -132,6 +133,75 @@ def test_fixed_operator_reasons_survive(
     for message_id, reason in kept.items():
         entry = ledger.get(message_id)
         assert entry is not None and entry.error == reason
+
+
+def test_the_mail_feeds_fixed_reasons_survive(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    """Too old, gone before its turn, and the classifier's no (M20, D4): code
+    wrote them, they quote nothing, and `/health` and the failures view count
+    them."""
+    ledger = MessageLedger(conn)
+    kept = {}
+    for reason in (TOO_OLD, GONE, NOT_A_MEETING):
+        message_id = f"kept-{uuid.uuid4().hex[:8]}"
+        ledger.claim(message_id, message_id)
+        ledger.mark(message_id, MessageStatus.SKIPPED, error=reason)
+        _age(conn, message_id, days=30)
+        kept[message_id] = reason
+
+    purge(conn, migrated_database)
+
+    for message_id, reason in kept.items():
+        entry = ledger.get(message_id)
+        assert entry is not None and entry.error == reason
+
+
+# --- the mail sync's records (M20, D7) -----------------------------------------
+
+
+def _mail_row(conn: psycopg.Connection, message_id: str, *, days_old: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO gmail_messages (account, message_id, thread_id, internal_at, direction,
+                                    to_self, category, has_list_unsubscribe, arrived_via)
+        VALUES ('me@example.com', %s, 't', now() - make_interval(days => %s), 'in', false,
+                'primary', false, 'history')
+        """,
+        (message_id, days_old),
+    )
+
+
+def _mail_ids(conn: psycopg.Connection) -> set[str]:
+    return {row[0] for row in conn.execute("SELECT message_id FROM gmail_messages").fetchall()}
+
+
+def test_mail_metadata_is_kept_180_days_and_gone_rows_a_week(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    conn.execute("DELETE FROM gmail_messages")
+    _mail_row(conn, "day-179", days_old=179)
+    _mail_row(conn, "day-181", days_old=181)
+    _mail_row(conn, "gone-6-days", days_old=10)
+    _mail_row(conn, "gone-8-days", days_old=10)
+    conn.execute(
+        """
+        UPDATE gmail_messages SET gone_at = now() - CASE message_id
+            WHEN 'gone-6-days' THEN interval '6 days' ELSE interval '8 days' END
+         WHERE message_id LIKE 'gone-%%'
+        """
+    )
+    # Ledger rows are untouched: they are the record of what was done.
+    ledger = MessageLedger(conn)
+    ledger.claim("day-181", "day-181")
+    ledger.mark("day-181", MessageStatus.SKIPPED, error=TOO_OLD)
+
+    result = purge(conn, migrated_database)
+
+    assert _mail_ids(conn) == {"day-179", "gone-6-days"}
+    assert result.mail_messages_deleted == 2
+    entry = ledger.get("day-181")
+    assert entry is not None and entry.error == TOO_OLD
 
 
 # --- the web channel's records (M16, D8) -------------------------------------

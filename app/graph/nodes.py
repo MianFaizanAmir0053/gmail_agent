@@ -39,6 +39,15 @@ Enforced here rather than in the prompt: an instruction to "only revise twice"
 is a suggestion, a counter in graph state is a guarantee.
 """
 
+NOT_A_MEETING = "not a meeting"
+"""Ledger reason when the model finds no meeting (M20, D4).
+
+A fixed phrase in place of the model's reasoning, which can quote the email.
+Since M20 feeds read mail as well as unread, one-time-code and password-reset
+mail in Primary reaches the classifier, and its reasoning must not reach the
+ledger.
+"""
+
 SWEEP_REASON = "swept: observe mode ended"
 """Ledger reason for proposals cleared in bulk (M15).
 
@@ -243,7 +252,14 @@ def act(deps: Deps, state: GraphState) -> GraphState:
 
 
 def skip(deps: Deps, state: GraphState) -> GraphState:
-    reason = state["extraction"].reasoning if "extraction" in state else "not a meeting"
+    extraction = state.get("extraction")
+    if extraction is None or not extraction.is_meeting:
+        # The model's reasoning stays out of the ledger: it can quote the email.
+        reason = NOT_A_MEETING
+    else:
+        # A meeting the graph could not place, with no start time: the
+        # reasoning says why, and the purge clears it after a week.
+        reason = extraction.reasoning
     deps.ledger.mark(state["message_id"], MessageStatus.SKIPPED, error=reason)
     return {"action": ActionResult(status="skipped_duplicate", error=reason)}
 

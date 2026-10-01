@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from hmac import compare_digest
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -24,7 +24,8 @@ from app.config import Settings, get_settings
 from app.google.auth import observe_refreshes, standby_token_store, token_store
 from app.google.tokens import RefreshOutcome
 from app.jobs.scheduler import decision_recorded
-from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE, configure_logging
+from app.mail.sync import SYNC_EVERY as MAIL_SYNC_EVERY
+from app.obs.liveness import LIVENESS, MAIL_SYNC, TOKEN_EVIDENCE, configure_logging
 from app.obs.token_report import UNUSABLE_STANDBY, standby_state, token_report
 from app.store.db import connect_autocommit
 from app.telegram.client import TelegramClient
@@ -72,6 +73,13 @@ def health(authorization: str | None = Header(default=None)) -> JSONResponse:
             # Zero is visible, not a failure: before the first phone subscribes
             # there is simply nobody to push to.
             body["push_subscriptions"] = LIVENESS.push_subscriptions
+
+        # The mail sync (M20, D6): judged by its last pass that reached the
+        # end of history, so a sync that is alive but behind shows too.
+        if MAIL_SYNC.overdue(now, MAIL_SYNC_EVERY):
+            problems.append("no mail sync pass reached the end of history in three intervals")
+        if _is_owner(settings, authorization):
+            body["mail_sync"] = MAIL_SYNC.report(now)
 
     try:
         state, countdown = token_report(token_store(settings), TOKEN_EVIDENCE)
@@ -213,6 +221,38 @@ def _seed_token_evidence(settings: Settings) -> None:
     TOKEN_EVIDENCE.seed(issued_at, last_ok_at=last_ok_at, rejected=rejected)
 
 
+def _settle_stranded_claims(settings: Settings) -> None:
+    """At boot, every `claimed` row (M20, D4): a thread that parked is left to
+    reconciliation, one the feed would offer again is released, and the rest
+    are marked FAILED rather than left `claimed`, where nothing would ever
+    look at them again."""
+    from app.graph.checkpointer import postgres_checkpointer
+    from app.graph.nodes import Deps
+    from app.graph.runner import GraphSession
+    from app.mail.feed import recover_stranded
+    from app.store.db import connect
+
+    with (
+        connect(settings.database_url) as conn,
+        postgres_checkpointer(settings.database_url) as saver,
+    ):
+        # Reading a thread's state builds the graph but runs none of its
+        # nodes, so their dependencies are never needed here.
+        threads = GraphSession(deps=cast(Deps, None), conn=conn, checkpointer=saver, trace=False)
+        result = recover_stranded(
+            conn,
+            parked=lambda message_id: threads.thread(message_id).parked,
+            forget=saver.delete_thread,
+        )
+    if result.left or result.released or result.failed:
+        log.warning(
+            "stranded claims: %d left for reconciliation, %d released, %d failed",
+            result.left,
+            result.released,
+            result.failed,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
@@ -234,16 +274,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scheduler = None
     if settings.run_scheduler:
         from app.jobs.scheduler import activate, build_scheduler
-        from app.store.db import connect
-        from app.store.ledger import STRANDED_AFTER, MessageLedger
 
-        # Nothing is in flight in this process yet, so any old claim was left
-        # by a predecessor that died mid-message. Surfaced as FAILED rather
-        # than left `claimed`, where nothing would ever look at it again.
-        with connect(settings.database_url) as conn:
-            recovered = MessageLedger(conn).fail_stranded(STRANDED_AFTER)
-        if recovered:
-            log.warning("marked %d stranded claim(s) as failed", recovered)
+        # Nothing is in flight in this process yet, so every claim was left by
+        # a predecessor that died mid-message.
+        _settle_stranded_claims(settings)
 
         _seed_token_evidence(settings)
         observe_refreshes(lambda outcome: _record_refresh(settings, outcome))

@@ -64,6 +64,28 @@ flowchart TB
 One FastAPI process holds the webhook and the scheduler. Not three services for
 a few dozen emails a day.
 
+### Mail sync (M20)
+
+The poller used to read the newest page of ten unread messages, so mail the
+owner opened on a phone first was never seen, and sent mail never was. Now a
+sync job reads Gmail's history every two minutes from a stored cursor
+(`app/mail/`): every Primary, Updates, Forums and sent message is kept as
+metadata only -- labels, time, addresses and the bulk headers, fetched
+through a field mask, never a subject, snippet or body. The meeting pipeline
+reads new Primary mail from that record, read or not, strictly inbound and
+not bulk; mail first reached more than seven days late is recorded, not
+processed.
+
+When Gmail stops keeping the cursor's history after an outage, the sync
+records the gap, moves to the present, and works the gap off in the
+background, re-fetching the week's messages so nothing trashed meanwhile is
+fed. A 90-day backfill runs behind it. One pacer keeps every Gmail call in
+the process inside the per-user quota, with a third reserved for the sync. A
+daily recall checks both halves: that the sync stored what Gmail lists, and
+that the feed processed what it stored. `python -m app.mail.sync --status`
+shows where it stands; [`docs/DEPLOY.md`](docs/DEPLOY.md) section 10 is the
+runbook.
+
 ---
 
 ## Evaluation
