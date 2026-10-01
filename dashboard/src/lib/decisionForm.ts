@@ -55,7 +55,12 @@ export type Answer = {
 
 export type Notice = { tone: "ok" | "warn" | "error"; message: string };
 
-/** Words for the owner. Never a raw server error: those stay in the logs. */
+/**
+ * Words for the owner. Never a raw server error: those stay in the logs. A
+ * refusal's detail is shown as it comes, because Fly writes only its own fixed
+ * phrases there (`app/channel/decide.py`), such as "no edits left at this
+ * revision", and never the input.
+ */
 export function describeAnswer(answer: Answer): Notice {
   switch (answer.status) {
     case "queued":

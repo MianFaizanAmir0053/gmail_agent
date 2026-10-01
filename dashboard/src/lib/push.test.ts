@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { applicationServerKey, pushSetupState, subscriptionBody } from "./push.ts";
+import {
+  applicationServerKey,
+  endpointOf,
+  madeWithOtherKey,
+  pushSetupState,
+  subscriptionBody,
+} from "./push.ts";
 
 describe("applicationServerKey", () => {
   it("decodes the base64url public key into the 65 bytes of a P-256 point", () => {
@@ -10,6 +16,25 @@ describe("applicationServerKey", () => {
     const bytes = applicationServerKey(key);
     assert.equal(bytes.length, 65);
     assert.equal(bytes[0], 0x04);
+  });
+});
+
+describe("madeWithOtherKey", () => {
+  const CURRENT = "BA" + "A".repeat(85);
+  const OLDER = "BB" + "A".repeat(85);
+
+  it("keeps a subscription made with the current key", () => {
+    assert.equal(madeWithOtherKey(applicationServerKey(CURRENT).buffer, CURRENT), false);
+  });
+
+  it("replaces one made before the keys were rotated", () => {
+    // Its pushes are refused for good (403), and nothing else would replace it.
+    assert.equal(madeWithOtherKey(applicationServerKey(OLDER).buffer, CURRENT), true);
+  });
+
+  it("keeps one whose key the browser does not report", () => {
+    assert.equal(madeWithOtherKey(null, CURRENT), false);
+    assert.equal(madeWithOtherKey(undefined, CURRENT), false);
   });
 });
 
@@ -70,5 +95,14 @@ describe("subscriptionBody", () => {
     assert.equal(subscriptionBody({ endpoint: 42 }), null);
     assert.equal(subscriptionBody({ endpoint: "https://x", keys: { p256dh: "p" } }), null);
     assert.equal(subscriptionBody(null), null);
+  });
+});
+
+describe("endpointOf", () => {
+  it("passes on the endpoint of a subscription to forget, and nothing else", () => {
+    assert.equal(endpointOf({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", x: 1 }), "https://fcm.googleapis.com/fcm/send/abc");
+    assert.equal(endpointOf({ endpoint: "" }), null);
+    assert.equal(endpointOf({ endpoint: 42 }), null);
+    assert.equal(endpointOf("https://x"), null);
   });
 });

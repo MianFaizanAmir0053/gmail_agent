@@ -2,9 +2,10 @@ import { DecisionButtons } from "@/components/DecisionButtons";
 import { ProposalCard } from "@/components/ProposalCard";
 import { PushSetup } from "@/components/PushSetup";
 import { Refresher } from "@/components/Refresher";
+import { StableTaps } from "@/components/StableTaps";
 import { ago } from "@/lib/format";
 import { openProposals, recentDecisions } from "@/lib/proposals";
-import { cardView, ownerZone, shouldRefresh } from "@/lib/timeline";
+import { cardView, layoutKey, ownerZone, shouldRefresh } from "@/lib/timeline";
 
 export const dynamic = "force-dynamic";
 
@@ -12,15 +13,20 @@ export const dynamic = "force-dynamic";
  * The timeline (M16, D5): what is waiting for the owner, then what was
  * decided. Decisions are queued and applied by the worker on Fly, so a card
  * being decided shows "Applying…" and the page re-reads until it settles.
+ *
+ * Nothing above the cards appears late: the push set-up sits below them, so
+ * its arrival after load cannot push a card's buttons out from under a tap.
  */
 export default async function TimelinePage() {
   const zone = ownerZone(process.env.OWNER_TIMEZONE);
-  const [open, decisions] = await Promise.all([openProposals(), recentDecisions()]);
+  const [{ rows: open, total }, decisions] = await Promise.all([
+    openProposals(),
+    recentDecisions(),
+  ]);
 
   return (
     <>
       <Refresher active={shouldRefresh(open)} />
-      <PushSetup publicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null} />
 
       <h1>Waiting for you</h1>
       <p className="sub">Times are shown in {zone}.</p>
@@ -28,23 +34,32 @@ export default async function TimelinePage() {
       {open.length === 0 ? (
         <div className="empty">Nothing is waiting for a decision.</div>
       ) : (
-        <div className="proposals">
-          {open.map((row) => {
-            const view = cardView(row, zone);
-            return (
-              <ProposalCard key={row.message_id} view={view}>
-                {view.canDecide && (
-                  <DecisionButtons
-                    messageId={view.messageId}
-                    revision={view.revision}
-                    canEdit={view.canEdit}
-                  />
-                )}
-              </ProposalCard>
-            );
-          })}
-        </div>
+        <StableTaps layoutKey={layoutKey(open)}>
+          <div className="proposals">
+            {open.map((row) => {
+              const view = cardView(row, zone);
+              return (
+                <ProposalCard key={row.message_id} view={view}>
+                  {view.canDecide && (
+                    <DecisionButtons
+                      messageId={view.messageId}
+                      revision={view.revision}
+                      canEdit={view.canEdit}
+                    />
+                  )}
+                </ProposalCard>
+              );
+            })}
+          </div>
+        </StableTaps>
       )}
+      {total > open.length && (
+        <p className="sub">
+          Showing the newest {open.length} of {total}. The rest appear as these are decided.
+        </p>
+      )}
+
+      <PushSetup publicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null} />
 
       <h1 className="section">Recent decisions</h1>
       {decisions.length === 0 ? (

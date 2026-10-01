@@ -14,6 +14,22 @@ export function applicationServerKey(base64url: string): Uint8Array<ArrayBuffer>
   return bytes;
 }
 
+/**
+ * Whether a stored subscription was made with a VAPID key other than the
+ * current one. Once the keys are rotated, every push to such a subscription
+ * is refused for good, so it has to be replaced rather than re-posted.
+ * A browser that does not report the key gets the benefit of the doubt.
+ */
+export function madeWithOtherKey(
+  subscribedKey: ArrayBuffer | null | undefined,
+  currentKey: string,
+): boolean {
+  if (!subscribedKey) return false;
+  const stored = new Uint8Array(subscribedKey);
+  const current = applicationServerKey(currentKey);
+  return stored.length !== current.length || stored.some((byte, i) => byte !== current[i]);
+}
+
 export type PushSetupState = "install-first" | "off" | "on" | "denied" | "unsupported";
 
 export type PushContext = {
@@ -41,6 +57,13 @@ export type SubscriptionBody = {
   endpoint: string;
   keys: { p256dh: string; auth: string };
 };
+
+/** The endpoint of a subscription to forget, or null for anything else. */
+export function endpointOf(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { endpoint } = value as { endpoint?: unknown };
+  return typeof endpoint === "string" && endpoint.length > 0 ? endpoint : null;
+}
 
 /** The part of a `PushSubscription` Fly stores, or null for anything else. */
 export function subscriptionBody(value: unknown): SubscriptionBody | null {

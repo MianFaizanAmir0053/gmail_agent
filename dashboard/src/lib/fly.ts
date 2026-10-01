@@ -16,9 +16,18 @@ const TIMEOUT_MS = 10_000;
 /**
  * Store or refresh this browser's push subscription on Fly. Returns the HTTP
  * status to pass back to the browser: 204, 409 (too many), 422, or 502 when
- * Fly could not be reached.
+ * Fly could not be reached or refused the secret.
  */
-export async function postSubscription(subscription: SubscriptionBody): Promise<number> {
+export function postSubscription(subscription: SubscriptionBody): Promise<number> {
+  return sendSubscription("POST", subscription);
+}
+
+/** Forget a subscription this browser replaced. Same statuses. */
+export function deleteSubscription(endpoint: string): Promise<number> {
+  return sendSubscription("DELETE", { endpoint });
+}
+
+async function sendSubscription(method: "POST" | "DELETE", body: unknown): Promise<number> {
   const base = process.env.FLY_API_URL;
   const secret = process.env.WEB_API_SECRET;
   if (!base || !secret) {
@@ -27,12 +36,16 @@ export async function postSubscription(subscription: SubscriptionBody): Promise<
   }
   try {
     const response = await fetch(new URL("/api/push-subscriptions", base), {
-      method: "POST",
+      method,
       headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
-      body: JSON.stringify(subscription),
+      body: JSON.stringify(body),
       cache: "no-store",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
+    if (response.status !== 204) {
+      // The status alone: a 401 means the two secrets differ, not an outage.
+      console.error(`subscription ${method} answered`, response.status);
+    }
     return [204, 409, 422].includes(response.status) ? response.status : 502;
   } catch (error) {
     console.error("subscription not sent:", error instanceof Error ? error.name : "unknown error");

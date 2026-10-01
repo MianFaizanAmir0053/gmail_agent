@@ -31,8 +31,21 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-PROPOSAL_PUSH = {"title": "mailagent", "body": "A proposal needs you.", "url": "/"}
-ALERT_PUSH = {"title": "mailagent", "body": "Google sign-in needs attention.", "url": "/"}
+PROPOSAL_PUSH = {
+    "title": "mailagent",
+    "body": "A proposal needs you.",
+    "url": "/",
+    "tag": "proposal",
+}
+ALERT_PUSH = {
+    "title": "mailagent",
+    "body": "Google sign-in needs attention.",
+    "url": "/",
+    "tag": "alert",
+}
+"""Generic words only: a push crosses Apple's and Google's servers and lands on
+a lock screen. The tag is the kind, so the phone replaces a notification only
+with one of the same kind (`dashboard/public/sw.js`)."""
 
 PUSH_TIMEOUT = 10
 """Seconds per push service."""

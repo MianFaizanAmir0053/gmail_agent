@@ -275,6 +275,8 @@ h1.section {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  /* A button's height, so "Applying…" in place of the buttons moves no card below. */
+  min-height: 36px;
 }
 .pill.dry-run {
   color: var(--warn);
@@ -352,7 +354,7 @@ h1.section {
 /* --- push (M16) ----------------------------------------------------------- */
 
 .push {
-  margin: 0 0 18px;
+  margin: 18px 0;
 }
 .push button {
   font: inherit;

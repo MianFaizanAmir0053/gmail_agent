@@ -51,19 +51,27 @@ export type CardView = {
   canEdit: boolean;
 };
 
+/**
+ * What one card shows. Total: whatever the stored payload holds, it returns a
+ * view rather than throwing, because one odd row must not take the whole
+ * timeline down with it.
+ */
 export function cardView(row: ProposalRow, ownerZone: string): CardView {
   const card = row.payload;
-  const pending = row.status === "pending";
+  // Deciding needs the content: the owner would otherwise approve something
+  // they cannot see. Retention never clears an open proposal, so this holds
+  // only for a row nobody expected.
+  const pending = row.status === "pending" && card !== null;
   return {
     messageId: row.message_id,
     revision: row.revision,
-    title: card === null ? "(cleared)" : card.title || "(untitled)",
-    when: formatWindow(card?.start_utc ?? null, card?.end_utc ?? null, ownerZone),
-    eventZone: card?.timezone ?? null,
-    attendees: card?.attendees ?? [],
-    location: card?.location ?? null,
-    conflicts: card?.conflicts ?? [],
-    reviewIssues: card?.review_issues ?? [],
+    title: card === null ? "(cleared)" : text(card.title) || "(untitled)",
+    when: formatWindow(text(card?.start_utc), text(card?.end_utc), ownerZone),
+    eventZone: text(card?.timezone),
+    attendees: words(card?.attendees),
+    location: text(card?.location),
+    conflicts: words(card?.conflicts),
+    reviewIssues: words(card?.review_issues),
     dryRun: row.dry_run,
     invite: row.action_type === "calendar_invite",
     applying: row.status === "deciding",
@@ -72,12 +80,22 @@ export function cardView(row: ProposalRow, ownerZone: string): CardView {
   };
 }
 
+/**
+ * What decides where each card's buttons sit: which cards are open, in what
+ * order, at which revision, and whether each is applying. The page holds its
+ * buttons still for a moment whenever this changes, so a tap meant for one
+ * card cannot land on another that moved into its place.
+ */
+export function layoutKey(rows: Pick<ProposalRow, "message_id" | "revision" | "status">[]): string {
+  return rows.map((row) => `${row.message_id}:${row.revision}:${row.status}`).join("|");
+}
+
 /** "Fri 02 Oct, 16:00 – 17:00" in `zone`; the end's day is named only when it differs. */
 export function formatWindow(start: string | null, end: string | null, zone: string): string {
-  if (!start) return "time unknown";
-  const from = parts(start, zone);
-  if (!end) return `${from.day}, ${from.time}`;
-  const to = parts(end, zone);
+  const from = start ? parts(start, zone) : null;
+  if (!from) return "time unknown";
+  const to = end ? parts(end, zone) : null;
+  if (!to) return `${from.day}, ${from.time}`;
   return from.day === to.day
     ? `${from.day}, ${from.time} – ${to.time}`
     : `${from.day}, ${from.time} – ${to.day}, ${to.time}`;
@@ -99,7 +117,18 @@ export function shouldRefresh(rows: Pick<ProposalRow, "status">[]): boolean {
   return rows.some((row) => row.status === "deciding");
 }
 
-function parts(iso: string, zone: string): { day: string; time: string } {
+function text(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function words(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/** A day and a time in `zone`, or null for a time that cannot be read. */
+function parts(iso: string, zone: string): { day: string; time: string } | null {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
   const pieces = new Intl.DateTimeFormat("en-GB", {
     timeZone: zone,
     weekday: "short",
@@ -108,7 +137,7 @@ function parts(iso: string, zone: string): { day: string; time: string } {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
-  }).formatToParts(new Date(iso));
+  }).formatToParts(date);
   const get = (type: Intl.DateTimeFormatPartTypes) =>
     pieces.find((piece) => piece.type === type)?.value ?? "";
   return {

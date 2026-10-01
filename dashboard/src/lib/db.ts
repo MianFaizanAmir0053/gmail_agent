@@ -4,6 +4,7 @@ import { cache } from "react";
 
 import { auth } from "@/auth";
 import { isOwnerSession } from "@/lib/access";
+import { databaseSsl } from "@/lib/tls";
 
 /**
  * Server components query Postgres directly.
@@ -16,6 +17,9 @@ import { isOwnerSession } from "@/lib/access";
  * modules on every hot reload, and a fresh pool per reload exhausts Postgres
  * connections within a few minutes of editing. It is not exported: every read
  * goes through `query`, which checks the session.
+ *
+ * Every connection off this machine is encrypted (`src/lib/tls.ts`). An
+ * `sslmode` in `DATABASE_URL` would override that, so the URL carries none.
  */
 const globalForPg = globalThis as unknown as { pool?: Pool };
 
@@ -23,6 +27,7 @@ const pool =
   globalForPg.pool ??
   new Pool({
     connectionString: process.env.DATABASE_URL,
+    ssl: databaseSsl(process.env.DATABASE_URL, process.env.DATABASE_CA_CERT),
     max: 4,
     idleTimeoutMillis: 30_000,
   });

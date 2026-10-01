@@ -4,8 +4,10 @@ import { describe, it } from "node:test";
 import {
   cardView,
   formatWindow,
+  layoutKey,
   ownerZone,
   shouldRefresh,
+  type CardPayload,
   type ProposalRow,
 } from "./timeline.ts";
 
@@ -47,6 +49,11 @@ describe("formatWindow", () => {
 
   it("says so when the time is unknown", () => {
     assert.equal(formatWindow(null, null, "UTC"), "time unknown");
+  });
+
+  it("treats a time it cannot read as unknown, rather than failing the page", () => {
+    assert.equal(formatWindow("next Tuesday", null, "UTC"), "time unknown");
+    assert.equal(formatWindow("2026-10-02T11:00:00Z", "later", "UTC"), "Fri 02 Oct, 11:00");
   });
 });
 
@@ -92,6 +99,53 @@ describe("cardView", () => {
   it("survives a missing title", () => {
     const view = cardView({ ...ROW, payload: { ...ROW.payload, title: null } }, "UTC");
     assert.equal(view.title, "(untitled)");
+  });
+
+  it("keeps only the words from lists that are not lists of words", () => {
+    // One odd row must not take the whole timeline down with it.
+    const payload = {
+      ...ROW.payload,
+      attendees: "sara@example.com",
+      conflicts: [42, "Overlaps Standup"],
+      review_issues: { issue: "x" },
+      title: 7,
+    } as unknown as CardPayload;
+    const view = cardView({ ...ROW, payload }, "UTC");
+    assert.deepEqual(view.attendees, []);
+    assert.deepEqual(view.conflicts, ["Overlaps Standup"]);
+    assert.deepEqual(view.reviewIssues, []);
+    assert.equal(view.title, "(untitled)");
+  });
+
+  it("offers no decision on a proposal whose content is gone", () => {
+    // The owner would be approving something they cannot see.
+    const view = cardView({ ...ROW, payload: null }, "UTC");
+    assert.equal(view.canDecide, false);
+    assert.equal(view.canEdit, false);
+  });
+});
+
+describe("layoutKey", () => {
+  const A: ProposalRow = { ...ROW, message_id: "a" };
+  const B: ProposalRow = { ...ROW, message_id: "b" };
+
+  it("stays the same while no card on the list moves", () => {
+    assert.equal(layoutKey([A, B]), layoutKey([{ ...A }, { ...B }]));
+  });
+
+  it("changes when a card appears, leaves, moves, gains a revision or starts applying", () => {
+    // Each of these can move a button under the owner's thumb.
+    const before = layoutKey([A, B]);
+    const after: ProposalRow[][] = [
+      [A],
+      [{ ...ROW, message_id: "c" }, A, B],
+      [B, A],
+      [{ ...A, revision: 2 }, B],
+      [{ ...A, status: "deciding" }, B],
+    ];
+    for (const rows of after) {
+      assert.notEqual(layoutKey(rows), before);
+    }
   });
 });
 

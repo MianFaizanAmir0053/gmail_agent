@@ -5,7 +5,9 @@
 The private key goes to Fly as `VAPID_PRIVATE_KEY`, and never anywhere else.
 The public key goes to the web app as `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, where
 browsers use it to subscribe. Replacing the pair invalidates every existing
-subscription; each phone re-subscribes the next time the app opens.
+subscription. Each phone replaces its own the next time the app opens, or,
+where the browser subscribes only from a tap, offers the button again
+(`dashboard/src/components/PushSetup.tsx`).
 """
 
 from __future__ import annotations

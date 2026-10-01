@@ -123,6 +123,19 @@ def test_an_alert_push_is_generic_too() -> None:
     assert json.loads(send.calls[0]["data"]) == ALERT_PUSH
 
 
+def test_an_alert_and_a_proposal_are_told_apart_on_the_phone() -> None:
+    """The service worker replaces a notification only with one of its own
+    kind (`dashboard/public/sw.js`). An unread alert replaced by the next
+    proposal would be lost: an alert is sent once per state change."""
+    push, _, send = _channel(FCM)
+
+    push.alert("token_expired")
+    push.announce_proposal(proposal_from("m1", SECRET_CONTENT, 1))
+
+    kinds = [json.loads(call["data"])["tag"] for call in send.calls]
+    assert kinds == ["alert", "proposal"]
+
+
 def test_every_push_is_bounded_kept_for_a_day_and_urgent() -> None:
     """pywebpush's defaults are no timeout and a TTL of 0: one hung service would
     block the poll, and a push to a sleeping phone would be dropped."""

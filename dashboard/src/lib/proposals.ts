@@ -19,23 +19,32 @@ export type DecisionRow = {
   title: string | null;
 };
 
+/** How many open proposals the timeline shows at once. */
+export const OPEN_SHOWN = 50;
+
 /**
- * Proposals waiting for the owner, or being applied: newest first.
+ * Proposals waiting for the owner, or being applied: newest first, at most
+ * `OPEN_SHOWN` of them, with how many are open in all, so the page can say
+ * when some are not shown.
  *
  * The order is total -- ties broken by message id -- because the page
  * re-reads every few seconds while a decision is applied. An order that
  * shuffled tied cards on each read would move them under the owner's thumb,
  * and a tap meant for one card could land on another's button.
  */
-export async function openProposals(): Promise<ProposalRow[]> {
-  return query<ProposalRow>(`
+export async function openProposals(): Promise<{ rows: ProposalRow[]; total: number }> {
+  const rows = await query<ProposalRow & { total: string }>(
+    `
     SELECT message_id, revision, status, final_status, action_type, dry_run,
-           payload, parked_at
+           payload, parked_at, count(*) OVER () AS total
       FROM proposals
      WHERE status IN ('pending', 'deciding')
      ORDER BY parked_at DESC, message_id
-     LIMIT 50
-  `);
+     LIMIT $1
+    `,
+    [OPEN_SHOWN],
+  );
+  return { rows, total: Number(rows[0]?.total ?? 0) };
 }
 
 /** The latest decisions, from every channel, with what became of them. */

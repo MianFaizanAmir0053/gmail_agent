@@ -13,8 +13,13 @@
 export { auth as proxy } from "@/auth";
 
 export const config = {
-  // Next's own build output never reaches the gate. The manifest, the service
-  // worker and the icons do, and are exempted by the tested rule instead, so
-  // the list of open paths lives in one place.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Skipped entirely: Next's build output, and the files a phone fetches
+  // without a session. Running the gate on those only refreshed the owner's
+  // session cookie on responses anyone may fetch. The rule in
+  // `src/lib/access.ts` still exempts them, and `/api/auth/*`, should the
+  // matcher ever change; `src/lib/proxyMatcher.test.ts` holds the two
+  // together. Next requires this to be a literal.
+  matcher: [
+    "/((?!_next/static/|favicon\\.ico$|icons/|sw\\.js$|manifest\\.webmanifest$).*)",
+  ],
 };

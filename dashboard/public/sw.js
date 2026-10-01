@@ -6,13 +6,20 @@
  * - Caches static build files and icons only (`isCacheable`, tested by
  *   src/lib/swRules.test.ts against this very file); signed-in pages and API
  *   answers always come from the network.
- * - Shows a push as a generic notification; a tap opens the timeline. The
- *   push's own content is never trusted for where to go.
+ * - Shows a push as a generic notification (`notificationFor`, tested the same
+ *   way); a tap opens the timeline. The push's own content is never trusted
+ *   for where to go.
  * - When the browser replaces a subscription, subscribes again and tells the
  *   app, which forwards it to Fly. The app also re-posts on every open, since
  *   not every browser fires that event.
  */
 const CACHE = "mailagent-static-v1";
+
+/*
+ * Build files have new names on every deploy, and the old ones are never
+ * asked for again. Beyond this many entries the oldest go.
+ */
+const CACHE_LIMIT = 150;
 
 /*
  * Static build output and icons only. A cached timeline would show proposals
@@ -23,6 +30,26 @@ self.isCacheable = function isCacheable(url, origin) {
   if (url.origin !== origin) return false;
   if (url.search) return false;
   return url.pathname.startsWith("/_next/static/") || url.pathname.startsWith("/icons/");
+};
+
+/*
+ * What a push shows. Its words come from Fly, which sends only generic ones;
+ * its tag is one of two, so a proposal never replaces an unread sign-in
+ * alert, which Fly does not send twice.
+ */
+self.notificationFor = function notificationFor(data) {
+  const push = data !== null && typeof data === "object" ? data : {};
+  return {
+    title: typeof push.title === "string" ? push.title : "mailagent",
+    options: {
+      body: typeof push.body === "string" ? push.body : "Something needs you.",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      // One notification per kind: a second proposal replaces the first.
+      tag: push.tag === "alert" ? "mailagent-alert" : "mailagent-proposal",
+      renotify: true,
+    },
+  };
 };
 
 self.addEventListener("install", () => self.skipWaiting());
@@ -49,31 +76,37 @@ self.addEventListener("fetch", (event) => {
       const hit = await cache.match(event.request);
       if (hit) return hit;
       const response = await fetch(event.request);
-      if (response.ok) await cache.put(event.request, response.clone());
+      if (response.ok) {
+        // Kept off the answer's path: a full or failing cache must cost a
+        // cache entry, never the page.
+        event.waitUntil(keep(cache, event.request, response.clone()));
+      }
       return response;
     })(),
   );
 });
 
-self.addEventListener("push", (event) => {
-  let data = {};
+async function keep(cache, request, response) {
   try {
-    data = event.data ? event.data.json() : {};
+    await cache.put(request, response);
+    const keys = await cache.keys(); // oldest first
+    for (const old of keys.slice(0, Math.max(0, keys.length - CACHE_LIMIT))) {
+      await cache.delete(old);
+    }
   } catch {
-    // Not JSON: fall back to the generic words below.
+    // Not cached this time; the network still answered.
   }
-  const title = typeof data.title === "string" ? data.title : "mailagent";
-  const body = typeof data.body === "string" ? data.body : "Something needs you.";
-  event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
-      // One notification at a time: a second push replaces the first.
-      tag: "mailagent",
-      renotify: true,
-    }),
-  );
+}
+
+self.addEventListener("push", (event) => {
+  let data = null;
+  try {
+    data = event.data ? event.data.json() : null;
+  } catch {
+    // Not JSON: generic words.
+  }
+  const { title, options } = self.notificationFor(data);
+  event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener("notificationclick", (event) => {
@@ -81,13 +114,16 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      for (const client of windows) {
-        if (new URL(client.url).origin === self.location.origin) {
-          await client.navigate("/");
-          return client.focus();
-        }
+      const open = windows.find((client) => new URL(client.url).origin === self.location.origin);
+      if (!open) return self.clients.openWindow("/");
+      // Focus first, while the tap still allows it. A window this worker does
+      // not control refuses `navigate`; it shows the app either way.
+      const focused = await open.focus();
+      try {
+        await (focused || open).navigate("/");
+      } catch {
+        // Left on the page it was showing.
       }
-      return self.clients.openWindow("/");
     })(),
   );
 });
