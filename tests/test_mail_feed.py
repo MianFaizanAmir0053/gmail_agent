@@ -29,10 +29,10 @@ def mail(conn: psycopg.Connection) -> Iterator[psycopg.Connection]:
         conn.execute(f"DELETE FROM {table}")
     conn.execute(
         """
-        INSERT INTO gmail_cursors (account, history_id, feed_from, backfill_until)
-        VALUES (%s, '1', %s, %s)
+        INSERT INTO gmail_cursors (account, history_id, feed_from, backfill_until, caught_up_at)
+        VALUES (%s, '1', %s, %s, %s)
         """,
-        (ME, FEED_FROM, FEED_FROM),
+        (ME, FEED_FROM, FEED_FROM, NOW),
     )
     yield conn
 
@@ -169,6 +169,32 @@ def test_a_row_waiting_on_the_fetch_queue_is_held_back(mail: psycopg.Connection)
     )
 
     assert _candidates(mail) == ["unreadable"]
+
+
+@pytest.mark.parametrize("behind", [timedelta(minutes=31), None])
+def test_the_feed_offers_nothing_while_the_sync_is_behind(
+    mail: psycopg.Connection, behind: timedelta | None
+) -> None:
+    """A row's labels are only as current as the sync. Hours into a failing
+    sync, a message the owner trashed meanwhile still looks like Inbox."""
+    _message(mail, "waiting")
+    _message(mail, "eight-days", at=NOW - timedelta(days=8))
+    mail.execute(
+        "UPDATE gmail_cursors SET feed_from = %s, caught_up_at = %s",
+        (NOW - timedelta(days=30), None if behind is None else NOW - behind),
+    )
+
+    assert _candidates(mail) == []
+    assert feed.record_too_old(mail, now=NOW) == []
+
+
+def test_the_feed_offers_mail_once_the_sync_has_caught_up_lately(
+    mail: psycopg.Connection,
+) -> None:
+    _message(mail, "waiting")
+    mail.execute("UPDATE gmail_cursors SET caught_up_at = %s", (NOW - timedelta(minutes=29),))
+
+    assert _candidates(mail) == ["waiting"]
 
 
 def test_mail_older_than_seven_days_is_recorded_as_skipped_without_a_model_call(

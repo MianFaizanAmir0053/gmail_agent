@@ -485,6 +485,11 @@ says).
 - **`/health`** returns 503 ("no mail sync pass reached the end of history
   in three intervals") when no pass has caught up for six minutes, after a
   two-minute boot grace. A sync stuck behind a backlog counts as down.
+- **A stale sync holds the feed.** While no pass has caught up for 30
+  minutes, the feed offers nothing: the stored labels may be out of date. A
+  message the owner trashed or marked as spam meanwhile is also caught by
+  the pipeline's own fetch, and recorded SKIPPED ("no longer in the
+  mailbox").
 - **With the bearer secret** (`Authorization: Bearer $WEB_API_SECRET`),
   `/health` shows `mail_sync`: the cursor's age, `feed_from`, the
   backfill's reach, the fetch queue (queued, unreadable), any catch-up, the

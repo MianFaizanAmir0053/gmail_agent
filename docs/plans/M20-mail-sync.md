@@ -225,7 +225,8 @@ these:
   - `auto_submitted` is absent or `no`;
   - for a message with no category label, `has_list_unsubscribe` is false;
 - `internal_at` at or after `feed_from` less an hour;
-- no ledger row yet.
+- no ledger row yet;
+- a sync pass reached the end of history in the last 30 minutes (`caught_up_at`). Labels are only as current as the sync: hours into a failing sync, a message the owner trashed meanwhile would still look like Inbox. While the sync is behind, the feed offers nothing, and records nothing as too old.
 
 They are taken oldest first, up to `POLL_BATCH_SIZE`. Everything after that is
 as it is now: `claim`, `start`, park. The feed decides by time, not by how a
@@ -252,7 +253,9 @@ reasons, so it is kept. That covers:
 **A message gone before its turn.** The pipeline's fetch raises `MessageGone`
 for a `404`, which its retry policy does not retry. Poll records the message
 as `SKIPPED` ("no longer in the mailbox"), a fixed reason too. The graph's
-edges do not change.
+edges do not change. The full message carries its labels at no extra cost,
+so the same happens to a message now labelled `TRASH` or `SPAM`: the owner
+binned it after the sync last saw it.
 
 **The model's reasoning stays out of the ledger.** When classification finds
 no meeting, the ledger now records the fixed phrase "not a meeting" instead of

@@ -20,6 +20,12 @@ the fetch queue is held back: a catch-up queues the week's rows to be
 fetched again, and until that answers, their labels may be stale -- a
 message trashed during an outage would otherwise be fed.
 
+Labels are only as current as the sync, so the feed offers nothing at all
+unless a sync pass reached the end of history in the last half hour
+(`caught_up_at`): hours into a failing sync, a message the owner trashed
+meanwhile would still look like Inbox. The pipeline's own fetch reads the
+labels again, and ends a message now in the trash or spam as gone.
+
 A candidate is processed only while it is under seven days old. An older
 one is recorded `SKIPPED` ("too old when reached") without a model call, so
 nothing that meets the rule is ever silently dropped.
@@ -45,6 +51,10 @@ MARGIN = timedelta(hours=1)
 """The feed starts this long before `feed_from`, so the old poller's last
 hour is covered twice rather than not at all. The ledger keeps a message
 that both reached from being processed twice."""
+
+SYNCED_WITHIN = timedelta(minutes=30)
+"""The feed offers nothing unless a sync pass reached the end of history
+this recently: fifteen of the sync's two-minute ticks."""
 
 TOO_OLD = "too old when reached"
 GONE = "no longer in the mailbox"
@@ -82,8 +92,14 @@ def active(conn: psycopg.Connection) -> bool:
     return bool(row and row[0])
 
 
+_SYNCED = "AND c.caught_up_at >= %(synced)s"
+"""The sync reached the end of history lately: its labels are current."""
+
+
 def candidates(conn: psycopg.Connection, limit: int, *, now: datetime | None = None) -> list[str]:
-    """Up to `limit` messages for the pipeline, oldest first."""
+    """Up to `limit` messages for the pipeline, oldest first. None while the
+    sync is behind (`SYNCED_WITHIN`)."""
+    now = now or datetime.now(UTC)
     rows = conn.execute(
         f"""
         SELECT m.message_id
@@ -91,10 +107,16 @@ def candidates(conn: psycopg.Connection, limit: int, *, now: datetime | None = N
           JOIN gmail_cursors c ON c.account = m.account
          WHERE {RULE}
            AND m.internal_at >= %(fresh)s
+           {_SYNCED}
          ORDER BY m.internal_at, m.message_id
          LIMIT %(limit)s
         """,
-        {"margin": MARGIN, "fresh": (now or datetime.now(UTC)) - AGE_LIMIT, "limit": limit},
+        {
+            "margin": MARGIN,
+            "fresh": now - AGE_LIMIT,
+            "synced": now - SYNCED_WITHIN,
+            "limit": limit,
+        },
     ).fetchall()
     return [row[0] for row in rows]
 
@@ -105,8 +127,10 @@ def record_too_old(conn: psycopg.Connection, *, now: datetime | None = None) -> 
 
     That covers mail found by a catch-up after a long outage, mail restored
     from the trash, and mail held by M17's pause or spending cap for a week.
-    The ledger's thread id is the message id, as `claim` writes it.
+    The ledger's thread id is the message id, as `claim` writes it. Nothing
+    is recorded while the sync is behind: the rule is read on its labels.
     """
+    now = now or datetime.now(UTC)
     rows = conn.execute(
         f"""
         INSERT INTO processed_messages (gmail_message_id, thread_id, status, error)
@@ -115,12 +139,14 @@ def record_too_old(conn: psycopg.Connection, *, now: datetime | None = None) -> 
           JOIN gmail_cursors c ON c.account = m.account
          WHERE {RULE}
            AND m.internal_at < %(fresh)s
+           {_SYNCED}
         ON CONFLICT (gmail_message_id) DO NOTHING
         RETURNING gmail_message_id
         """,
         {
             "margin": MARGIN,
-            "fresh": (now or datetime.now(UTC)) - AGE_LIMIT,
+            "fresh": now - AGE_LIMIT,
+            "synced": now - SYNCED_WITHIN,
             "skipped": MessageStatus.SKIPPED.value,
             "reason": TOO_OLD,
         },

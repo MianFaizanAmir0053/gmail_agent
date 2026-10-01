@@ -90,11 +90,16 @@ _RATE_LIMIT_REASONS = frozenset(
 
 
 class MessageGoneError(LookupError):
-    """A fetch answered 404: the message has left the mailbox.
+    """A fetch answered 404: the message has left the mailbox. The pipeline's
+    fetch raises it too for a message now in the trash or spam (`BINNED`).
 
     A LookupError, so LangGraph's default retry rule never retries it either:
     a deleted message stays deleted, however often it is asked for.
     """
+
+
+BINNED = frozenset({"TRASH", "SPAM"})
+"""Labels that take a message out of the pipeline's hands."""
 
 
 class CursorExpiredError(Exception):
@@ -568,8 +573,10 @@ class GmailClient:
 
     def get_message(self, message_id: str) -> EmailMessage:
         """The whole message, for the pipeline. Raises `MessageGoneError` for
-        a 404: a message deleted before its turn is recorded, not retried
-        (M20, D4)."""
+        a 404, and for a message now in the trash or spam: one deleted or
+        binned before its turn is recorded, not processed or retried (M20,
+        D4). The labels come with the message at no extra cost, and are
+        newer than the sync's, which may lag."""
         request = self._service.users().messages().get(userId="me", id=message_id, format="full")
         try:
             response = self._execute("messages.get", request)
@@ -577,6 +584,8 @@ class GmailClient:
             if _status(exc) == 404:
                 raise MessageGoneError(message_id) from exc
             raise
+        if BINNED & set(response.get("labelIds", [])):
+            raise MessageGoneError(message_id)
         return to_email_message(response)
 
     def current_history_id(self) -> str:

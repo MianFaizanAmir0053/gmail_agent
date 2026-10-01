@@ -35,10 +35,10 @@ def mail(conn: psycopg.Connection) -> Iterator[psycopg.Connection]:
         conn.execute(f"DELETE FROM {table}")
     conn.execute(
         """
-        INSERT INTO gmail_cursors (account, history_id, feed_from, backfill_until)
-        VALUES (%s, '1', %s, %s)
+        INSERT INTO gmail_cursors (account, history_id, feed_from, backfill_until, caught_up_at)
+        VALUES (%s, '1', %s, %s, %s)
         """,
-        (ME, NOW - timedelta(days=30), NOW - timedelta(days=30)),
+        (ME, NOW - timedelta(days=30), NOW - timedelta(days=30), NOW),
     )
     yield conn
 

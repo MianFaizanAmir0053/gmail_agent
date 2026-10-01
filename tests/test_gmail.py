@@ -434,6 +434,25 @@ def test_a_fetch_404_is_message_gone_and_is_not_retried(fetch: str) -> None:
     assert service.requests[0].attempts == 1
 
 
+@pytest.mark.parametrize("label", ["TRASH", "SPAM"])
+def test_the_pipelines_fetch_of_mail_now_binned_ends_it_as_gone(label: str) -> None:
+    """The full message carries its labels at no extra cost: mail the owner
+    trashed after the sync last saw it is not processed (M20 review, S4)."""
+    service = FakeService()
+    service.reply("messages.get", SEEDED | {"labelIds": ["INBOX", label]})
+
+    with pytest.raises(MessageGoneError):
+        _sync_client(service).get_message("m1")
+
+
+def test_the_syncs_fetch_of_binned_mail_still_answers() -> None:
+    """The sync must see a binned message's labels to keep its row current."""
+    service = FakeService()
+    service.reply("messages.get", SEEDED | {"labelIds": ["TRASH"]})
+
+    assert _sync_client(service).message_metadata("m1").label_ids == frozenset({"TRASH"})
+
+
 def test_message_gone_is_a_lookup_error_so_no_retry_policy_retries_it() -> None:
     """LangGraph's default rule never retries a LookupError either."""
     assert issubclass(MessageGoneError, LookupError)
