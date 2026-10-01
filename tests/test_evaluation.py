@@ -14,15 +14,14 @@ from app.contracts import EmailMessage
 from app.eval.dataset import load_fixtures
 from app.extraction import prompts
 from app.extraction.evaluation import (
-    EVALUATE_URL,
     JEV,
     STATE_CHAR_LIMIT,
     GatewayError,
-    GatewayEvaluator,
     classify_by_evaluation,
 )
 from app.extraction.llm import LlmError
 from app.extraction.pipeline import ExtractionPipeline
+from app.policy.models import EVALUATE_URL, GatewayEvaluator
 
 NOW = datetime(2026, 9, 30, 9, 0, tzinfo=UTC)
 

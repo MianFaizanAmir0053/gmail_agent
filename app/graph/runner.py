@@ -24,6 +24,7 @@ from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import Deps
 from app.graph.versioning import pipeline_version
 from app.obs.trace import Tracer
+from app.policy import models
 from app.policy.contacts import unconfirmed_outsiders
 from app.policy.hashing import Binding, args_key
 from app.policy.registry import Registry
@@ -58,6 +59,9 @@ class GraphSession:
         if tracer is not None:
             tracer.start_run(message_id)
 
+        # The message this run serves: its model calls count against its
+        # ceiling (M17, D5).
+        serving = models.CURRENT_MESSAGE.set(message_id)
         try:
             # Each step's checkpoint is written before the next step runs.
             # LangGraph's default writes them in the background, and a crash
@@ -70,6 +74,8 @@ class GraphSession:
             if tracer is not None:
                 tracer.finish_run("failed", f"{type(exc).__name__}: {exc}")
             raise
+        finally:
+            models.CURRENT_MESSAGE.reset(serving)
 
         if tracer is not None:
             # A parked run is not finished. Recording it as success would make
@@ -172,7 +178,13 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
         # Shares the graph's connection. Retrieval is read-only and runs inside
         # an extraction that is already holding it, so a second pool would buy
         # nothing but another thing to close.
-        searcher = build_context_search(conn, settings) if settings.search_context_enabled else None
+        # One gate meters every model call this session makes (M17, D5).
+        meter = models.gate(settings, conn)
+        searcher = (
+            build_context_search(conn, settings, gate=meter)
+            if settings.search_context_enabled
+            else None
+        )
 
         calendar = CalendarClient(
             build_service("calendar", "v3", credentials),
@@ -188,6 +200,7 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
                 owner_email=settings.owner_email,
                 searcher=searcher,
                 owner_aliases=tuple(settings.owner_aliases),
+                gate=meter,
             ),
             calendar=calendar,
             ledger=MessageLedger(conn),
@@ -199,7 +212,7 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
             # is a read, and a reviewer that cannot see the calendar loses the
             # one check the extractor genuinely could not make.
             reviewer=(
-                build_reviewer(searcher=searcher, calendar=calendar)
+                build_reviewer(searcher=searcher, calendar=calendar, gate=meter)
                 if settings.reviewer_enabled
                 else None
             ),

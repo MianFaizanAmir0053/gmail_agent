@@ -34,6 +34,12 @@ from typing import Any, Protocol
 
 import psycopg
 
+from app.policy.budget import (
+    BudgetExhaustedError,
+    Gate,
+    MessageTooCostlyError,
+    UnpricedModelError,
+)
 from app.rag.embed import embed_query, to_pgvector
 
 RRF_K = 60
@@ -279,6 +285,10 @@ class ContextSearch:
                 model=self.embedding_model,
                 dimensions=self.embedding_dimensions,
             )
+        except (BudgetExhaustedError, UnpricedModelError, MessageTooCostlyError):
+            # The spend gate said no (M17, D5): stopping is the point, so the
+            # refusal goes up to whoever stops the message.
+            raise
         except Exception:
             # Degrade to keyword-only rather than failing the extraction. Half a
             # search is worth more here than an exception thrown three nodes deep
@@ -313,13 +323,16 @@ class ContextSearch:
         )
 
 
-def build_context_search(conn: psycopg.Connection, settings: Any) -> ContextSearch:
-    """Wire a searcher from settings. Imports the SDK lazily, like the pipeline."""
-    from google import genai
+def build_context_search(
+    conn: psycopg.Connection, settings: Any, *, gate: Gate | None = None
+) -> ContextSearch:
+    """Wire a searcher from settings, metered like the pipeline (M17, D5): by
+    `gate`, or one on this connection."""
+    from app.policy import models
 
     return ContextSearch(
         conn=conn,
-        client=genai.Client(api_key=settings.gemini_api_key.get_secret_value()),
+        client=models.client(settings, gate or models.gate(settings, conn)),
         embedding_model=settings.embedding_model,
         embedding_dimensions=settings.embedding_dimensions,
         mode=settings.retrieval_mode,

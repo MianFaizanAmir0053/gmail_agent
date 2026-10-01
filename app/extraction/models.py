@@ -27,11 +27,12 @@ CANDIDATES = (
 
 
 def _client() -> Any:
-    from google import genai
-
+    """Metered like every other client (M17, D5): the probe's calls count."""
     from app.config import get_settings
+    from app.policy import models
 
-    return genai.Client(api_key=get_settings().gemini_api_key.get_secret_value())
+    settings = get_settings()
+    return models.client(settings, models.local_gate(settings))
 
 
 def _summarise(exc: Exception) -> str:

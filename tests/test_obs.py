@@ -121,6 +121,11 @@ PUBLISHED = [
     ("gemini-3.8-flash", FIRST_NEW_PRICE, "1.50", "7.50", "0.15"),
     # Vercel AI Gateway's list price. Evaluation bills input only, no caching.
     ("typesafe-ai/jev", AT, "0.042", "0", None),
+    # Gemini Embedding 2's text input, Standard tier, checked on 2026-10-02.
+    # `gemini-embedding-001` is not on the page; it is priced the same, as an
+    # estimate (M17, D5), as M15's measurement priced it.
+    ("gemini-embedding-2", AT, "0.20", "0", None),
+    ("gemini-embedding-001", AT, "0.20", "0", None),
 ]
 
 

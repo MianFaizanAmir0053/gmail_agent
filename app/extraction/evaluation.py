@@ -15,17 +15,12 @@ stays the default classifier until `eval --extractor jev` says otherwise.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Protocol
-
-import httpx
 
 from app.extraction import prompts
 from app.extraction.llm import LlmError, Usage, call_with_retry
 from app.extraction.payloads import ClassifyPayload
 from app.obs.trace import record_llm_usage
-
-EVALUATE_URL = "https://ai-gateway.vercel.sh/v1/evaluate"
 
 JEV = "typesafe-ai/jev"
 
@@ -61,52 +56,10 @@ class GatewayError(RuntimeError):
 
 
 class Evaluator(Protocol):
-    """Just enough surface to allow a fake in tests."""
+    """Just enough surface to allow a fake in tests. The Gateway's own is built
+    by `app/policy/models.py`, the metered path (M17, D5)."""
 
     def evaluate(self, request: dict[str, Any]) -> dict[str, Any]: ...
-
-
-@dataclass(slots=True)
-class GatewayEvaluator:
-    api_key: str = field(repr=False)
-    """Kept out of the repr: a dataclass prints every field by default, and this
-    one would otherwise land in any traceback or log line showing the object."""
-
-    timeout: float = 20.0
-    transport: httpx.BaseTransport | None = None
-    """Tests substitute `httpx.MockTransport`; production leaves it unset."""
-
-    def evaluate(self, request: dict[str, Any]) -> dict[str, Any]:
-        with httpx.Client(transport=self.transport, timeout=self.timeout) as client:
-            response = client.post(
-                EVALUATE_URL,
-                json=request,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-        if response.is_error:
-            raise GatewayError(response.status_code, _error_message(response))
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise LlmError(f"AI Gateway returned non-JSON: {response.text[:200]}") from exc
-        if not isinstance(body, dict):
-            raise LlmError(f"AI Gateway returned JSON that is not an object: {body!r}")
-        return body
-
-
-def _error_message(response: httpx.Response) -> str:
-    """The gateway's own words when it gives some, the raw text when not."""
-    try:
-        body = response.json()
-    except ValueError:
-        return response.text[:300]
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict) and error.get("message"):
-            return str(error["message"])
-        if body.get("message"):
-            return str(body["message"])
-    return response.text[:300]
 
 
 def _count(value: Any) -> int:

@@ -322,11 +322,10 @@ def main() -> None:
         _report(stats, planned=True)
         return
 
-    from google import genai
-
+    from app.policy import models
     from app.store.db import connect
 
-    client = genai.Client(api_key=settings.gemini_api_key.get_secret_value())
+    client = models.client(settings, models.local_gate(settings))
 
     with connect(settings.database_url) as conn:
         stats = ingest(

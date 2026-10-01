@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -311,3 +311,27 @@ def test_the_reranker_seam_is_actually_applied(corpus: psycopg.Connection) -> No
     )
     query = "review offsite payment"
     assert [h.chunk_id for h in search(query)] == [h.chunk_id for h in reversed(plain(query))]
+
+
+@pytest.mark.parametrize(
+    "refusal", ["BudgetExhaustedError", "UnpricedModelError", "MessageTooCostlyError"]
+)
+def test_a_refusal_by_the_spend_gate_is_not_degraded_away(refusal: str) -> None:
+    """Stopping is the point (M17, D5): keyword search must not quietly go on
+    where the gate said no."""
+    from app.policy import budget
+
+    error = getattr(budget, refusal)
+
+    class Refused:
+        def embed_content(self, **kwargs: Any) -> Any:
+            raise error("no")
+
+    search = ContextSearch(
+        conn=cast(psycopg.Connection, None),
+        client=FakeClient(cast(FakeEmbeddings, Refused())),
+        embedding_model="fake",
+        embedding_dimensions=DIMENSIONS,
+    )
+    with pytest.raises(error):
+        search("anything")

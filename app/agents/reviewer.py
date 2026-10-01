@@ -44,6 +44,7 @@ from app.contracts import EmailMessage, ExtractionResult
 from app.extraction import prompts
 from app.extraction.llm import GenaiLike, Usage, structured_call
 from app.google.calendar import CalendarClient
+from app.policy.budget import Gate
 from app.tools.calendar_tool import FREEBUSY_TOOL, execute_freebusy
 from app.tools.search_context import SEARCH_CONTEXT_TOOL, Searcher, execute_search_context
 from app.tools.search_context import TOOL_NAME as SEARCH_TOOL_NAME
@@ -231,18 +232,20 @@ class Reviewer:
 
 
 def build_reviewer(
-    searcher: Searcher | None = None, calendar: CalendarClient | None = None
+    searcher: Searcher | None = None,
+    calendar: CalendarClient | None = None,
+    *,
+    gate: Gate | None = None,
 ) -> Reviewer:
-    """Wire a reviewer from settings. Imports the SDK lazily, like the pipeline."""
-    from google import genai
-
+    """Wire a reviewer from settings, metered like the pipeline (M17, D5)."""
     from app.config import get_settings
+    from app.policy import models
 
     settings = get_settings()
-    # Cast for the same reason `build_pipeline` does: the SDK's `Models` is
+    # Cast for the same reason `build_pipeline` does: the client is
     # structurally compatible with the Protocol but not nominally so.
     return Reviewer(
-        client=cast(GenaiLike, genai.Client(api_key=settings.gemini_api_key.get_secret_value())),
+        client=cast(GenaiLike, models.client(settings, gate or models.local_gate(settings))),
         model=settings.reviewer_model,
         searcher=searcher,
         calendar=calendar,

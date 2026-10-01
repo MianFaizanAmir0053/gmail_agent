@@ -79,6 +79,13 @@ RATES: dict[str, tuple[Rate, ...]] = {
         Rate(Decimal("0.75"), Decimal("3.75"), Decimal("0.075")),
         Rate(Decimal("1.50"), Decimal("7.50"), Decimal("0.15"), effective_from=_FLASH_PRICE_RISE),
     ),
+    # Embeddings report no usage, so their tokens are estimated from
+    # characters and their rows say so (M17, D5). Gemini Embedding 2's text
+    # rate on PRICING_CHECKED_ON. `gemini-embedding-001`, the model configured,
+    # was not listed that day; it is priced at the listed rate, as M15's
+    # measurement priced it -- an estimate, and the higher of the two.
+    "gemini-embedding-2": (Rate(Decimal("0.20"), Decimal("0")),),
+    "gemini-embedding-001": (Rate(Decimal("0.20"), Decimal("0")),),
     # TypeSafe's evaluation model, at Vercel AI Gateway's published price
     # (https://ai-gateway.vercel.sh/v1/models) on PRICING_CHECKED_ON. It bills
     # input only: output is published at zero, which is a rate, not a gap.

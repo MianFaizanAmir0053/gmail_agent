@@ -19,7 +19,6 @@ from app.extraction import prompts
 from app.extraction.evaluation import (
     EVALUATION_MODELS,
     Evaluator,
-    GatewayEvaluator,
     classify_by_evaluation,
 )
 from app.extraction.llm import GenaiLike, LlmError, Usage, structured_call
@@ -29,6 +28,7 @@ from app.extraction.payloads import (
     InvalidPayloadError,
     to_extraction_result,
 )
+from app.policy.budget import Gate
 from app.tools.search_context import (
     SEARCH_CONTEXT_TOOL,
     TOOL_NAME,
@@ -191,31 +191,27 @@ def build_pipeline(
     searcher: Searcher | None = None,
     *,
     owner_aliases: tuple[str, ...] = (),
+    gate: Gate | None = None,
 ) -> ExtractionPipeline:
-    """Wire a pipeline from settings.
+    """Wire a pipeline from settings, its calls metered by `gate` (M17, D5):
+    the session's, or for a command-line tool one on a connection of its own.
 
     Imports the SDK lazily so the eval harness and unit tests never need an API
     key just to import this module.
     """
-    from google import genai
-
     from app.config import get_settings
+    from app.policy import models
 
     settings = get_settings()
-    client = cast(GenaiLike, genai.Client(api_key=settings.gemini_api_key.get_secret_value()))
-    gateway_key = settings.ai_gateway_api_key
+    meter = gate or models.local_gate(settings)
     return ExtractionPipeline(
-        client=client,
+        client=cast(GenaiLike, models.client(settings, meter)),
         classify_model=settings.classify_model,
         extraction_model=settings.extraction_model,
         owner_email=owner_email,
         owner_aliases=owner_aliases,
         searcher=searcher,
-        evaluator=(
-            GatewayEvaluator(api_key=gateway_key.get_secret_value())
-            if gateway_key is not None
-            else None
-        ),
+        evaluator=models.evaluator(settings, meter),
     )
 
 

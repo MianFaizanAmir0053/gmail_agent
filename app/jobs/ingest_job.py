@@ -40,20 +40,24 @@ def incremental_query(window_days: int) -> str:
 
 
 def run_ingest(settings: Settings, *, backfill: bool = False) -> Stats:
-    from google import genai
-
     from app.google.auth import build_service, load_credentials
     from app.google.gmail import GmailClient
+    from app.policy import models
     from app.store.db import connect
 
     query = DEFAULT_QUERY if backfill else incremental_query(settings.ingest_window_days)
     limit = settings.ingest_backfill_limit if backfill else settings.ingest_limit
 
     mailbox = GmailClient(build_service("gmail", "v1", load_credentials(settings)))
-    client = genai.Client(api_key=settings.gemini_api_key.get_secret_value())
-
-    with connect(settings.database_url) as conn:
-        return ingest(conn, mailbox, client, settings=settings, query=query, limit=limit)
+    # The spend is recorded on a connection of its own, committed call by
+    # call: a run that fails half way has still spent what it spent.
+    meter = models.local_gate(settings)
+    try:
+        client = models.client(settings, meter)
+        with connect(settings.database_url) as conn:
+            return ingest(conn, mailbox, client, settings=settings, query=query, limit=limit)
+    finally:
+        meter.conn.close()
 
 
 def scheduled_ingest(settings: Settings) -> bool:

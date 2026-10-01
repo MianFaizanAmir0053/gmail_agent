@@ -640,3 +640,14 @@ and the owner's end tests.
   - The card's layout key counts its outside guests, so the buttons an Allow moves are held for a moment.
   - The Telegram card says to allow guests in the web app.
 - **Left for the owner's end tests:** Allow, then Confirm, in the browser against a local API (17.9's acceptance). It needs a signed-in owner session and Fly running locally.
+
+### Task 17.10: one metered path for model calls (2026-10-02)
+
+- **`app/policy/models.py` builds every model client,** and a test fails if `genai.Client(` or the Gateway's URL appears anywhere else. The Gateway's evaluator moved there from `app/extraction/evaluation.py`, which keeps the triage logic.
+- **Three operations, not two:** `models.generate_content`, `models.embed_content`, and the Gateway's `evaluate`, which has a call shape of its own. Nothing else is offered: no stream, no async client, no cache.
+- **One gate per session.** The graph session builds one gate on its connection, and the pipeline, the reviewer and search share it. A command-line tool (the eval harness, the model probe, the demos) gets one on a connection of its own, and so needs a database: the eval harness's spend is recorded like any other. Ingestion records its spend on a connection of its own too, committed call by call, so a run that fails half way has still recorded what it spent.
+- **The message a call serves** comes from a context variable the session sets around each run. LangGraph carries it into the nodes, and a test checks this.
+- **Prompts are bounded at the wrapper.** The longest text part is cut first, with a note, until the call's text is under 24,000 characters. Tool calls and their answers are left whole.
+- **Embeddings** are priced at four characters a token and marked estimates. `gemini-embedding-001` is no longer listed on the pricing page, so it is priced at Gemini Embedding 2's $0.20 per million tokens, as M15's measurement priced it.
+- **The settings** `MONTHLY_BUDGET_USD` (40) and `MESSAGE_CEILING_USD` (0.50) are new. What happens when the gate refuses -- poll stopping, a message released or skipped as too costly, the alerts and `/health` -- is 17.11's.
+- **Search** passes the gate's refusals up instead of degrading to keyword search.

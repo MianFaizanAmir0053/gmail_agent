@@ -834,3 +834,23 @@ def test_an_outsider_added_by_an_edit_is_marked() -> None:
     second = _interrupt_payload(graph, config)
     assert second is not None
     assert second["outside_guests"] == ["new@example.net"]
+
+
+def test_a_run_marks_the_message_its_model_calls_serve() -> None:
+    """Each call counts against that message's ceiling (M17, D5); outside a
+    run, a call serves no message."""
+    from app.policy import models
+
+    seen: list[str | None] = []
+
+    @dataclass
+    class Watching(FakePipeline):
+        def extract(self, email: EmailMessage, **kwargs: Any) -> ExtractionResult:
+            seen.append(models.CURRENT_MESSAGE.get())
+            return super().extract(email, **kwargs)
+
+    session = _session(_deps(pipeline=Watching()))
+    session.start("m1", "m1")
+
+    assert seen == ["m1"]
+    assert models.CURRENT_MESSAGE.get() is None

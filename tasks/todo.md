@@ -1157,9 +1157,9 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** `app/policy/models.py` (D5): the wrapper around google-genai and the Gateway call, built wherever a client is built today; `model_spend` rows; the gate's refusals (`UnpricedModel`, `BudgetExhausted`); embedding estimates; search re-raising budget errors. A call-site test like `test_one_resumer.py`.
 
 **Acceptance criteria:**
-- [ ] A model call outside the wrapper fails the call-site test.
-- [ ] An unpriced model is refused before any call.
-- [ ] Every metered call writes one `model_spend` row with no content.
+- [x] A model call outside the wrapper fails the call-site test.
+- [x] An unpriced model is refused before any call.
+- [x] Every metered call writes one `model_spend` row with no content.
 
 **Verification:** `uv run pytest tests/test_models.py tests/test_budget.py`.
 

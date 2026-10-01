@@ -1,0 +1,145 @@
+"""The spend cap (M17, D5): one gate every metered model call asks first.
+
+Before a call the gate refuses:
+- a model with no rate today (`UnpricedModelError`). Fail closed: a model
+  nobody priced could spend without limit;
+- any call once this month's spend has reached the cap (`BudgetExhaustedError`);
+- a call for a message that has already spent its ceiling
+  (`MessageTooCostlyError`).
+
+A refusal writes a `model_spend` row marked refused, at no cost, so "no model
+was called" can be checked afterwards. After a call, `record` writes one row:
+the model, the message it served, token counts, the cost and whether the cost
+is an estimate. No content.
+
+This month's spend is the sum of `model_spend` over the UTC calendar month.
+The gate reads it from the database at most once a minute, and adds what it
+metered itself since. It needs a database: there is no gate without one.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Literal
+
+import psycopg
+
+from app.obs.pricing import rate_at
+
+READ_EVERY = timedelta(minutes=1)
+"""How stale the month's total may be. Calls metered here since the read are
+added to it, so only other processes' spend can lag, by at most this long."""
+
+Refusal = Literal["unpriced", "exhausted", "too_costly"]
+
+
+class UnpricedModelError(RuntimeError):
+    """The model has no rate today. Nothing was called."""
+
+
+class BudgetExhaustedError(RuntimeError):
+    """This month's spend has reached the cap. Nothing was called."""
+
+
+class MessageTooCostlyError(RuntimeError):
+    """The message has already spent its ceiling. Nothing was called."""
+
+
+@dataclass(frozen=True, slots=True)
+class Spend:
+    """One metered call's numbers. Token counts are as the API reported them,
+    or estimated from characters (`estimated`)."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    thinking_tokens: int = 0
+    cost_usd: Decimal = Decimal(0)
+    estimated: bool = False
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+@dataclass(slots=True)
+class Gate:
+    conn: psycopg.Connection
+    cap_usd: Decimal
+    ceiling_usd: Decimal
+    clock: Callable[[], datetime] = _utcnow
+    _month: datetime | None = field(default=None, init=False)
+    _total: Decimal = field(default=Decimal(0), init=False)
+    _read_at: datetime | None = field(default=None, init=False)
+
+    def check(self, model: str, message_id: str | None) -> None:
+        """Raise the first refusal that applies, after recording it."""
+        now = self.clock()
+        if rate_at(model, now) is None:
+            self._refused(model, message_id, "unpriced")
+            raise UnpricedModelError(f"{model} has no rate")
+        if self.month_spend(now) >= self.cap_usd:
+            self._refused(model, message_id, "exhausted")
+            raise BudgetExhaustedError("this month's model spending cap is reached")
+        if message_id is not None and self.message_spend(message_id) >= self.ceiling_usd:
+            self._refused(model, message_id, "too_costly")
+            raise MessageTooCostlyError("this message has spent its ceiling")
+
+    def record(self, model: str, message_id: str | None, spend: Spend) -> None:
+        """One row for one call made."""
+        self.conn.execute(
+            """
+            INSERT INTO model_spend
+                   (at, model, message_id, input_tokens, output_tokens, cached_tokens,
+                    thinking_tokens, cost_usd, estimated)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                self.clock(),
+                model,
+                message_id,
+                spend.input_tokens,
+                spend.output_tokens,
+                spend.cached_tokens,
+                spend.thinking_tokens,
+                spend.cost_usd,
+                spend.estimated,
+            ),
+        )
+        self._total += spend.cost_usd
+
+    def month_spend(self, now: datetime | None = None) -> Decimal:
+        """This UTC month's spend: the database's total, read at most once a
+        minute, plus what this gate has metered since."""
+        now = now or self.clock()
+        month = now.astimezone(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if self._month != month or self._read_at is None or now - self._read_at >= READ_EVERY:
+            row = self.conn.execute(
+                "SELECT coalesce(sum(cost_usd), 0) FROM model_spend WHERE at >= %s AND at < %s",
+                (month, _next_month(month)),
+            ).fetchone()
+            self._month, self._read_at = month, now
+            self._total = Decimal(row[0]) if row else Decimal(0)
+        return self._total
+
+    def message_spend(self, message_id: str) -> Decimal:
+        row = self.conn.execute(
+            "SELECT coalesce(sum(cost_usd), 0) FROM model_spend WHERE message_id = %s",
+            (message_id,),
+        ).fetchone()
+        return Decimal(row[0]) if row else Decimal(0)
+
+    def _refused(self, model: str, message_id: str | None, refusal: Refusal) -> None:
+        self.conn.execute(
+            "INSERT INTO model_spend (at, model, message_id, refused) VALUES (%s, %s, %s, %s)",
+            (self.clock(), model, message_id, refusal),
+        )
+
+
+def _next_month(month: datetime) -> datetime:
+    if month.month == 12:
+        return month.replace(year=month.year + 1, month=1)
+    return month.replace(month=month.month + 1)
