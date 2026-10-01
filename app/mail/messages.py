@@ -60,8 +60,13 @@ def category_of(labels: frozenset[str]) -> Category:
     return "primary"
 
 
+OUTBOUND = frozenset({"SENT", "SCHEDULED"})
+"""Labels the owner's own mail carries. A scheduled send may carry SCHEDULED
+without SENT until it goes; it is outbound all the same."""
+
+
 def direction_of(labels: frozenset[str]) -> Direction:
-    return "out" if "SENT" in labels else "in"
+    return "out" if labels & OUTBOUND else "in"
 
 
 def kept(labels: frozenset[str]) -> bool:

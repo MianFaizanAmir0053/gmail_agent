@@ -80,7 +80,7 @@ per source (Outlook gets its own in M23):
 | `thread_id` | Gmail's thread id |
 | `internal_at` | When Gmail received or sent it (`internalDate`) |
 | `label_ids` | As Gmail reports them, kept current from history |
-| `direction` | `out` when labelled `SENT`; otherwise `in` |
+| `direction` | `out` when labelled `SENT` or `SCHEDULED` (a scheduled send may carry no `SENT` until it goes); otherwise `in` |
 | `to_self` | Sent by the owner to the owner (any of `OWNER_EMAIL` and `OWNER_ALIASES` in `To`) |
 | `category` | `primary`, `updates` or `forums`, from the labels; `primary` when no category label is present |
 | `from_addr`, `to_addrs`, `cc_addrs` | Lower-cased addresses, as written |

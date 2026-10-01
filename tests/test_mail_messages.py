@@ -199,6 +199,15 @@ def test_sent_mail_is_outbound_and_everything_else_inbound() -> None:
     assert direction_of(frozenset({"INBOX", "UNREAD"})) == "in"
 
 
+def test_a_scheduled_send_is_outbound_before_it_is_sent() -> None:
+    """Scheduled mail may carry SCHEDULED without SENT: it is the owner's own,
+    and the feed must never take it for mail someone sent them."""
+    assert direction_of(frozenset({"SCHEDULED"})) == "out"
+    assert classify(_meta({"SCHEDULED"}, sender=ME, to="sara@example.com"), OWNERS).direction == (
+        "out"
+    )
+
+
 @pytest.mark.parametrize(
     ("labels", "category"),
     [
