@@ -78,6 +78,9 @@ def health(authorization: str | None = Header(default=None)) -> JSONResponse:
         # end of history, so a sync that is alive but behind shows too.
         if MAIL_SYNC.overdue(now, MAIL_SYNC_EVERY):
             problems.append("no mail sync pass reached the end of history in three intervals")
+        # Each pass can reach the end of history while every fetch fails.
+        if MAIL_SYNC.fetches_failing(now, MAIL_SYNC_EVERY):
+            problems.append("every mail sync fetch has failed for three intervals")
         if _is_owner(settings, authorization):
             body["mail_sync"] = MAIL_SYNC.report(now)
 

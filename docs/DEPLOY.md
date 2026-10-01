@@ -485,15 +485,21 @@ says).
 - **`/health`** returns 503 ("no mail sync pass reached the end of history
   in three intervals") when no pass has caught up for six minutes, after a
   two-minute boot grace. A sync stuck behind a backlog counts as down.
+- **Every fetch failing** -- a field mask or a policy Gmail refuses -- still
+  lets each pass reach the end of history. A run that tried three fetches or
+  more and fetched none is recorded not ok ("every fetch failed"), and
+  `/health` returns 503 ("every mail sync fetch has failed for three
+  intervals") until a run fetches a message again.
 - **A stale sync holds the feed.** While no pass has caught up for 30
   minutes, the feed offers nothing: the stored labels may be out of date. A
   message the owner trashed or marked as spam meanwhile is also caught by
   the pipeline's own fetch, and recorded SKIPPED ("no longer in the
   mailbox").
 - **With the bearer secret** (`Authorization: Bearer $WEB_API_SECRET`),
-  `/health` shows `mail_sync`: the cursor's age, `feed_from`, the
-  backfill's reach, the fetch queue (queued, unreadable), any catch-up, the
-  too-old count, the row count, and the last recall.
+  `/health` shows `mail_sync`: the cursor's age, since when every fetch has
+  failed (`fetches_failing_since`), `feed_from`, the backfill's reach, the
+  fetch queue (queued, unreadable), any catch-up, the too-old count, the row
+  count, and the last recall.
 - **`job_runs`:** `mail_sync` (at most every ten minutes per outcome, and
   every catch-up), and three rows a day from the recall at 05:15 UTC:
   `mail_recall_sync`, `mail_recall_feed`, `mail_recall_categories`.
@@ -517,6 +523,7 @@ fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --status'"
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --show <message id>'"
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --once'"
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --catch-up'"
+fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --retry-unreadable'"
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --check-feed'"
 ```
 
@@ -525,7 +532,8 @@ fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --check-feed'"
 | `--status` | The cursor, `feed_from`, the backfill, queue and catch-up, counts by direction, category and how rows arrived, the latest too-old records, the last recalls |
 | `--show <id>` | One row's metadata, its ledger status and any queue entry. No content: none is stored |
 | `--once` | One run, as the scheduler does |
-| `--catch-up` | Records a gap from an hour before the last caught-up pass to now, as if the cursor had expired. The scheduled runs work it off |
+| `--catch-up` | Records a gap from an hour before the last caught-up pass to now, as if the cursor had expired, and queues unreadable mail again. The scheduled runs work it off |
+| `--retry-unreadable` | Queues every unreadable message again with no strikes, within the backfill's 90 days. Run it once whatever failed them is fixed |
 | `--check-feed` | The exit criterion's checks; exits 1 if either fails |
 
 Locally, against the dev mailbox: `uv run python -m app.mail.sync --once`.
@@ -542,7 +550,8 @@ outage is never fed. Nothing is marked gone for not being listed. Progress
 shows in `--status` and `/health`.
 
 A message that fails to fetch or store on its own five times is marked
-unreadable and passed over; `/health` counts them. An outage (5xx, 429, the
+unreadable and passed over; `/health` counts them, and `--retry-unreadable`
+queues them again. An outage (5xx, 429, the
 network) stops a run without counting against any message. A fetch that
 fails that way is checked with one cheap call first: if Gmail answers it, the
 message alone is struck, and the run goes on.

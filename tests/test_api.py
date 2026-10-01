@@ -362,6 +362,22 @@ def test_a_mail_sync_that_has_not_reached_the_end_for_three_intervals_is_a_503(
     ]
 
 
+def test_a_mail_sync_whose_every_fetch_fails_is_a_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each pass still reaches the end of history, so the check above stays
+    green while no message is read."""
+    _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    mail = _mail_sync(monkeypatch, timedelta(minutes=1), caught_up_ago=timedelta(seconds=5))
+    mail.fetches_tried(tried=3, failed=3, at=datetime.now(UTC) - timedelta(minutes=7))
+
+    response = client.get("/health", headers=_owner())
+
+    assert response.status_code == 503
+    assert response.json()["problems"] == ["every mail sync fetch has failed for three intervals"]
+    assert response.json()["mail_sync"]["fetches_failing_since"] is not None
+
+
 def test_a_fresh_boot_is_not_blamed_for_the_mail_sync(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

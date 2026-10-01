@@ -323,6 +323,7 @@ def run_mail_sync(settings: Settings) -> None:
         return
     if report.reached_end and report.caught_up_at is not None:
         MAIL_SYNC.reached_end(report.caught_up_at)
+    MAIL_SYNC.fetches_tried(tried=report.fetches, failed=report.failures, at=datetime.now(UTC))
     if report.status is not None:
         MAIL_SYNC.status = report.status
     log.info(
@@ -341,7 +342,7 @@ def run_mail_sync(settings: Settings) -> None:
         always=report.catch_up is not None,
         seen=report.records,
         started=report.stored,
-        error=report.error,
+        error=report.problem,
     )
 
 

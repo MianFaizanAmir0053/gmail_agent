@@ -596,6 +596,23 @@ def _mail_liveness(monkeypatch: pytest.MonkeyPatch) -> MailSyncLiveness:
     return live
 
 
+def test_a_mail_sync_whose_every_fetch_failed_is_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It reached the end of history, and read nothing on the way."""
+    live = _mail_liveness(monkeypatch)
+    at = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    report = SyncReport(
+        account="me@example.com", reached_end=True, caught_up_at=at, fetches=3, failures=3
+    )
+    recorded = _mail_sync(monkeypatch, report)
+
+    run_mail_sync(_settings())
+
+    assert recorded == [
+        {"job": "mail_sync", "ok": False, "seen": 0, "started": 0, "error": "every fetch failed"}
+    ]
+    assert live.fetches_failing_since is not None
+
+
 def test_only_a_pass_that_reached_the_end_of_history_counts_for_liveness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

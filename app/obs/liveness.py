@@ -20,6 +20,10 @@ STALL_INTERVALS = 3
 """How many poll intervals may pass without a success before health degrades.
 One missed tick is noise; three in a row is an outage worth paging for."""
 
+FETCHES_JUDGED_FROM = 3
+"""Fetches a mail sync run must have tried before all of them failing counts
+against it: in its own report (`job_runs`) and here."""
+
 DECISION_STUCK_AFTER = timedelta(hours=1)
 """How long a decision may stay open before health degrades. Three failed
 attempts settle one within about twelve minutes, so an hour means the worker
@@ -119,6 +123,11 @@ class MailSyncLiveness:
 
     booted_at: datetime
     caught_up_at: datetime | None = None
+    fetches_failing_since: datetime | None = None
+    """When runs began to fail every fetch they tried: set by a run that tried
+    at least three and fetched none, cleared by the next run that fetched
+    one. Each pass still reaches the end of history meanwhile."""
+
     status: dict[str, Any] | None = None
     """The records as the last run left them: counts and times only."""
 
@@ -128,6 +137,14 @@ class MailSyncLiveness:
     def reached_end(self, at: datetime) -> None:
         self.caught_up_at = at
 
+    def fetches_tried(self, *, tried: int, failed: int, at: datetime) -> None:
+        """What a run's fetches came to. A run that tried too few to judge,
+        all of them failing, changes nothing."""
+        if failed < tried:
+            self.fetches_failing_since = None
+        elif tried >= FETCHES_JUDGED_FROM and self.fetches_failing_since is None:
+            self.fetches_failing_since = at
+
     def overdue(self, now: datetime, interval: timedelta) -> bool:
         """True once no pass has reached the end for `STALL_INTERVALS`
         intervals. Before the first, the clock starts one interval after
@@ -135,12 +152,23 @@ class MailSyncLiveness:
         reference = self.caught_up_at or (self.booted_at + interval)
         return now - reference > STALL_INTERVALS * interval
 
+    def fetches_failing(self, now: datetime, interval: timedelta) -> bool:
+        """True once every fetch has failed for `STALL_INTERVALS` intervals."""
+        since = self.fetches_failing_since
+        return since is not None and now - since > STALL_INTERVALS * interval
+
     def report(self, now: datetime) -> dict[str, Any]:
-        """The owner's view: the cursor's age, the backfill's, the queue's and
-        any catch-up's progress, the unreadable and too-old counts, the
-        table's size, and the last recall."""
+        """The owner's view: the cursor's age, whether every fetch is failing,
+        the backfill's, the queue's and any catch-up's progress, the
+        unreadable and too-old counts, the table's size, and the last recall."""
         age = round((now - self.caught_up_at).total_seconds()) if self.caught_up_at else None
-        return {"cursor_age_seconds": age, **(self.status or {}), "last_recall": self.recall}
+        failing = self.fetches_failing_since
+        return {
+            "cursor_age_seconds": age,
+            "fetches_failing_since": failing.isoformat() if failing else None,
+            **(self.status or {}),
+            "last_recall": self.recall,
+        }
 
 
 MAIL_SYNC = MailSyncLiveness(booted_at=LIVENESS.booted_at)

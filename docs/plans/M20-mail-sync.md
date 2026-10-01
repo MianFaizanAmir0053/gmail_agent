@@ -175,7 +175,9 @@ A crash or a deploy costs at most one page.
 within the backfill's share of the quota. A fetch that shows a message older
 than the backfill reaches (90 days before `feed_from`, not before today)
 drops it. A per-message failure counts a strike; five strikes
-mark it `unreadable`, counted in `/health`. Outages count no strikes. Entries
+mark it `unreadable`, counted in `/health`. `--retry-unreadable`, and every
+`--catch-up`, queues unreadable messages again with no strikes, within the
+backfill's reach. Outages count no strikes. Entries
 that never failed come first; those that did follow, fewest strikes and
 longest ago first, so a head that fails every time cannot starve the rest.
 
@@ -295,9 +297,15 @@ clock starting one interval after boot, as poll's does. A run that only made
 headway through a backlog does not count. Without this, a dead or lagging sync
 with an empty feed would leave `/health` green while the agent saw nothing.
 
+A pass can also reach the end of history while every fetch fails on its own:
+a field mask or a policy the API refuses. A run that tried at least three
+fetches and had none answer is not ok in `job_runs` ("every fetch failed"),
+and `/health` returns 503 once runs have failed every fetch for three
+intervals; one run that fetches a message clears it.
+
 With the bearer secret, `/health` also shows these, kept in memory and
 refreshed by the jobs that compute them:
-- the cursor's age;
+- the cursor's age, and since when every fetch has failed, if it has;
 - the backfill's, the queue's and any catch-up's progress;
 - unreadable and too-old counts;
 - the table's row count;
@@ -327,7 +335,8 @@ command takes the same advisory lock as the scheduled job.
 | `--once` | Runs one pass |
 | `--status` | The cursor, `feed_from`, progress of the backfill, queue and any catch-up, counts by direction, category and `arrived_via`, the latest too-old records, and the last recalls |
 | `--show <message id>` | One row's metadata, without content |
-| `--catch-up` | Forces a catch-up, as if the cursor had expired |
+| `--catch-up` | Forces a catch-up, as if the cursor had expired, and does what `--retry-unreadable` does |
+| `--retry-unreadable` | Queues every unreadable message again, its strikes reset, within the backfill's reach |
 | `--check-feed` | The switch-over and backfill checks in the exit criterion |
 
 ---

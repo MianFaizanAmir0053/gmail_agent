@@ -527,6 +527,42 @@ def test_a_failing_history_list_stops_the_pass_where_it_is(mail: psycopg.Connect
     assert report.error == "HttpError" and not report.reached_end
 
 
+def test_a_run_whose_every_fetch_fails_is_not_ok(mail: psycopg.Connection) -> None:
+    """A field mask or a policy the API refuses fails every message on its
+    own: each pass still reaches the end, and was reported ok while the
+    agent read nothing."""
+    box = FakeMailbox()
+    _started(mail, box)
+    for message_id in ("a", "b", "c"):
+        box.deliver(message_id, labels=PRIMARY, at=NOW)
+        box.fail(f"messages.get:{message_id}", http_error(403, "insufficientPermissions"))
+
+    report = _sync(mail, box)
+
+    assert report.reached_end and report.error is None
+    assert (report.fetches, report.failures) == (3, 3)
+    assert not report.ok and report.problem == "every fetch failed"
+
+
+@pytest.mark.parametrize(
+    ("delivered", "failing"),
+    [(["a", "b"], ["a", "b"]), (["a", "b", "c"], ["a", "b"])],
+)
+def test_fewer_than_three_fetches_or_one_that_answers_is_still_ok(
+    mail: psycopg.Connection, delivered: list[str], failing: list[str]
+) -> None:
+    box = FakeMailbox()
+    _started(mail, box)
+    for message_id in delivered:
+        box.deliver(message_id, labels=PRIMARY, at=NOW)
+    for message_id in failing:
+        box.fail(f"messages.get:{message_id}", http_error(400))
+
+    report = _sync(mail, box)
+
+    assert report.ok and report.problem is None
+
+
 def test_five_strikes_make_a_queued_message_unreadable(mail: psycopg.Connection) -> None:
     box = FakeMailbox()
     _started(mail, box)
