@@ -55,7 +55,13 @@ class GraphSession:
             tracer.start_run(message_id)
 
         try:
-            result: dict[str, Any] = self._graph(tracer).invoke(payload, self.config(message_id))
+            # Each step's checkpoint is written before the next step runs.
+            # LangGraph's default writes them in the background, and a crash
+            # inside `act` could then lose the step that recorded the approval:
+            # the thread would look parked, and be resumed a second time.
+            result: dict[str, Any] = self._graph(tracer).invoke(
+                payload, self.config(message_id), durability="sync"
+            )
         except Exception as exc:
             if tracer is not None:
                 tracer.finish_run("failed", f"{type(exc).__name__}: {exc}")

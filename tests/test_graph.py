@@ -462,6 +462,45 @@ def _session(deps: Deps) -> Any:
     return GraphSession(deps=deps, conn=cast(Any, None), checkpointer=InMemorySaver(), trace=False)
 
 
+class _RecordingGraph:
+    """A built graph whose `invoke` keyword arguments are written down."""
+
+    def __init__(self, graph: Any, seen: list[Any]) -> None:
+        self._graph = graph
+        self._seen = seen
+
+    def invoke(self, payload: Any, config: Any, **kwargs: Any) -> Any:
+        self._seen.append(kwargs.get("durability"))
+        return self._graph.invoke(payload, config, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._graph, name)
+
+
+def test_every_invocation_writes_its_checkpoints_before_moving_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LangGraph's default writes checkpoints in the background. A crash inside
+    `act` could then lose the step that recorded the approval, and the thread
+    would look parked and be resumed again (M17 D3)."""
+    from app.graph.runner import GraphSession
+
+    seen: list[Any] = []
+    build = GraphSession._graph
+    monkeypatch.setattr(
+        GraphSession,
+        "_graph",
+        lambda self, tracer=None: _RecordingGraph(build(self, tracer), seen),
+    )
+    session = _session(_deps())
+
+    session.start("m1", "m1")
+    session.resume("m1", {"action": "edit", "correction": "make it 5pm"})
+    session.redrive("m1")
+
+    assert seen == ["sync", "sync", "sync"]
+
+
 def test_the_revision_comes_from_the_threads_own_counter() -> None:
     session = _session(_deps())
     session.start("m1", "m1")
