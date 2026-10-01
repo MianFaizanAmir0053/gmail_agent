@@ -459,3 +459,38 @@ Three adversarial rounds, each by a reviewer with fresh context, on 2026-10-01.
 - **The first** found the switch-over gap, the routine fetch `404`s from drafts, the quota cost of `messages.get`, and the feed rule's loss of team mail.
 - **The second** moved the first cursor to the old poller's stored id, recorded the catch-up's gap before moving the cursor, and took liveness out of the database.
 - **The third** made the feed decide by time rather than by how a row arrived, stopped marking rows gone for not being listed, put every window in epoch seconds, moved label-change fetches to a queue, widened storage to Updates and Forums for M21, bounded the pipeline's retries, released stranded claims, and kept the model's reasoning out of the ledger.
+
+## Running notes
+
+### Fixes after the code reviews (2026-10-02)
+
+Two fresh-context reviews of the built module, one of the sync engine and one of the feed and its operations. Each fix has a test that failed without it; the spec and the runbook (`docs/DEPLOY.md` §10) say what changed.
+
+**The sync engine**
+- **One message that answers 5xx every time no longer wedges the sync.** An outage-like failure is checked with one profile read (1 unit). If Gmail answers, the message is queued and struck like any other; only if the probe fails too is it an outage. The queue tries entries that never failed first, then the rest by fewest strikes and longest since they failed (`gmail_fetch_queue.failed_at`).
+- **A row the database refuses no longer replays its page for ever.** NULs are dropped from headers, and each row is stored in a savepoint of its own; a refused row is queued and struck.
+- **A 403 rate limit is read from the whole error body**: `errors`, `details` and `status`. The client library keeps only `details` when both are sent.
+- **The feed offers nothing while the sync is behind:** no pass reached the end of history in the last 30 minutes. `gmail_cursors.caught_up_at` already existed and was set at the end of each such pass, so no column was added for it. The pipeline's own fetch reads the full message, whose labels come free, and ends one now in Trash or Spam as gone. Neither `act` nor `await_approval` changed.
+- **One Gmail call is bounded in all:** the pacer's wait (`wait_for`), every attempt (each charged to the pacer, its sockets capped by the time left) and jittered pauses. At most 30 seconds, 35 at the very worst.
+- **A fresh first run's switch-over listing runs to the moment of the listing,** so mail accepted between the run's start and the profile read is not lost.
+- **`--check-feed` asks Gmail** for the switch-over hour, and gives each message a verdict: processed, held (and why), or left out by the rule. A message never stored fails it.
+- **The queue's horizon is the backfill's floor,** 90 days before `feed_from`, not before today.
+- **SCHEDULED gives `out`,** as SENT does.
+- **Accepted:** a draft added and deleted on different pages of one pass is still fetched once, and answers 404 (S8). The fetch queue has no account column: there is one mailbox, and D2's schema has none (S10).
+
+**The feed and operations**
+- **A sync whose every fetch fails is not ok.** A run that tried three or more fetches and fetched none says so in `job_runs`, and `/health` returns 503 after three intervals of it. `--retry-unreadable`, and every `--catch-up`, queue unreadable mail again with no strikes, within the backfill's reach. An entry's age is read from `queued_at`: mail queued before the floor is older than it.
+- **The stall clock is `gmail_messages.offered_since`:** set when a row begins to meet the rule as far as the row goes, cleared when it stops. It is kept from the feed's own SQL (`feed.ROW`), so reading a message no longer restarts it.
+- **Held time is taken off a row's wait,** a pause and a cap at once counted once. A cap ends at `budget_ok` too. A row the queue holds back for over six hours counts as stalled.
+- **The recall job wakes hourly** and checks once a day after 05:15 UTC, once `job_runs` shows the day's check has not completed. A failed attempt is recorded, and `/health` shows it until one completes.
+- **The recall holds the sync's lock,** waiting up to three minutes, and spends the sync's share after waiting up to a minute for room in it. It leaves out what the queue holds, mail older than `backfill_until`, and a store that finds the row there already.
+- **Mail alerts are channel alert codes** (`mail_sync_missed`, `mail_feed_stalled`), sent through `Channels.alert` and still once a day per channel; `deliver_through` is gone. Each has a web push tag of its own (`mail-sync`, `mail-feed`) that the service worker knows, so neither replaces an unread sign-in alert, or the other.
+- **Boot always completes.** Each stranded claim is settled in a savepoint of its own; one that cannot be is logged and left. The poller has no lock to ask, so boot settles only claims over ten minutes old, and a second pass ten minutes after boot settles the rest made before boot. A message's run stays well inside the 120-second kill timeout, so ten minutes leave room. A lock taken by every poll would have changed how two pollers share work, so none was added.
+- **The runbook was wrong twice:** what the backfill stores from the margin hour is fed, and two ledger reasons remain the model's words until the purge clears them.
+
+**Schema.** `011` gains `gmail_fetch_queue.failed_at` and `gmail_messages.offered_since`. It was never deployed, so the columns sit in its `CREATE TABLE`s. `ALTER ... ADD COLUMN IF NOT EXISTS` lines bring a test database that applied the earlier `011` up to date when the file is run again; the Neon test database was brought up to date that way.
+
+**Left as they are**
+- A socket timeout bounds each wait on the socket, not a whole attempt, and httplib2 reconnects once on a dropped connection. A trickling answer can outlast the cap.
+- A 429 that outlasts the client's retries, while the profile read still answers, strikes the message. Five strikes take a sustained rate limit, and `--retry-unreadable` undoes them.
+- Three messages that each fail on their own keep `/health` at 503 until a fetch succeeds, which can be hours on a quiet night. A false alarm is preferred to a silent miss.
