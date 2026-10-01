@@ -96,6 +96,17 @@ def test_all_day_spans_local_midnight_to_midnight() -> None:
     assert result.end_utc == datetime(2026, 8, 21, 19, 0, tzinfo=UTC)
 
 
+def test_the_owner_is_never_a_guest_under_any_of_their_addresses() -> None:
+    """An alias left in would make a hold an invite, and mark the owner as an
+    outsider to their own thread (M17, D4)."""
+    result = to_extraction_result(
+        _payload(attendees=["Me@Example.com", "me@work.example", "sara@example.com"]),
+        owner_email="me@example.com",
+        owner_aliases=("ME@work.example",),
+    )
+    assert result.attendees == ["sara@example.com"]
+
+
 def test_offset_supplied_against_instructions_is_trusted_not_restamped() -> None:
     """Re-stamping an explicit offset with the IANA zone would shift a correct instant."""
     result = to_extraction_result(

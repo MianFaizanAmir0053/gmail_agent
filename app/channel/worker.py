@@ -38,6 +38,7 @@ from app.channel.park import (
     write_park,
 )
 from app.graph.runner import GraphSession, ThreadView
+from app.policy.hashing import Binding
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
 log = logging.getLogger(__name__)
@@ -173,7 +174,9 @@ def _advance(session: GraphSession, decision: OpenDecision, announce: Announce |
         step = step_for(view, ledger_status, decision)
 
         if step.kind == "settle":
-            return _settle(session.conn, decision, step, view, ledger_status, announce)
+            return _settle(
+                session.conn, decision, step, view, ledger_status, announce, session.binding()
+            )
         if step.kind == "resume":
             session.resume(
                 decision.message_id,
@@ -201,7 +204,7 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
         step = step_for(view, ledger_status, decision)
 
         if step.kind == "settle":
-            return _settle(conn, decision, step, view, ledger_status, announce)
+            return _settle(conn, decision, step, view, ledger_status, announce, session.binding())
 
         with conn.transaction():
             if step.kind == "resume":
@@ -292,6 +295,7 @@ def _settle(
     view: ThreadView,
     ledger_status: MessageStatus | None,
     announce: Announce | None,
+    binding: Binding | None = None,
 ) -> str:
     """Record a step's outcome in one transaction. Returns the outcome.
 
@@ -310,7 +314,7 @@ def _settle(
             assert view.payload is not None and ledger_status is not None
             if not _close(conn, decision.id, outcome, reason=step.reason):
                 return "already settled"
-            record = proposal_from(decision.message_id, view.payload, view.revision)
+            record = proposal_from(decision.message_id, view.payload, view.revision, binding)
             write_park(conn, record, ledger_status=ledger_status)
         elif outcome == "failed":
             if not settle_failed(

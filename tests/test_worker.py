@@ -149,6 +149,7 @@ class FakePipeline:
 @dataclass
 class FakeCalendar:
     dry_run: bool = True
+    calendar_id: str = "test-calendar"
     created: list[Any] = field(default_factory=list)
 
     def freebusy(self, start: datetime, end: datetime) -> list[Any]:

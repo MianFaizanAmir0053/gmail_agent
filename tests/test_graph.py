@@ -74,6 +74,7 @@ class FakePipeline:
 @dataclass
 class FakeCalendar:
     dry_run: bool = False
+    calendar_id: str = "test-calendar"
     busy: list[Any] = field(default_factory=list)
     created: list[Any] = field(default_factory=list)
 

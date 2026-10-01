@@ -38,6 +38,12 @@ class CalendarClient:
     def dry_run(self) -> bool:
         return self._dry_run
 
+    @property
+    def calendar_id(self) -> str:
+        """Where events go. Part of what an approval binds (M17, D2): approved
+        for one calendar, an event must not be booked on another."""
+        return self._calendar_id
+
     def create_event(
         self,
         *,

@@ -12,6 +12,7 @@ import pytest
 from app.channel import park
 from app.channel.park import ParkConflictError, ProposalRecord, proposal_from, record_park
 from app.graph.runner import GraphSession
+from app.policy.hashing import INVITE, Binding, args_key
 from app.store.ledger import MessageLedger, MessageStatus
 
 MIGRATION = Path(__file__).resolve().parent.parent / "migrations" / "007_proposals.sql"
@@ -35,6 +36,8 @@ PENDING: dict[str, Any] = {
     "action_type": "calendar_invite",
     "pipeline_version": "0123456789ab",
 }
+
+BINDING = Binding(calendar_id="test-calendar", key=args_key("test-key"))
 
 LEGACY: dict[str, Any] = {
     "message_id": "m1",
@@ -78,6 +81,22 @@ def test_a_legacy_payload_is_filled_in_and_marked_pre_m16() -> None:
     assert record.dry_run is True
 
 
+def test_a_bound_record_carries_what_a_confirm_will_run() -> None:
+    """The tool and the keyed hash a Confirm is bound to (M17, D2), taken
+    from the payload under the current code."""
+    record = proposal_from("m1", PENDING, revision=1, binding=BINDING)
+
+    assert record.tool == INVITE
+    assert record.args_hash is not None and len(record.args_hash) == 64
+    assert proposal_from("m1", PENDING, revision=1, binding=BINDING) == record
+
+
+def test_without_a_binding_nothing_can_be_confirmed() -> None:
+    record = proposal_from("m1", PENDING, revision=1)
+
+    assert (record.tool, record.args_hash) == (None, None)
+
+
 # --- writing it (Postgres) ---------------------------------------------------
 
 
@@ -88,6 +107,9 @@ class FakeSession:
 
     def revision(self, message_id: str) -> int:
         return self.revisions.get(message_id, 1)
+
+    def binding(self) -> Binding:
+        return BINDING
 
 
 def _session(conn: psycopg.Connection) -> GraphSession:
@@ -124,6 +146,11 @@ def test_a_park_writes_the_proposal_and_marks_the_ledger(conn: psycopg.Connectio
     assert entry.status is MessageStatus.AWAITING_APPROVAL
     assert _proposal(conn) == ("pending", 1, "calendar_invite", "0123456789ab", True)
     assert announced == ["m1"]
+    stored = conn.execute(
+        "SELECT tool, args_hash, generation FROM proposals WHERE message_id = 'm1'"
+    ).fetchone()
+    expected = proposal_from("m1", PENDING, revision=1, binding=BINDING)
+    assert stored == (INVITE, expected.args_hash, 1)
 
 
 @pytest.mark.integration

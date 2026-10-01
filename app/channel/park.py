@@ -23,6 +23,7 @@ from psycopg.types.json import Jsonb
 
 from app.graph.runner import GraphSession
 from app.graph.versioning import LEGACY_PIPELINE_VERSION, ActionType, action_type
+from app.policy.hashing import Binding, bound
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
 log = logging.getLogger(__name__)
@@ -49,17 +50,33 @@ class ProposalRecord:
     dry_run: bool
     payload: dict[str, Any]
     """What the card shows (D2). Cleared by retention (D8)."""
+    tool: str | None = None
+    """What a Confirm would run (M17, D1); None when nothing can run."""
+    args_hash: str | None = None
+    """The keyed hash of exactly what it would send (M17, D2), taken from the
+    payload under the current code at every write."""
 
 
-def proposal_from(message_id: str, pending: dict[str, Any], revision: int) -> ProposalRecord:
+def proposal_from(
+    message_id: str,
+    pending: dict[str, Any],
+    revision: int,
+    binding: Binding | None = None,
+) -> ProposalRecord:
     """The row for an interrupt payload.
 
     A payload parked before M16 lacks the action type and pipeline version,
     and one parked before M15 lacks `dry_run`. The revision is never taken
     from the payload: callers read it from the thread's state.
+
+    With a `binding` (every caller in production passes the session's), the
+    row also gets the tool and the keyed hash a Confirm will be bound to, taken
+    under the current code. Without one -- tests that never confirm -- both
+    stay None, and a Confirm is refused as not ready.
     """
     proposed: dict[str, Any] = pending.get("proposed") or {}
     attendees = list(proposed.get("attendees") or [])
+    tool, args_hash = bound(message_id, proposed, binding) if binding else (None, None)
     return ProposalRecord(
         message_id=message_id,
         revision=revision,
@@ -80,6 +97,8 @@ def proposal_from(message_id: str, pending: dict[str, Any], revision: int) -> Pr
             "conflicts": list(pending.get("conflicts") or []),
             "review_issues": list(pending.get("review_issues") or []),
         },
+        tool=tool,
+        args_hash=args_hash,
     )
 
 
@@ -122,7 +141,7 @@ def record_park(
     if entry is None:
         raise ParkConflictError(f"no ledger row for {message_id}")
 
-    record = proposal_from(message_id, pending, session.revision(message_id))
+    record = proposal_from(message_id, pending, session.revision(message_id), session.binding())
     with session.conn.transaction():
         write_park(session.conn, record, ledger_status=entry.status)
 
@@ -154,8 +173,8 @@ def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> None:
         """
         INSERT INTO proposals
                (message_id, revision, status, action_type, pipeline_version,
-                payload, dry_run, parked_at, updated_at)
-        VALUES (%s, %s, 'pending', %s, %s, %s, %s, now(), now())
+                payload, dry_run, tool, args_hash, parked_at, updated_at)
+        VALUES (%s, %s, 'pending', %s, %s, %s, %s, %s, %s, now(), now())
         ON CONFLICT (message_id) DO UPDATE
            SET revision = EXCLUDED.revision,
                status = 'pending',
@@ -164,6 +183,8 @@ def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> None:
                pipeline_version = EXCLUDED.pipeline_version,
                payload = EXCLUDED.payload,
                dry_run = EXCLUDED.dry_run,
+               tool = EXCLUDED.tool,
+               args_hash = EXCLUDED.args_hash,
                parked_at = now(),
                updated_at = now()
          WHERE proposals.status = 'deciding'
@@ -176,6 +197,8 @@ def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> None:
             record.pipeline_version,
             Jsonb(record.payload),
             record.dry_run,
+            record.tool,
+            record.args_hash,
         ),
     ).fetchone()
     if row is None:

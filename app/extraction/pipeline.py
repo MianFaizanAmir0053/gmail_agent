@@ -79,6 +79,8 @@ class ExtractionPipeline:
     classify_model: str
     extraction_model: str
     owner_email: str = ""
+    owner_aliases: tuple[str, ...] = ()
+    """The owner's other addresses, stripped from guests like `owner_email`."""
     classify_thinking_level: str | None = MINIMAL_THINKING
     searcher: Searcher | None = None
     """Optional retrieval over past threads (M11).
@@ -145,7 +147,9 @@ class ExtractionPipeline:
         self.stats.record(detail.usage)
 
         try:
-            return to_extraction_result(detail.parsed, owner_email=self.owner_email)
+            return to_extraction_result(
+                detail.parsed, owner_email=self.owner_email, owner_aliases=self.owner_aliases
+            )
         except InvalidPayloadError as exc:
             # A malformed event is not a calendar entry. Degrade to "not a
             # meeting" with the reason recorded, rather than proposing something
@@ -182,7 +186,12 @@ class ExtractionPipeline:
         return content
 
 
-def build_pipeline(owner_email: str = "", searcher: Searcher | None = None) -> ExtractionPipeline:
+def build_pipeline(
+    owner_email: str = "",
+    searcher: Searcher | None = None,
+    *,
+    owner_aliases: tuple[str, ...] = (),
+) -> ExtractionPipeline:
     """Wire a pipeline from settings.
 
     Imports the SDK lazily so the eval harness and unit tests never need an API
@@ -200,6 +209,7 @@ def build_pipeline(owner_email: str = "", searcher: Searcher | None = None) -> E
         classify_model=settings.classify_model,
         extraction_model=settings.extraction_model,
         owner_email=owner_email,
+        owner_aliases=owner_aliases,
         searcher=searcher,
         evaluator=(
             GatewayEvaluator(api_key=gateway_key.get_secret_value())

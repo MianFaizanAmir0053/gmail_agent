@@ -18,9 +18,12 @@ CREATE TABLE IF NOT EXISTS control (
 
 INSERT INTO control (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
--- What a proposal would run, and the keyed hash of its exact arguments (D2).
+-- What a proposal would run, the keyed hash of its exact arguments, and the
+-- generation the owner's card must carry: it goes up whenever a proposal
+-- returns to the owner, so a Confirm replayed from before dies (D2).
 ALTER TABLE proposals ADD COLUMN IF NOT EXISTS tool TEXT;
 ALTER TABLE proposals ADD COLUMN IF NOT EXISTS args_hash TEXT;
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS generation INT NOT NULL DEFAULT 1;
 
 -- The owner asked to withdraw a queued decision; only the worker carries it
 -- out, because only the worker may settle a decision it might have applied (D6).
@@ -40,14 +43,21 @@ CREATE TABLE IF NOT EXISTS outbound_actions (
     nonce        TEXT        NOT NULL,
     status       TEXT        NOT NULL DEFAULT 'approved'
                  CHECK (status IN ('approved', 'executing', 'done', 'dry_run', 'refused', 'failed')),
+    -- Stored as the action starts executing, and replayed by every later
+    -- attempt rather than rebuilt from current code (D3). `request` is the
+    -- exact body sent, so it holds the event's content: it is cleared once
+    -- the write is done, and the purge clears any left after a week.
+    calendar_id  TEXT,
     event_id     TEXT,
+    request      JSONB,
     reason       TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at   TIMESTAMPTZ,
     finished_at  TIMESTAMPTZ,
-    -- The id is what lets a later attempt find the event instead of booking a
-    -- second one (D3): an action cannot be executing, or done, without it.
-    CHECK (status NOT IN ('executing', 'done') OR event_id IS NOT NULL)
+    -- The id and the calendar are what let a later attempt find the event
+    -- instead of booking a second one (D3): an action cannot be executing, or
+    -- done, without them.
+    CHECK (status NOT IN ('executing', 'done') OR (event_id IS NOT NULL AND calendar_id IS NOT NULL))
 );
 
 CREATE INDEX IF NOT EXISTS outbound_actions_message_idx ON outbound_actions (message_id);
@@ -67,16 +77,19 @@ CREATE TABLE IF NOT EXISTS model_spend (
     id               BIGSERIAL      PRIMARY KEY,
     at               TIMESTAMPTZ    NOT NULL DEFAULT now(),
     model            TEXT           NOT NULL,
+    message_id       TEXT,
     input_tokens     INT            NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
     output_tokens    INT            NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
     cached_tokens    INT            NOT NULL DEFAULT 0 CHECK (cached_tokens >= 0),
     thinking_tokens  INT            NOT NULL DEFAULT 0 CHECK (thinking_tokens >= 0),
     cost_usd         NUMERIC(12, 6) NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
     estimated        BOOLEAN        NOT NULL DEFAULT false,
-    refused          TEXT           CHECK (refused IN ('unpriced', 'exhausted'))
+    refused          TEXT           CHECK (refused IN ('unpriced', 'exhausted', 'too_costly'))
 );
 
 CREATE INDEX IF NOT EXISTS model_spend_at_idx ON model_spend (at);
+-- The message ceiling sums one message's calls (D5).
+CREATE INDEX IF NOT EXISTS model_spend_message_idx ON model_spend (message_id);
 
 -- Every attempt to act, and every change to the switches (D7). It holds ids,
 -- keyed hashes and fixed phrases, never content, and no foreign keys: a

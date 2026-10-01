@@ -23,6 +23,7 @@ from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import Deps
 from app.graph.versioning import pipeline_version
 from app.obs.trace import Tracer
+from app.policy.hashing import Binding, args_key
 from app.store.ledger import MessageLedger
 
 
@@ -95,6 +96,11 @@ class GraphSession:
         """
         return self._run(message_id, None)
 
+    def binding(self) -> Binding:
+        """What this session binds proposals to (M17, D2): the calendar its
+        actions write to, and the key of the hash."""
+        return Binding(calendar_id=self.deps.calendar.calendar_id, key=self.deps.args_key)
+
     def pending(self, message_id: str) -> dict[str, Any] | None:
         """The interrupt payload for a parked thread, or None if not parked."""
         return self.thread(message_id).payload
@@ -141,6 +147,8 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
     """Open everything the graph needs, and close it again."""
     if settings.test_calendar_id is None:
         raise RuntimeError("TEST_CALENDAR_ID must be set before the graph can act.")
+    if settings.fernet_key is None:
+        raise RuntimeError("FERNET_KEY must be set: it keys the hash every approval binds (M17).")
 
     from app.agents.reviewer import build_reviewer
     from app.extraction.pipeline import build_pipeline
@@ -165,7 +173,11 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
 
         deps = Deps(
             gmail=GmailClient(build_service("gmail", "v1", credentials)),
-            pipeline=build_pipeline(owner_email=settings.owner_email, searcher=searcher),
+            pipeline=build_pipeline(
+                owner_email=settings.owner_email,
+                searcher=searcher,
+                owner_aliases=tuple(settings.owner_aliases),
+            ),
             calendar=calendar,
             ledger=MessageLedger(conn),
             user_timezone=settings.user_timezone,
@@ -178,5 +190,6 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
                 else None
             ),
             pipeline_version=pipeline_version(settings),
+            args_key=args_key(settings.fernet_key.get_secret_value()),
         )
         yield GraphSession(deps=deps, conn=conn, checkpointer=checkpointer)

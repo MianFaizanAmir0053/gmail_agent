@@ -17,6 +17,7 @@ from app.channel.decide import decide
 from app.channel.park import proposal_from, write_park
 from app.channel.reconcile import CLAIM_GRACE, reconcile
 from app.graph.runner import GraphSession, ThreadView
+from app.policy.hashing import Binding, args_key
 from app.store.ledger import MessageLedger, MessageStatus
 
 PAYLOAD: dict[str, Any] = {
@@ -41,6 +42,9 @@ class FakeSession:
 
     def revision(self, message_id: str) -> int:
         return self.thread(message_id).revision
+
+    def binding(self) -> Binding:
+        return Binding(calendar_id="test-calendar", key=args_key("test-key"))
 
     def parks(self, message_id: str, payload: dict[str, Any], revision: int = 1) -> None:
         self.threads[message_id] = ThreadView(

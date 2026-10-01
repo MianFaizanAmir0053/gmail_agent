@@ -27,8 +27,9 @@ from app.google.calendar import CalendarClient
 from app.google.gmail import GmailClient
 from app.graph.state import GraphState
 from app.graph.versioning import action_type
+from app.policy.hashing import event_args
 from app.store.ledger import MessageLedger, MessageStatus
-from app.tools.calendar_tool import CreateEventInput, check_conflicts, execute_create_event
+from app.tools.calendar_tool import check_conflicts, execute_create_event
 
 MAX_REVISIONS = 2
 """Edit rounds before the graph gives up and asks for a decision.
@@ -70,6 +71,9 @@ class Deps:
     pipeline_version: str = "unversioned"
     """What shaped this session's proposals (`app/graph/versioning.py`).
     Computed once per session from settings and prompts."""
+    args_key: bytes = b"unkeyed: tests only"
+    """Keys the hash an approval binds (`app/policy/hashing.py`). Derived from
+    `FERNET_KEY` by `graph_session`; the default serves fakes in tests."""
 
     def now(self) -> datetime:
         return datetime.now(UTC)
@@ -153,7 +157,7 @@ def detect_conflicts(deps: Deps, state: GraphState) -> GraphState:
     if extraction.start_utc is None or extraction.end_utc is None:
         return {"conflicts": []}
 
-    check = check_conflicts(deps.calendar, _to_tool_input(state))
+    check = check_conflicts(deps.calendar, event_args(extraction, state["message_id"]))
     return {"conflicts": [check.describe()] if check.has_conflict else []}
 
 
@@ -198,7 +202,8 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
 
 
 def act(deps: Deps, state: GraphState) -> GraphState:
-    result = execute_create_event(deps.calendar, _to_tool_input(state))
+    args = event_args(state["extraction"], state["message_id"])
+    result = execute_create_event(deps.calendar, args)
 
     if result.status == "created" and result.event_id:
         deps.ledger.mark(
@@ -237,18 +242,3 @@ def reject(deps: Deps, state: GraphState) -> GraphState:
         reason = "declined by user"
     deps.ledger.mark(state["message_id"], MessageStatus.REJECTED, error=reason)
     return {"action": ActionResult(status="rejected", error=reason)}
-
-
-def _to_tool_input(state: GraphState) -> CreateEventInput:
-    extraction = state["extraction"]
-    assert extraction.start_utc is not None
-    assert extraction.end_utc is not None
-    return CreateEventInput(
-        title=extraction.title or "(untitled)",
-        start_utc=extraction.start_utc,
-        end_utc=extraction.end_utc,
-        timezone=extraction.timezone or "UTC",
-        attendees=extraction.attendees,
-        location=extraction.location,
-        description=f"Created by mailagent from message {state['message_id']}.",
-    )

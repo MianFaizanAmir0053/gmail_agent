@@ -18,6 +18,7 @@ touching the type the rest of the system passes around.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -131,7 +132,12 @@ def _to_utc(local: str, zone: ZoneInfo, field: str) -> datetime:
     return naive.replace(tzinfo=zone).astimezone(UTC)
 
 
-def to_extraction_result(payload: ExtractionPayload, *, owner_email: str = "") -> ExtractionResult:
+def to_extraction_result(
+    payload: ExtractionPayload,
+    *,
+    owner_email: str = "",
+    owner_aliases: Sequence[str] = (),
+) -> ExtractionResult:
     """Convert wire payload to the domain contract, doing the timezone maths."""
     if not payload.is_meeting:
         return ExtractionResult(
@@ -157,8 +163,11 @@ def to_extraction_result(payload: ExtractionPayload, *, owner_email: str = "") -
     if end_utc <= start_utc:
         raise InvalidPayloadError(f"end ({end_utc}) is not after start ({start_utc})")
 
-    owner = owner_email.strip().lower()
-    attendees = sorted({a.strip().lower() for a in payload.attendees if a.strip()} - {owner})
+    # The owner is never their own guest, under any address: an alias left in
+    # would turn a hold into an invite, and mark the owner an outsider to
+    # their own thread (M17, D4).
+    owner = {address.strip().lower() for address in (owner_email, *owner_aliases)}
+    attendees = sorted({a.strip().lower() for a in payload.attendees if a.strip()} - owner)
 
     return ExtractionResult(
         is_meeting=True,

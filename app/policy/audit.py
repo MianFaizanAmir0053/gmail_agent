@@ -23,10 +23,13 @@ Kind = Literal[
     "action_failed",
     "decision_withdrawn",
     "withdraw_declined",
+    "proposal_expired",
     "paused",
     "resumed",
     "budget_warning",
     "budget_exhausted",
+    "budget_ok",
+    "message_too_costly",
     "contact_allowed",
     "contact_removed",
     "write_unconfirmed",
@@ -39,7 +42,7 @@ lists together."""
 OUTCOMES = frozenset({"approved", "done", "dry_run", "refused", "failed", "withdrawn", "declined"})
 
 REASONS: dict[str, str] = {
-    "mode": "approved under another mode",
+    "mode": "made under another mode",
     "changed": "the proposal changed",
     "guests": "guests outside the thread",
     "mismatch": "arguments differ from the approval",
@@ -53,6 +56,7 @@ REASONS: dict[str, str] = {
     "unconfirmed": "the calendar write could not be confirmed",
     "provider": "the calendar refused the write",
     "legacy": "approve again",
+    "too_costly": "too costly to read",
 }
 """The only reasons a row can give. Fixed phrases, so a statistic can count
 them and no email can hide in one."""

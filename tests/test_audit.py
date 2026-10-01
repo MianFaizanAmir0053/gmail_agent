@@ -102,10 +102,11 @@ def test_an_action_cannot_be_executing_without_its_event_id(conn: psycopg.Connec
     ).fetchone()
     assert decision is not None
 
-    with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
-        conn.execute(
-            "INSERT INTO outbound_actions (decision_id, message_id, tool, tier, args_hash,"
-            " dry_run, nonce, status) VALUES (%s, 'm1', 'calendar.create_hold', 1, 'h',"
-            " true, 'n', 'executing')",
-            (decision[0],),
-        )
+    for event_id, calendar_id in ((None, "cal"), ("ma0123456789", None)):
+        with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+            conn.execute(
+                "INSERT INTO outbound_actions (decision_id, message_id, tool, tier, args_hash,"
+                " dry_run, nonce, status, event_id, calendar_id) VALUES (%s, 'm1',"
+                " 'calendar.create_hold', 1, 'h', true, 'n', 'executing', %s, %s)",
+                (decision[0], event_id, calendar_id),
+            )
