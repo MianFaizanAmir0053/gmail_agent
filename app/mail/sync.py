@@ -717,9 +717,7 @@ def _switch_over(run: _Run, cursor: Cursor) -> None:
     Done when every listed message not yet stored has been fetched; a run
     that stops part-way lists again next time, and skips what it stored.
     """
-    ids = _list(
-        run, SWITCH_OVER_QUERY, run.started - SWITCH_OVER_FOR, run.now(), "the switch-over"
-    )
+    ids = _list(run, SWITCH_OVER_QUERY, run.started - SWITCH_OVER_FOR, run.now(), "the switch-over")
     if ids is None or not _store_listed(run, ids, "switch_over"):
         return
     run.conn.execute(
