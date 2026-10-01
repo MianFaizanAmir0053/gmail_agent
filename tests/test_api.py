@@ -349,6 +349,8 @@ def _boot(monkeypatch: pytest.MonkeyPatch, settle: Any) -> tuple[list[str], _Sch
     monkeypatch.setattr(
         "app.api.get_settings", lambda: _settings(run_scheduler=True, migrate_on_boot=False)
     )
+    # A real one would leave its handler on the `app` logger for later tests.
+    monkeypatch.setattr("app.api.configure_logging", lambda: None)
     monkeypatch.setattr("app.api.materialise_secrets", list)
     monkeypatch.setattr("app.api._seed_token_evidence", lambda settings: None)
     monkeypatch.setattr("app.api.observe_refreshes", lambda record: None)
