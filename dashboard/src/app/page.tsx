@@ -1,5 +1,6 @@
 import { DecisionButtons } from "@/components/DecisionButtons";
 import { ProposalCard } from "@/components/ProposalCard";
+import { PushSetup } from "@/components/PushSetup";
 import { Refresher } from "@/components/Refresher";
 import { ago } from "@/lib/format";
 import { openProposals, recentDecisions } from "@/lib/proposals";
@@ -19,6 +20,7 @@ export default async function TimelinePage() {
   return (
     <>
       <Refresher active={shouldRefresh(open)} />
+      <PushSetup publicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null} />
 
       <h1>Waiting for you</h1>
       <p className="sub">Times are shown in {zone}.</p>

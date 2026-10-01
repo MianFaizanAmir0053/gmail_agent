@@ -897,9 +897,10 @@ A settle is one transaction of conditional writes.
 - **iPhone.** In Safari, outside the installed app, the page explains "Add to Home Screen".
 
 **Acceptance criteria:**
-- [ ] The caching rule admits only static assets (node test).
-- [ ] The subscription is re-posted on every open.
-- [ ] A push from a local API reaches a desktop browser, and a tap opens `/`.
+- [x] The caching rule admits only static assets. The node test runs the worker's own file. In the browser, after visiting `/` and `/analytics`, the cache held 9 files, all under `/_next/static/`, and no page or API answer.
+- [x] The subscription is re-posted on every open (`PushSetup`). It also goes through a same-origin route, so the service worker can re-post after `pushsubscriptionchange`. The route checks the owner and forwards to Fly with the server's secret.
+- [ ] A push from a local API reaches a desktop browser, and a tap opens `/`: **not possible here.** The browser pane blocks notifications and has no push service. Verified instead: the worker registers and takes control, and the page reports the blocked state in words. The real push is exit criterion 2, on both phones, at deploy (16.23, 16.25).
+- Found in the browser: the caching rule's separate file sat behind the sign-in gate, so a fetch without a session would have broken the worker. The rule now lives inside `sw.js`, which keeps the spec's exact four exempt paths.
 
 **Verification:** the web checks; the local run.
 

@@ -348,3 +348,19 @@ h1.section {
 .note.error {
   color: var(--err);
 }
+
+/* --- push (M16) ----------------------------------------------------------- */
+
+.push {
+  margin: 0 0 18px;
+}
+.push button {
+  font: inherit;
+  color: var(--text);
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+  min-height: 36px;
+}
