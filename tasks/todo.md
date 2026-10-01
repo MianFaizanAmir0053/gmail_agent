@@ -935,10 +935,12 @@ A settle is one transaction of conditional writes.
 - Expired pairing codes are deleted.
 
 **Acceptance criteria:**
-- [ ] Content is cleared on day 7 and not before, for final and FAILED rows. An open proposal is never cleared.
-- [ ] M24's columns survive.
+- [x] Content is cleared on day 7 and not before, for final and FAILED rows. An open proposal is never cleared. Tested at day 6 and day 8 for REJECTED and FAILED. A pending card and a deciding one keep their content even beside a final ledger, aged 30 days.
+- [x] M24's columns survive. The test compares every kept column of both tables before and after, timestamps included.
+- [x] Expired pairing codes are deleted, and a live one is kept.
 
 **Verification:** `uv run pytest tests/test_purge.py`; the integration tests on Neon; `.\tasks.ps1 check`.
+- 2026-10-01: `tests/test_purge.py` on Neon, 11 passed, twice. The full integration run had one failure and one error. The failure is the known `test_vector_mode_cannot_reach_a_keyword_only_match`. The error was in the teardown of an existing purge test, where Neon closed the checkpointer's connection; the file passed in full on its own before and after. Locally, 741 unit tests passed, and lint, format and mypy were clean.
 
 **Dependencies:** 16.4 · **Files:** `app/jobs/purge.py`, `tests/test_purge.py` · **Scope:** S
 

@@ -12,6 +12,12 @@ the rest:
 It also clears model-written text from the ledger after a week. `skip` stores
 the extractor's reasoning, which quotes the email it read. The fixed phrases
 that operators and later statistics depend on stay.
+
+The web channel's records follow the same clock (M16, D8). A proposal's card
+and the owner's corrections quote the mail too, so they are cleared a week
+after the ledger row settled, and expired pairing codes are deleted. What M24
+counts autonomy from -- action type, pipeline version, channel, revision,
+outcome and timings -- quotes nothing and stays for good.
 """
 
 from __future__ import annotations
@@ -30,6 +36,9 @@ FINAL_STATUSES = (MessageStatus.SKIPPED, MessageStatus.REJECTED, MessageStatus.C
 
 FAILED_KEPT_FOR = timedelta(days=7)
 REASONS_KEPT_FOR = timedelta(days=7)
+CONTENT_KEPT_FOR = REASONS_KEPT_FOR
+"""Proposal cards and the owner's corrections (M16, D8): the same week as the
+ledger's reasons, counted on the same clock. The owner approved no other."""
 
 FIXED_REASONS = (
     "declined by user",
@@ -49,6 +58,15 @@ class PurgeResult:
 
     reasons_cleared: int
     """Ledger rows whose model-written text was removed or cut to its type."""
+
+    proposals_cleared: int
+    """Proposals whose card was removed."""
+
+    corrections_cleared: int
+    """Decisions whose correction was removed."""
+
+    pairing_codes_deleted: int
+    """Expired pairing codes."""
 
 
 def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
@@ -75,7 +93,18 @@ def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
         for thread_id in thread_ids:
             saver.delete_thread(thread_id)
 
-    return PurgeResult(threads=len(thread_ids), reasons_cleared=_clear_reasons(conn))
+    reasons_cleared = _clear_reasons(conn)
+    proposals_cleared, corrections_cleared = _clear_content(conn)
+    pairing_codes_deleted = conn.execute(
+        "DELETE FROM pairing_codes WHERE expires_at < now()"
+    ).rowcount
+    return PurgeResult(
+        threads=len(thread_ids),
+        reasons_cleared=reasons_cleared,
+        proposals_cleared=proposals_cleared,
+        corrections_cleared=corrections_cleared,
+        pairing_codes_deleted=pairing_codes_deleted,
+    )
 
 
 def _clear_reasons(conn: psycopg.Connection) -> int:
@@ -107,3 +136,44 @@ def _clear_reasons(conn: psycopg.Connection) -> int:
         (MessageStatus.FAILED.value, list(FIXED_REASONS), REASONS_KEPT_FOR),
     ).rowcount
     return cleared
+
+
+def _clear_content(conn: psycopg.Connection) -> tuple[int, int]:
+    """Remove the cards and corrections of proposals settled over a week ago.
+
+    Returns how many proposals and how many decisions lost their content.
+
+    The clock is the ledger's: a final status or FAILED, a week old.
+    Nothing is cleared while the proposal is open, whatever its ledger says:
+    the owner can still decide a pending card, and the worker still owns a
+    deciding one. An open decision is never cleared either. Timestamps are
+    left alone, so M24's timings stay as they were.
+    """
+    settled = [status.value for status in (*FINAL_STATUSES, MessageStatus.FAILED)]
+    proposals = conn.execute(
+        """
+        UPDATE proposals p SET payload = NULL
+          FROM processed_messages m
+         WHERE m.gmail_message_id = p.message_id
+           AND p.payload IS NOT NULL
+           AND p.status IN ('decided', 'failed')
+           AND m.status = ANY(%s)
+           AND m.updated_at < now() - %s
+        """,
+        (settled, CONTENT_KEPT_FOR),
+    ).rowcount
+    corrections = conn.execute(
+        """
+        UPDATE decisions d SET correction = NULL
+          FROM proposals p
+          JOIN processed_messages m ON m.gmail_message_id = p.message_id
+         WHERE p.message_id = d.message_id
+           AND d.correction IS NOT NULL
+           AND d.outcome IS NOT NULL
+           AND p.status IN ('decided', 'failed')
+           AND m.status = ANY(%s)
+           AND m.updated_at < now() - %s
+        """,
+        (settled, CONTENT_KEPT_FOR),
+    ).rowcount
+    return proposals, corrections

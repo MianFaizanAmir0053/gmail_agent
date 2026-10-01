@@ -1,20 +1,24 @@
-"""Checkpoint retention (M15).
+"""Checkpoint retention (M15), and the web channel's records (M16, D8).
 
 Every polled message's full body -- one-time-code mail included -- sits in its
 graph checkpoint, and nothing used to delete it. The purge keeps what a
-pending decision still needs, and nothing else.
+pending decision still needs, and nothing else. The proposal cards and the
+owner's corrections quote the same mail, so they follow the same clock.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from typing import TypedDict
+from typing import Any, TypedDict, cast
 
 import psycopg
 import pytest
 from langgraph.graph import END, START, StateGraph
 
+from app.channel.decide import decide
+from app.channel.park import proposal_from, write_park
+from app.channel.worker import ATTEMPTS_EXHAUSTED, settle_decided, settle_failed
 from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import SWEEP_REASON
 from app.jobs.purge import purge
@@ -128,3 +132,161 @@ def test_fixed_operator_reasons_survive(
     for message_id, reason in kept.items():
         entry = ledger.get(message_id)
         assert entry is not None and entry.error == reason
+
+
+# --- the web channel's records (M16, D8) -------------------------------------
+
+CARD: dict[str, Any] = {
+    "proposed": {"title": "Design review", "attendees": ["sara@example.com"]},
+    "conflicts": [],
+    "dry_run": True,
+    "review_issues": [],
+    "action_type": "calendar_invite",
+    "pipeline_version": "0123456789ab",
+}
+
+CORRECTION = "Make it 4pm, in my office"
+
+
+def _parked(conn: psycopg.Connection, message_id: str) -> None:
+    MessageLedger(conn).claim(message_id, message_id)
+    with conn.transaction():
+        write_park(conn, proposal_from(message_id, CARD, 1), ledger_status=MessageStatus.CLAIMED)
+
+
+def _edited(conn: psycopg.Connection, message_id: str) -> int:
+    """Parked, then edited from the web. Returns the open decision's id."""
+    _parked(conn, message_id)
+    result = decide(conn, message_id, action="edit", revision=1, correction=CORRECTION, via="web")
+    assert result.decision_id is not None
+    return result.decision_id
+
+
+def _settled(conn: psycopg.Connection, message_id: str, ledger_status: MessageStatus) -> None:
+    """Parked, edited, and the edit applied: the worker recorded its outcome."""
+    decision_id = _edited(conn, message_id)
+    with conn.transaction():
+        if ledger_status is MessageStatus.FAILED:
+            settle_failed(conn, decision_id, message_id, reason=ATTEMPTS_EXHAUSTED)
+        else:
+            # The graph marks the ledger; the worker then settles from it.
+            MessageLedger(conn).mark(message_id, ledger_status)
+            settle_decided(conn, decision_id, message_id, final_status=ledger_status.value)
+
+
+def _payload(conn: psycopg.Connection, message_id: str) -> Any:
+    row = conn.execute("SELECT payload FROM proposals WHERE message_id = %s", (message_id,))
+    found = row.fetchone()
+    assert found is not None
+    return found[0]
+
+
+def _correction(conn: psycopg.Connection, message_id: str) -> str | None:
+    row = conn.execute("SELECT correction FROM decisions WHERE message_id = %s", (message_id,))
+    found = row.fetchone()
+    assert found is not None
+    return cast(str | None, found[0])
+
+
+@pytest.mark.parametrize("ledger_status", [MessageStatus.REJECTED, MessageStatus.FAILED])
+@pytest.mark.parametrize(("days", "cleared"), [(6, False), (8, True)])
+def test_a_settled_proposal_loses_its_content_a_week_after_its_ledger_did(
+    conn: psycopg.Connection,
+    migrated_database: str,
+    ledger_status: MessageStatus,
+    days: int,
+    cleared: bool,
+) -> None:
+    """The card's title and guests, and the owner's correction, quote the mail.
+
+    The clock is the ledger's, as for M15's reasons. FAILED counts too: the
+    worker produces it, and its content would otherwise be kept for ever.
+    """
+    message_id = f"settled-{uuid.uuid4().hex[:8]}"
+    _settled(conn, message_id, ledger_status)
+    _age(conn, message_id, days=days)
+
+    purge(conn, migrated_database)
+
+    assert (_payload(conn, message_id) is None) is cleared
+    assert (_correction(conn, message_id) is None) is cleared
+
+
+def test_the_purge_counts_what_it_cleared(conn: psycopg.Connection, migrated_database: str) -> None:
+    message_id = f"settled-{uuid.uuid4().hex[:8]}"
+    _settled(conn, message_id, MessageStatus.REJECTED)
+    _age(conn, message_id, days=8)
+
+    result = purge(conn, migrated_database)
+
+    assert (result.proposals_cleared, result.corrections_cleared) == (1, 1)
+
+
+def _evidence(conn: psycopg.Connection, message_id: str) -> tuple[Any, ...]:
+    row = conn.execute(
+        """
+        SELECT p.revision, p.status, p.final_status, p.action_type, p.pipeline_version,
+               p.dry_run, p.parked_at, p.updated_at,
+               d.revision, d.action, d.via, d.action_type, d.pipeline_version,
+               d.decided_at, d.latency_seconds, d.outcome, d.reason, d.attempts,
+               d.settled_at
+          FROM proposals p JOIN decisions d USING (message_id)
+         WHERE p.message_id = %s
+        """,
+        (message_id,),
+    ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+def test_m24s_evidence_survives_the_purge(conn: psycopg.Connection, migrated_database: str) -> None:
+    """What M24 counts autonomy from quotes no email, so it is kept for good."""
+    message_id = f"settled-{uuid.uuid4().hex[:8]}"
+    _settled(conn, message_id, MessageStatus.REJECTED)
+    _age(conn, message_id, days=30)
+    before = _evidence(conn, message_id)
+
+    purge(conn, migrated_database)
+
+    assert _payload(conn, message_id) is None  # the purge did reach this row
+    assert _evidence(conn, message_id) == before
+
+
+def test_an_open_proposal_keeps_its_content_whatever_its_ledger_says(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    """The owner can still decide a pending card, and the worker still owns a
+    deciding one. Their ledgers can already be final: the M15 CLI left pending
+    cards behind that way, and the graph marks the ledger before the worker
+    settles the decision."""
+    waiting = f"waiting-{uuid.uuid4().hex[:8]}"
+    _parked(conn, waiting)
+    applying = f"applying-{uuid.uuid4().hex[:8]}"
+    _edited(conn, applying)
+    for message_id in (waiting, applying):
+        MessageLedger(conn).mark(message_id, MessageStatus.REJECTED)
+        _age(conn, message_id, days=30)
+
+    purge(conn, migrated_database)
+
+    assert _payload(conn, waiting) is not None
+    assert _payload(conn, applying) is not None
+    assert _correction(conn, applying) == CORRECTION
+
+
+def test_expired_pairing_codes_are_deleted(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    conn.execute("DELETE FROM pairing_codes")  # rolled back with the test
+    conn.execute(
+        """
+        INSERT INTO pairing_codes (code_sha256, issued_to, expires_at)
+        VALUES ('expired', 'session-1', now() - interval '1 minute'),
+               ('live', 'session-2', now() + interval '4 minutes')
+        """
+    )
+
+    result = purge(conn, migrated_database)
+
+    assert conn.execute("SELECT code_sha256 FROM pairing_codes").fetchall() == [("live",)]
+    assert result.pairing_codes_deleted == 1

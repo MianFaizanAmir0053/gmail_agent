@@ -233,9 +233,13 @@ def run_purge(settings: Settings) -> None:
         return
     if result is not None:
         log.info(
-            "purge: %d thread(s) cleared, %d reason(s) trimmed",
+            "purge: %d thread(s) cleared, %d reason(s) trimmed, %d card(s) and "
+            "%d correction(s) cleared, %d pairing code(s) deleted",
             result.threads,
             result.reasons_cleared,
+            result.proposals_cleared,
+            result.corrections_cleared,
+            result.pairing_codes_deleted,
         )
     record_tick(settings, "purge", started_at, ok=True)
 
