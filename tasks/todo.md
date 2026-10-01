@@ -1031,9 +1031,9 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** Migration `010_action_policy.sql` (D8): `control`, `outbound_actions` (decision foreign key restricting deletes), `confirmed_contacts`, `model_spend`, `audit_log` with its append-only trigger, `proposals.tool` and `proposals.args_hash`, and `web_reader`'s reads. `app/policy/audit.py` writes rows without content. The test fixture and `poll --reset` delete `outbound_actions` before `decisions`.
 
 **Acceptance criteria:**
-- [ ] The migration applies and can be re-run.
-- [ ] `UPDATE` and `DELETE` on `audit_log` fail; a seeded email string never reaches it.
-- [ ] `web_reader` reads `control`, `confirmed_contacts` and `audit_log`, and writes nothing.
+- [x] The migration applies and can be re-run.
+- [x] `UPDATE` and `DELETE` on `audit_log` fail; a seeded email string never reaches it.
+- [x] `web_reader` reads `control`, `confirmed_contacts` and `audit_log`, and writes nothing.
 
 **Verification:** `uv run pytest tests/test_audit.py tests/test_web_reader.py`; the integration tests on Neon.
 
@@ -1041,12 +1041,12 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 
 ### Task 17.2: The keyed hash, computed before parking
 
-**Description:** `app/policy/hashing.py` (D2): the tool for an extraction, the arguments `act` runs (one function, shared with `act`), and the HMAC over the canonical form, keyed from `FERNET_KEY`. `detect_conflicts` stores `tool` and `args_hash` in the state; `await_approval` copies them into the payload; the park step stores them on the row. The owner's aliases join `OWNER_EMAIL` in being stripped from guests.
+**Description:** `app/policy/hashing.py` (D2): the tool for an extraction, the arguments `act` runs (one function, shared with `act`), and the HMAC over the canonical form, keyed from `FERNET_KEY`. Every proposal row write computes `tool` and `args_hash` from the thread's payload under the current code; nothing about the hash lives in the graph state. The owner's aliases join `OWNER_EMAIL` in being stripped from guests.
 
 **Acceptance criteria:**
-- [ ] The hash is stable under key order, time zone, and guest order and case, and changes with any argument, the calendar or the hash version.
-- [ ] Nothing in `await_approval` calls Gmail or the database.
-- [ ] A different `FERNET_KEY` gives a different hash.
+- [x] The hash is stable under key order, time zone, and guest order and case, and changes with any argument, the calendar or the hash version.
+- [x] Nothing in `await_approval` calls Gmail or the database.
+- [x] A different `FERNET_KEY` gives a different hash.
 
 **Verification:** `uv run pytest tests/test_hashing.py tests/test_graph.py tests/test_park.py`.
 
@@ -1057,7 +1057,7 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** Every graph invocation (`start`, resume, re-drive) uses `durability="sync"` (D3).
 
 **Acceptance criteria:**
-- [ ] A test fails if an invocation in `app/graph/runner.py` omits it.
+- [x] A test fails if an invocation in `app/graph/runner.py` omits it.
 
 **Verification:** `uv run pytest tests/test_runner.py tests/test_worker.py`.
 
@@ -1068,8 +1068,8 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** The web card's form, the Telegram buttons and `approve --action confirm --expect` carry the hash prefix and the mode. `decide()` refuses a mismatch as stale, refuses a proposal with no hash as not ready, and inserts the `outbound_actions` row for a Confirm, in the claim's transaction. Telegram buttons sent before M17 are refused with a pointer to the web app.
 
 **Acceptance criteria:**
-- [ ] A stale hash or mode is refused on every channel; nothing is recorded.
-- [ ] One Confirm, one action row; Edit, Cancel and Sweep create none; two concurrent Confirms create one (Neon).
+- [x] A stale hash or mode is refused on every channel; nothing is recorded.
+- [x] One Confirm, one action row; Edit, Cancel and Sweep create none; two concurrent Confirms create one (Neon).
 
 **Verification:** `uv run pytest tests/test_decide.py tests/test_web_api.py tests/test_telegram.py tests/test_approve.py`; the web checks.
 
@@ -1080,9 +1080,9 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** `app/policy/registry.py` (D1, D2): tiers, the three calendar tools, `execute` with `DRY_RUN`, the pause check at entry, and the action row's checks. The worker resumes a Confirm with the action's id and nonce; `act` calls the registry; every INTERNAL and EXTERNAL attempt is audited.
 
 **Acceptance criteria:**
-- [ ] No T3 tool is registered, and nothing but the registry (and `app/google/smoke.py`) calls the Calendar client's writes.
-- [ ] A changed argument, another decision's nonce, and a mismatched mode at execution are each refused and audited.
-- [ ] Under `DRY_RUN` the provider is never called.
+- [x] No T3 tool is registered, and nothing but the registry (and `app/google/smoke.py`) calls the Calendar client's writes.
+- [x] A changed argument, another decision's nonce, and a mismatched mode at execution are each refused and audited.
+- [x] Under `DRY_RUN` the provider is never called.
 
 **Verification:** `uv run pytest tests/test_registry.py tests/test_worker.py tests/test_graph.py`.
 
@@ -1093,9 +1093,11 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** The deterministic id, the lookup before any later attempt, and the `409` path (D3). `step_for` re-drives `act` when the action is `approved`, `executing`, `done` or `dry_run`; giving up resolves an `executing` action by looking the event up.
 
 **Acceptance criteria:**
-- [ ] With a crash injected after each step (fake Calendar, Neon), every case ends with exactly one event, the ledger `CREATED`, and no action left `executing`.
-- [ ] A `409` returns the existing event; a deleted event is not recreated.
-- [ ] `tests/test_one_resumer.py` still passes.
+- [x] With a crash injected after each step (fake Calendar, Neon), every case ends with exactly one event, the ledger `CREATED`, and no action left `executing`.
+- [x] A `409` returns the existing event; a deleted event is not recreated.
+- [x] `tests/test_one_resumer.py` still passes.
+- [x] Found on the way: the probe (`app/jobs/calendar_probe.py`) is built here, with D3. The alert and the `/health` count for a write that could not be confirmed move to 17.11; the purge's week-old clear of a stored request waits for the M20 merge.
+- [x] A fresh-context review of 17.5–17.6 found no path that writes under `DRY_RUN` or skips a check. Its findings are folded in: tools are checked only for a new action, giving up never fails a write that may exist, a `400` fails at once, a `404` counts only once the calendar is readable, any action is re-driven with its reason, and the worker applies nothing while paused.
 
 **Verification:** `uv run pytest tests/test_calendar.py tests/test_worker.py tests/test_one_resumer.py`; Neon.
 
@@ -1163,7 +1165,7 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 
 ### Task 17.11: Where work stops, and what shows
 
-**Description:** Poll's `allows_new_work()` and the reserve; the worker holding edits; ingestion stopping; `control.budget_state`; alerts at 80% and 100%, once per month and cap; `/health` fields, 503 for an unpriced configured model, and held decisions not counted as stuck.
+**Description:** Poll's `allows_new_work()` and the reserve; the worker holding edits; ingestion stopping; `control.budget_state`; alerts at 80% and 100%, once per month and cap; `/health` fields, 503 for an unpriced configured model, and held decisions not counted as stuck. From 17.6: one alert when a calendar write cannot be confirmed ("A calendar write could not be confirmed"), and `/health` counting those decisions apart from stuck ones.
 
 **Acceptance criteria:**
 - [ ] At the cap, poll claims nothing and the tick is still recorded as successful; Edit is held while Confirm and Cancel apply.
@@ -1176,7 +1178,7 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 
 ### Task 17.12: Pause, Resume and Withdraw
 
-**Description:** `app/policy/control.py` (D6); `POST /api/pause`, `/api/resume` and `/api/decisions/withdraw`; `app/jobs/control.py`; poll, the worker, ingestion and the registry stopping; `/health`. In the web app: Pause / Resume and the banner in the header, and Withdraw on a held card.
+**Description:** `app/policy/control.py` (D6); `POST /api/pause`, `/api/resume` and `/api/decisions/withdraw`; `app/jobs/control.py`; poll, the worker, ingestion and the registry stopping; `/health`. In the web app: Pause / Resume and the banner in the header, and Withdraw on a held card. Already built in 17.6: the registry's `PausedError`, the worker applying nothing while paused, and the decisions job opening no session; withdraw requests must still be processed while paused.
 
 **Acceptance criteria:**
 - [ ] Poll, the worker and ingestion stop within one tick, and resume afterwards; `/health` stays 200.

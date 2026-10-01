@@ -99,9 +99,9 @@ class Tool(Generic[A]):
 A test pins the exact set of registered tools. Registering a new one fails it,
 which is where the owner's "ask first" applies.
 
-`Registry.execute(name, args, *, approval)`:
+`Registry.execute(name, args, *, approval, message_id)`:
 1. **Unknown tool:** refused.
-2. **Paused** (D6): raises `Paused`. Nothing runs. The worker releases its lease without counting an attempt, and picks the action up again as soon as the owner resumes.
+2. **Paused** (D6): raises `PausedError`. Nothing runs. The worker releases its lease without counting an attempt, and picks the action up again as soon as the owner resumes.
 3. **READ:** runs. Not audited: reads are frequent and change nothing.
 4. **INTERNAL and EXTERNAL:** D2's checks, then D4's for EXTERNAL, all before anything is marked as started. Under `DRY_RUN` the provider is never called to write; D3 says what a later attempt may still do.
 5. Every INTERNAL and EXTERNAL attempt writes an audit row (D7), refusals included.
@@ -233,14 +233,15 @@ a crash inside `act` could lose the step that recorded the approval. The
 thread would then look parked and be resumed again.
 
 **The worker finishes interrupted writes.** `step_for` re-drives a thread
-whose `next` is `act` when its decision's action is `approved`, `executing`,
-`done` or `dry_run`:
-- the registry returns a stored `done` or `dry_run` outcome without calling Google;
+whose `next` is `act` whenever its decision has an action, whatever the
+action's status:
+- the registry checks an `approved` action as at any first attempt;
+- it returns a stored `done` or `dry_run` outcome, or a `refused` or `failed` one with its reason, without calling Google;
 - it finishes `executing` as above.
 
-Either way, `act` then writes the ledger mark it missed. A thread with no
-action row was approved before M17, and is still settled as failed (`act
-interrupted`).
+Either way, `act` then writes the ledger mark it missed, and a refusal's
+fixed reason becomes the decision's. A thread with no action row was approved
+before M17, and is still settled as failed (`act interrupted`).
 
 **Giving up.** When a decision's attempts run out (M16 D1) and its action is
 `executing`, the worker looks the event up:
@@ -385,7 +386,7 @@ and D5's `budget_state`.
   - poll claims nothing;
   - the worker applies no decision;
   - ingestion claims nothing;
-  - the registry raises `Paused` for new actions. The worker releases the lease without counting an attempt, and makes the decision due at once, so it moves on as soon as the owner resumes. An action already past the registry's checks completes.
+  - the registry raises `PausedError` for new actions. The worker releases the lease without counting an attempt, and makes the decision due at once, so it moves on as soon as the owner resumes. An action already past the registry's checks completes.
 - **Withdraw** is a request the worker carries out, because only the worker may settle a decision it might have applied (M16 D1):
   - the card's **Withdraw** button records a request on the decision (`POST /api/decisions/withdraw`, which sets `withdraw_requested_at`);
   - the worker, holding its lease, looks for a request before anything else, and processes requests even while paused;
@@ -576,3 +577,32 @@ Three adversarial rounds, each by a reviewer with fresh context, on 2026-10-01.
 Three rounds still found substantive issues, narrower each time. What remains
 is checked by the build's own reviews, the fault-injection tests, the probe,
 and the owner's end tests.
+
+## Running notes
+
+### Tasks 17.1–17.4: records, the hash, checkpoints, the token (2026-10-01)
+
+- **One place builds the arguments.** `event_args` in `app/policy/hashing.py` makes them for the hash at park and for the call at `act`, so the two cannot drift apart. The description names the message, and the hash covers it.
+- **The owner's aliases reach the extraction.** `PIPELINE_REVISION` went to 2 for it, so M24 counts the change.
+- **`write_park` returns the row's generation.** A card announced from the record carries the token the row will accept.
+
+### Tasks 17.5–17.6: the registry, and writes that can be finished (2026-10-01)
+
+- **`Registry.execute` is the only way `act` writes.** `execute_create_event` is gone. A test scans `app/` for `create_event`, `delete_event` and any write on a Calendar `events()` resource, and allows only the registry, the calendar client, the smoke test and the probe.
+- **The READ tool is registered but not run through the registry.** The conflict check calls `freebusy` itself: a read needs no approval and is not audited.
+- **The approval rides in the graph state.** `await_approval` keeps the resume's action id and nonce, so a re-drive after a crash continues the same action. The nonce was already stored in Postgres.
+- **The action is identified by its id, message and nonce alone.** The tool `act` asks for is checked only for a new action, as one of its checks ("arguments differ from the approval"). A begun or settled action is finished or answered from what it stored, whatever the current code builds.
+- **A refusal that names no action of this message's** (no approval, or another decision's nonce) is audited and touches no row.
+- **A `400` fails the action at once** ("the calendar refused the write"): another attempt would be refused the same way. A time without a zone is refused before anything starts ("a time without a zone"), as `execute_create_event` had done since M04.
+- **Two fixed reasons were added** to the audit's list: "attempts exhausted" and "a time without a zone". "The calendar refused the write" is now used too.
+- **Pause.** The worker applies nothing while paused, and the decisions job opens no session, so a Confirm stays parked where a Withdraw can reach it (D6, the worker's part, brought forward from 17.12). The registry's `PausedError` is the second layer, for a pause that lands mid-apply: only an `approved` action stops; one already executing completes. The exception is named `...Error`, as the repository's are.
+- **Giving up never fails a write that may exist.**
+  - After the last attempt failed with an action `executing`, the lookup waits 10 minutes: Google can finish an insert after the call timed out on this side.
+  - A `done` action answers from what it stored; a `dry_run` one settles as skipped, as `act` would have.
+  - A `404` is taken as "no such event" only once the calendar itself has been read; otherwise the lookup counts as failed.
+  - When Google cannot be asked, or the clean settle fails with a write begun, the decision stays open, asks again hourly, and `write_unconfirmed` is audited once. The alert and `/health`'s count move to 17.11.
+- **Accepted as they are:** an attempt is audited when it ends, not when it starts, and a lookup that keeps failing retries hourly without limit, as D3 says, until the owner acts on the alert.
+- **The probe** refuses `primary`. It deletes its event again whatever the checks find, including an insert whose reply was lost and one Google should have refused.
+- **Tests.** The fake calendars count every insert asked for, so a blind second insert would show. One test reads the action from a second connection while Google is being called, to see that the start was committed first. A fresh-context review of 17.5–17.6 found no path that writes under `DRY_RUN` or skips a check; its other findings are folded in above.
+- **Left for 17.7:** an M16 Confirm is still resumed without an approval. The registry refuses it, and the message is FAILED ("approval does not match"); 17.7 returns it to the owner instead. Refusing an `approved` action whenever its decision settles lands there too.
+- **Left until after the M20 merge:** the purge's clearing of `outbound_actions.request` after 7 days (D8). The M20 build edits the purge and the scheduler's log line at the same time.
