@@ -20,14 +20,17 @@ Run by the scheduler every two minutes, one run at a time, each bounded to
 6. spends what quota is left on the backfill.
 
 Only a failure of `history.list` itself stops a pass. One message that will
-not fetch goes to the queue and the pass moves on; an outage stops the pass
-and blames nobody. A `404` from `history.list` -- Gmail no longer keeps the
-cursor's history -- starts a catch-up: the gap is recorded and the cursor
-moved to the present in one transaction, and the gap is worked off in the
-background.
+not fetch, or whose row the database refuses, goes to the queue and the pass
+moves on; an outage stops the pass and blames nobody. A fetch that fails as
+if Gmail were down is checked with one profile read first, so a message
+that answers 5xx every time is struck rather than taken for an outage. A
+`404` from `history.list` -- Gmail no longer keeps the cursor's history --
+starts a catch-up: the gap is recorded and the cursor moved to the present
+in one transaction, and the gap is worked off in the background.
 
 Every run holds a Postgres advisory lock: a scheduled run that finds it
-taken skips its turn, and a CLI run waits for it.
+taken skips its turn, a CLI run waits for it, and the daily recall waits
+for it a while.
 """
 
 from __future__ import annotations
