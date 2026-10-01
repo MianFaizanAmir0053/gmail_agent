@@ -101,6 +101,15 @@ def test_the_web_channels_blank_secrets_count_as_unset(name: str, blank: str) ->
     assert getattr(Settings(**fields), name) is None
 
 
+def test_pairing_is_off_unless_switched_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The iPhone fallback (M16, D4) exists only if Google sign-in fails there."""
+    monkeypatch.delenv("PAIRING_ENABLED", raising=False)
+    assert _settings().pairing_enabled is False
+
+    monkeypatch.setenv("PAIRING_ENABLED", "true")
+    assert _settings().pairing_enabled is True
+
+
 def _web_app_url(value: str) -> str | None:
     fields: dict[str, Any] = {
         "_env_file": None,

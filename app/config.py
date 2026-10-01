@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     VAPID subject, in place of the owner's email. Push is off until both this
     and `vapid_private_key` are set."""
 
+    pairing_enabled: bool = False
+    """Serve `/api/pairing/*`, the iPhone sign-in fallback (D4).
+
+    Off by default, so the routes answer 404 as if they did not exist. Turn it
+    on only if Google sign-in fails inside the installed iPhone app, and set
+    the web app's `PAIRING_ENABLED` to match. A pairing code admits whoever
+    types it, so the fewer days it can be asked for, the better."""
+
     # --- Scheduling (M07) ---------------------------------------------------
     run_scheduler: bool = False
     """Start the in-process poller. Off by default so local `serve` and tests
