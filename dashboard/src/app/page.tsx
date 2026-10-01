@@ -4,8 +4,8 @@ import { PushSetup } from "@/components/PushSetup";
 import { Refresher } from "@/components/Refresher";
 import { StableTaps } from "@/components/StableTaps";
 import { ago } from "@/lib/format";
-import { openProposals, recentDecisions } from "@/lib/proposals";
-import { cardView, layoutKey, ownerZone, shouldRefresh } from "@/lib/timeline";
+import { allowedContacts, openProposals, recentDecisions } from "@/lib/proposals";
+import { cardView, layoutKey, outsideGuestKeys, ownerZone, shouldRefresh } from "@/lib/timeline";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +23,7 @@ export default async function TimelinePage() {
     openProposals(),
     recentDecisions(),
   ]);
+  const allowed = await allowedContacts(outsideGuestKeys(open));
 
   return (
     <>
@@ -34,10 +35,17 @@ export default async function TimelinePage() {
       {open.length === 0 ? (
         <div className="empty">Nothing is waiting for a decision.</div>
       ) : (
-        <StableTaps layoutKey={layoutKey(open)}>
+        <StableTaps
+          layoutKey={layoutKey(
+            open.map((row) => ({
+              ...row,
+              outside: cardView(row, zone, allowed).outsideGuests.length,
+            })),
+          )}
+        >
           <div className="proposals">
             {open.map((row) => {
-              const view = cardView(row, zone);
+              const view = cardView(row, zone, allowed);
               return (
                 <ProposalCard key={row.message_id} view={view}>
                   {view.canDecide && (

@@ -6,6 +6,8 @@
  * which still decide: this only spares a round trip for what can never pass.
  */
 
+import { isAddress } from "./guests.ts";
+
 export const MAX_CORRECTION_CHARS = 2000;
 
 export type DecisionAction = "confirm" | "edit" | "cancel";
@@ -58,7 +60,7 @@ export function parseDecisionForm(data: FormData): Parsed {
 }
 
 export type Answer = {
-  status: "queued" | "stale" | "not_found" | "not_ready" | "invalid" | "error";
+  status: "queued" | "stale" | "not_found" | "not_ready" | "outside" | "invalid" | "error";
   current_revision?: number | null;
   detail?: string;
 };
@@ -81,9 +83,41 @@ export function describeAnswer(answer: Answer): Notice {
       return { tone: "warn", message: "That proposal is no longer waiting for a decision." };
     case "not_ready":
       return { tone: "warn", message: "This proposal is still being prepared. Try again in a minute." };
+    case "outside":
+      return {
+        tone: "warn",
+        message: "Some guests are not in this email thread. Allow or remove them first.",
+      };
     case "invalid":
       return { tone: "warn", message: answer.detail || "That decision was not accepted." };
     default:
       return { tone: "error", message: "The decision could not be sent. Try again in a moment." };
+  }
+}
+
+
+/** An Allow from a card: one guest outside the thread (M17, D4). */
+export type Allow = { address: string; message_id: string };
+
+export function parseAllowForm(
+  data: FormData,
+): { ok: true; value: Allow } | { ok: false; error: string } {
+  const address = String(data.get("address") ?? "").trim();
+  const messageId = String(data.get("message_id") ?? "");
+  if (!messageId || messageId.length > 128) return { ok: false, error: "No such proposal." };
+  if (!isAddress(address)) return { ok: false, error: "That is not an email address." };
+  return { ok: true, value: { address, message_id: messageId } };
+}
+
+export type AllowAnswer = "allowed" | "invalid" | "error";
+
+export function describeAllow(answer: AllowAnswer, address: string): Notice {
+  switch (answer) {
+    case "allowed":
+      return { tone: "ok", message: `Allowed ${address}. Confirm when ready.` };
+    case "invalid":
+      return { tone: "warn", message: "That is not an email address." };
+    default:
+      return { tone: "error", message: "The guest could not be allowed. Try again in a moment." };
   }
 }

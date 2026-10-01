@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { MAX_CORRECTION_CHARS, parseDecisionForm, describeAnswer } from "./decisionForm.ts";
+import {
+  MAX_CORRECTION_CHARS,
+  describeAllow,
+  describeAnswer,
+  parseAllowForm,
+  parseDecisionForm,
+} from "./decisionForm.ts";
 
 function form(fields: Record<string, string>): FormData {
   const data = new FormData();
@@ -76,5 +82,35 @@ describe("describeAnswer", () => {
     const answer = describeAnswer({ status: "error" });
     assert.equal(answer.tone, "error");
     assert.doesNotMatch(answer.message, /stack|Traceback|psycopg/);
+  });
+});
+
+
+describe("an Allow (M17, D4)", () => {
+  const form = (fields: Record<string, string>) => {
+    const data = new FormData();
+    for (const [name, value] of Object.entries(fields)) data.set(name, value);
+    return data;
+  };
+
+  it("carries one address and the proposal it came from", () => {
+    assert.deepEqual(parseAllowForm(form({ address: " sara@example.com ", message_id: "m1" })), {
+      ok: true,
+      value: { address: "sara@example.com", message_id: "m1" },
+    });
+  });
+
+  it("refuses anything that is not one address", () => {
+    const parsed = parseAllowForm(form({ address: "a@b.com, c@d.com", message_id: "m1" }));
+    assert.equal(parsed.ok, false);
+  });
+
+  it("says what happened in words", () => {
+    assert.equal(describeAllow("allowed", "sara@example.com").tone, "ok");
+    assert.equal(describeAllow("error", "sara@example.com").tone, "error");
+  });
+
+  it("explains Fly's refusal of a Confirm with a guest outside", () => {
+    assert.match(describeAnswer({ status: "outside" }).message, /not in this email thread/);
   });
 });

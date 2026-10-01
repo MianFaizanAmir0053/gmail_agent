@@ -1,7 +1,7 @@
 import "server-only";
 
 import { isPairingCode } from "@/lib/access";
-import type { Answer, Decision } from "@/lib/decisionForm";
+import type { Allow, AllowAnswer, Answer, Decision } from "@/lib/decisionForm";
 import type { SubscriptionBody } from "@/lib/push";
 
 /**
@@ -90,6 +90,7 @@ export async function postDecision(decision: Decision): Promise<Answer> {
     case 404:
       return { status: "not_found" };
     case 422:
+      if (body.status === "outside") return { status: "outside" };
       return {
         status: "invalid",
         detail: typeof body.detail === "string" ? body.detail : undefined,
@@ -98,6 +99,16 @@ export async function postDecision(decision: Decision): Promise<Answer> {
       console.error("decision refused with status", response.status);
       return { status: "error" };
   }
+}
+
+/** Allow a guest outside the thread (M17, D4). */
+export async function postContact(allow: Allow): Promise<AllowAnswer> {
+  const response = await postToFly("/api/contacts", allow);
+  if (response === null) return "error";
+  if (response.status === 204) return "allowed";
+  if (response.status === 422) return "invalid";
+  console.error("contact answered", response.status);
+  return "error";
 }
 
 /** A pairing code as Fly issued it (M16, D4): shown to the owner once. */

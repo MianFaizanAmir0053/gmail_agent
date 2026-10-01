@@ -6,6 +6,7 @@ import {
   cardView,
   formatWindow,
   layoutKey,
+  outsideGuestKeys,
   ownerZone,
   shouldRefresh,
   type CardPayload,
@@ -193,5 +194,39 @@ describe("shouldRefresh", () => {
     assert.equal(shouldRefresh([{ status: "pending" }, { status: "decided" }]), false);
     assert.equal(shouldRefresh([{ status: "pending" }, { status: "deciding" }]), true);
     assert.equal(shouldRefresh([]), false);
+  });
+});
+
+
+describe("layoutKey and outside guests", () => {
+  it("changes when an Allow hides a guest, so the moved buttons are held", () => {
+    assert.notEqual(layoutKey([{ ...ROW, outside: 2 }]), layoutKey([{ ...ROW, outside: 1 }]));
+  });
+});
+
+describe("guests outside the thread (M17, D4)", () => {
+  const row: ProposalRow = {
+    ...ROW,
+    payload: { ...ROW.payload, outside_guests: ["Sara.Khan@googlemail.com", "new@example.net"] },
+  };
+
+  it("lists each one the owner has not allowed", () => {
+    assert.deepEqual(cardView(row, "UTC").outsideGuests, [
+      "Sara.Khan@googlemail.com",
+      "new@example.net",
+    ]);
+  });
+
+  it("hides one already allowed, however the card spells it", () => {
+    const view = cardView(row, "UTC", new Set(["sarakhan@gmail.com"]));
+    assert.deepEqual(view.outsideGuests, ["new@example.net"]);
+  });
+
+  it("shows none for a card parked before the rule", () => {
+    assert.deepEqual(cardView(ROW, "UTC").outsideGuests, []);
+  });
+
+  it("looks each guest up once, by the key Fly stores", () => {
+    assert.deepEqual(outsideGuestKeys([row, row, ROW]), ["new@example.net", "sarakhan@gmail.com"]);
   });
 });

@@ -61,3 +61,17 @@ export async function recentDecisions(limit = 20): Promise<DecisionRow[]> {
     [limit],
   );
 }
+
+
+/**
+ * Which of these guest keys the owner has allowed (M17, D4), read as
+ * `web_reader`, which may read `confirmed_contacts` and write nothing.
+ */
+export async function allowedContacts(keys: string[]): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const rows = await query<{ address: string }>(
+    "SELECT address FROM confirmed_contacts WHERE address = ANY($1)",
+    [keys],
+  );
+  return new Set(rows.map((row) => row.address));
+}

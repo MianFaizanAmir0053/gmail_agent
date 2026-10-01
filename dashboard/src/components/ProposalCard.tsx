@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { AllowGuest } from "@/components/AllowGuest";
 import type { CardView } from "@/lib/timeline";
 
 /**
@@ -26,6 +27,12 @@ export function ProposalCard({ view, children }: { view: CardView; children?: Re
       <p className="when">{view.when}</p>
       {view.eventZone && <p className="detail">Event zone: {view.eventZone}</p>}
       {view.attendees.length > 0 && <p className="detail">With {view.attendees.join(", ")}</p>}
+      {view.outsideGuests.map((guest) => (
+        <div key={guest} className="note warn outside">
+          <span>{guest} is not in this email thread.</span>
+          {view.canDecide && <AllowGuest messageId={view.messageId} address={guest} />}
+        </div>
+      ))}
       {view.location && <p className="detail">At {view.location}</p>}
 
       {view.conflicts.map((conflict) => (

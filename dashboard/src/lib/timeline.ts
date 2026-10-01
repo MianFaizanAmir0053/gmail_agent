@@ -5,6 +5,8 @@
  * and the card only render what `cardView` decides.
  */
 
+import { guestKey } from "./guests.ts";
+
 export const LAST_EDITABLE_REVISION = 2;
 /** `MAX_REVISIONS` in app/graph/nodes.py: two edits, so none at revision 3. */
 
@@ -19,6 +21,8 @@ export type CardPayload = {
   location?: string | null;
   conflicts?: string[] | null;
   review_issues?: string[] | null;
+  /** Guests not in the email's thread when it parked (M17, D4). */
+  outside_guests?: string[] | null;
 };
 
 export type ProposalRow = {
@@ -47,6 +51,9 @@ export type CardView = {
   location: string | null;
   conflicts: string[];
   reviewIssues: string[];
+  /** Guests outside the thread the owner has not allowed: each needs an Allow
+   * before a Confirm is accepted (M17, D4). */
+  outsideGuests: string[];
   dryRun: boolean;
   invite: boolean;
   /** A decision is open: the worker is applying it. */
@@ -64,9 +71,14 @@ export type CardView = {
 /**
  * What one card shows. Total: whatever the stored payload holds, it returns a
  * view rather than throwing, because one odd row must not take the whole
- * timeline down with it.
+ * timeline down with it. `allowed` holds the guest keys of contacts the owner
+ * has allowed: those are no longer outside.
  */
-export function cardView(row: ProposalRow, ownerZone: string): CardView {
+export function cardView(
+  row: ProposalRow,
+  ownerZone: string,
+  allowed: ReadonlySet<string> = new Set(),
+): CardView {
   const card = row.payload;
   // Deciding needs the content: the owner would otherwise approve something
   // they cannot see. Retention never clears an open proposal, so this holds
@@ -83,6 +95,7 @@ export function cardView(row: ProposalRow, ownerZone: string): CardView {
     location: text(card?.location),
     conflicts: words(card?.conflicts),
     reviewIssues: words(card?.review_issues),
+    outsideGuests: words(card?.outside_guests).filter((guest) => !allowed.has(guestKey(guest))),
     dryRun: row.dry_run,
     invite: row.action_type === "calendar_invite",
     applying: row.status === "deciding",
@@ -92,6 +105,15 @@ export function cardView(row: ProposalRow, ownerZone: string): CardView {
     token,
     live: !row.dry_run,
   };
+}
+
+/** The guest keys of every open card's outside guests: what to look up. */
+export function outsideGuestKeys(rows: Pick<ProposalRow, "payload">[]): string[] {
+  const keys = new Set<string>();
+  for (const row of rows) {
+    for (const guest of words(row.payload?.outside_guests)) keys.add(guestKey(guest));
+  }
+  return [...keys].sort();
 }
 
 /**
@@ -108,8 +130,12 @@ export function cardToken(argsHash: string, dryRun: boolean, generation: number)
  * buttons still for a moment whenever this changes, so a tap meant for one
  * card cannot land on another that moved into its place.
  */
-export function layoutKey(rows: Pick<ProposalRow, "message_id" | "revision" | "status">[]): string {
-  return rows.map((row) => `${row.message_id}:${row.revision}:${row.status}`).join("|");
+export function layoutKey(
+  rows: (Pick<ProposalRow, "message_id" | "revision" | "status"> & { outside?: number })[],
+): string {
+  return rows
+    .map((row) => `${row.message_id}:${row.revision}:${row.status}:${row.outside ?? 0}`)
+    .join("|");
 }
 
 /** "Fri 02 Oct, 16:00 – 17:00" in `zone`; the end's day is named only when it differs. */

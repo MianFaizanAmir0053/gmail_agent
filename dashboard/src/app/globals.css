@@ -356,6 +356,38 @@ h1.section {
   color: var(--err);
 }
 
+/* --- guests outside the thread (M17) --------------------------------------- */
+
+.outside {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.allow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.allow button {
+  font: inherit;
+  color: var(--text);
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  min-height: 32px;
+}
+.allow button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.allow .note {
+  margin: 0;
+}
+
 /* --- push, and pairing's code (M16) --------------------------------------- */
 
 .push,
