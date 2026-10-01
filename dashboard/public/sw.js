@@ -33,9 +33,22 @@ self.isCacheable = function isCacheable(url, origin) {
 };
 
 /*
+ * The kinds of push Fly sends, by tag, and the notification each becomes. A
+ * notification is replaced only by the next of its own kind, so a proposal
+ * or a mail alert never replaces an unread sign-in alert, which Fly does not
+ * send twice, and the two mail alerts, each sent once a day, never replace
+ * each other. A tag not listed here is shown as a proposal.
+ */
+const TAGS = new Map([
+  ["proposal", "mailagent-proposal"],
+  ["alert", "mailagent-alert"],
+  ["mail-sync", "mailagent-mail-sync"],
+  ["mail-feed", "mailagent-mail-feed"],
+]);
+
+/*
  * What a push shows. Its words come from Fly, which sends only generic ones;
- * its tag is one of two, so a proposal never replaces an unread sign-in
- * alert, which Fly does not send twice.
+ * its tag is one of those above.
  */
 self.notificationFor = function notificationFor(data) {
   const push = data !== null && typeof data === "object" ? data : {};
@@ -46,7 +59,7 @@ self.notificationFor = function notificationFor(data) {
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
       // One notification per kind: a second proposal replaces the first.
-      tag: push.tag === "alert" ? "mailagent-alert" : "mailagent-proposal",
+      tag: TAGS.get(push.tag) ?? TAGS.get("proposal"),
       renotify: true,
     },
   };

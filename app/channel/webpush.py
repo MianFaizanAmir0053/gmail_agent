@@ -51,10 +51,12 @@ ALERT_PUSHES: dict[AlertCode, dict[str, str]] = {
     "token_expiring": ALERT_PUSH,
     "token_expired": ALERT_PUSH,
     "standby_in_use": ALERT_PUSH,
-    "mail_sync_missed": ALERT_PUSH | {"body": "Mail sync missed messages."},
-    "mail_feed_stalled": ALERT_PUSH | {"body": "The mail feed has stalled."},
+    "mail_sync_missed": ALERT_PUSH | {"body": "Mail sync missed messages.", "tag": "mail-sync"},
+    "mail_feed_stalled": ALERT_PUSH | {"body": "The mail feed has stalled.", "tag": "mail-feed"},
 }
-"""What each alert pushes. Every code has an entry."""
+"""What each alert pushes. Every code has an entry. The mail alerts have tags
+of their own: sent once a day each, neither may replace the other, nor an
+unread sign-in alert, which is sent once. The worker knows each tag."""
 
 PUSH_TIMEOUT = 10
 """Seconds per push service."""

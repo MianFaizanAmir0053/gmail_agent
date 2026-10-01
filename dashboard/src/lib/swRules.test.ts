@@ -66,8 +66,19 @@ describe("the service worker's notifications", () => {
     assert.equal(alert.options.body, "Google sign-in needs attention.");
   });
 
-  it("takes no tag from a push beyond the two it knows", () => {
-    assert.equal(notificationFor({ tag: "anything" }).options.tag, notificationFor({}).options.tag);
+  it("gives each mail alert a tag of its own, apart from the sign-in alert", () => {
+    // Each mail alert is sent once a day: one must not replace the other, nor
+    // an unread sign-in alert, nor be replaced by the next proposal.
+    const tags = ["alert", "mail-sync", "mail-feed", "proposal"].map(
+      (tag) => notificationFor({ title: "mailagent", body: "x", tag }).options.tag,
+    );
+    assert.equal(new Set(tags).size, 4);
+  });
+
+  it("takes no tag from a push beyond the ones it knows", () => {
+    for (const tag of ["anything", "__proto__", "constructor", 42]) {
+      assert.equal(notificationFor({ tag }).options.tag, notificationFor({}).options.tag);
+    }
   });
 
   it("falls back to generic words for a push it cannot read", () => {
