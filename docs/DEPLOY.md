@@ -19,6 +19,9 @@ running notes):
 One process: FastAPI serves `/health`, and APScheduler runs the poll, the
 hourly purge and the token check inside it.
 
+M16 adds the web app and web push on top of this stack, after M15 closes.
+Its steps are in [§9](#9-m16-the-web-app-and-push).
+
 ---
 
 ## 1. Before the first deploy (owner)
@@ -37,6 +40,8 @@ ledger never offers it to the poller again. So billing comes first.
 
 3. **Database.** Create a Supabase Free project in Singapore.
    - Enable the `vector` extension (Dashboard → Database → Extensions).
+   - **Turn the Data API off** (Dashboard → Integrations → Data API → *Enable Data API* off). Supabase grants every table in `public` to the roles its REST and GraphQL endpoints use, so its anon key could otherwise read the checkpoints, which hold whole emails. This app never uses those endpoints. M16's migration 009 also removes the grants.
+   - **Enforce SSL** (Dashboard → Database → Settings → SSL Configuration). Supabase accepts unencrypted connections unless told otherwise.
    - Copy the **direct** connection string: `db.<project>.supabase.co:5432`. It is IPv6-only on the free plan, and Fly machines reach it over IPv6. The session pooler on port 5432 also works.
    - **Never use port 6543**, the transaction pooler: the app refuses to start on it, because it breaks LangGraph's checkpointer.
 
@@ -232,10 +237,184 @@ with a weekly `reauth`, or a Workspace mailbox with an "Internal" app.
 
 ---
 
+## 9. M16: the web app and push
+
+M16 adds a web app on Vercel, where the owner sees and decides proposals, and
+web push to both phones. It deploys **after M15 closes** (M16 task 16.23),
+from the branch head in this working copy rather than from a tag. `DRY_RUN`
+stays `true`. The spec is
+[`plans/M16-web-channel.md`](plans/M16-web-channel.md).
+
+| Part | Choice | About |
+|---|---|---|
+| Web app | Vercel Hobby, functions in `sin1` (`dashboard/vercel.json`) | $0 |
+| Sign-in | Google, through a **separate** Cloud project | $0 |
+| Push | Web push with VAPID keys, sent from Fly | $0 |
+
+The browser never calls Fly. The web app's server reads Supabase as a
+read-only role and sends every decision to Fly's `/api/*` with a bearer
+secret. Fly's worker applies it.
+
+### 9.1 The sign-in project (owner, day 1)
+
+1. Create a **new** Google Cloud project, separate from the Gmail one. If the
+   two shared a project and it fell back to Testing, Google would refuse every
+   other account before the web app's allow-list saw them, and the "second
+   account is refused" check would prove nothing.
+2. On its OAuth consent screen: user type External, scopes `openid`, `email`
+   and `profile` only. Then **Publish app**. These scopes need no
+   verification.
+3. Create an OAuth client of type *Web application*, with these redirect URIs:
+   - `https://<vercel app>/api/auth/callback/google`
+   - `http://localhost:3000/api/auth/callback/google`, for local runs
+
+   Its client ID and secret go to Vercel (§9.4).
+
+### 9.2 Keys and secrets (owner, on your machine)
+
+| Secret | Generate with | Goes to |
+|---|---|---|
+| VAPID key pair | `.\tasks.ps1 vapid` | The private half to Fly only; the public half to Vercel |
+| `WEB_API_SECRET` | `uv run python -c "import secrets; print(secrets.token_urlsafe(32))"` | Fly **and** Vercel, the same value |
+| `AUTH_SECRET` | `npx auth secret` in `dashboard/`, or `openssl rand -base64 33` | Vercel only |
+| The `web_reader` password | The same command as `WEB_API_SECRET` | Supabase (§9.3) and, inside the connection string, Vercel |
+
+Paste each value straight into Fly, Vercel or Supabase. Never put one in a
+file in the repo, a chat or an issue.
+
+Replacing the VAPID pair later invalidates every push subscription. Each phone
+replaces its own the next time the app opens. A browser that subscribes only
+from a tap shows **Turn on notifications** again instead.
+
+### 9.3 The database role (owner, deploy day)
+
+Fly's boot applies migrations 007 to 009 (`MIGRATE_ON_BOOT=true`). Migration
+008 creates the role `web_reader`, which can read only what the web app shows
+and cannot log in yet. Migration 009 takes back what Supabase granted its
+Data API roles (§1.3).
+
+1. After that boot, give the role a password in Supabase's SQL editor:
+
+   ```sql
+   ALTER ROLE web_reader WITH LOGIN PASSWORD '<password>';
+   ```
+
+   Run it as a new query, then delete that query: the editor keeps what it
+   ran.
+
+2. The web app connects through the **session pooler**, because the direct
+   host is IPv6-only and Vercel has no IPv6 egress. Copy the pooler host from
+   *Connect → Session pooler* in the Supabase dashboard:
+
+   ```text
+   postgresql://web_reader.<project-ref>:<password>@<pooler host>:5432/postgres
+   ```
+
+   The user name is `web_reader.<project-ref>`, not `web_reader`: that is how
+   the shared pooler finds the project. **Never port 6543.** Add no
+   `sslmode` to it: the web app sets up the encryption itself, and an
+   `sslmode` would override that.
+
+3. Download Supabase's CA certificate (*Database → Settings → SSL
+   Configuration → Download certificate*). Its contents go to Vercel as
+   `DATABASE_CA_CERT`, so the web app checks that it is talking to Supabase.
+   The connection is encrypted without it too, but not checked.
+
+### 9.4 The Vercel project (owner)
+
+Created on day 1 for the sign-in test (M16 task 16.2), and completed at
+deploy:
+
+- Import the GitHub repo. Set **Root Directory** to `dashboard`; the framework
+  is detected as Next.js.
+- **Node.js 24.x.** It is Vercel's default, and `engines` in
+  `dashboard/package.json` asks for it too. CI builds on the same version.
+- Production branch: the branch being deployed (`v2-plan` today).
+
+Environment variables, for Production. Mark the secret ones **Sensitive**, so
+they cannot be read back:
+
+| Variable | Value | Set |
+|---|---|---|
+| `AUTH_SECRET` | From §9.2. Sensitive | Day 1 |
+| `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET` | The sign-in client from §9.1. The secret is Sensitive | Day 1 |
+| `OWNER_EMAIL` | Your Google address. Blank admits nobody | Day 1 |
+| `DATABASE_URL` | The `web_reader` connection string from §9.3. Sensitive | Deploy |
+| `DATABASE_CA_CERT` | The contents of Supabase's CA certificate, from §9.3 | Deploy |
+| `FLY_API_URL` | `https://<app>.fly.dev` | Deploy |
+| `WEB_API_SECRET` | From §9.2, the same as Fly's. Sensitive | Deploy |
+| `OWNER_TIMEZONE` | The same zone as Fly's `USER_TIMEZONE`, e.g. `Asia/Karachi` | Deploy |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | The public half from §9.2 | Deploy |
+
+`NEXT_PUBLIC_VAPID_PUBLIC_KEY` is built into the page, so redeploy after
+setting or changing it. Pages that read the database fail until
+`DATABASE_URL` is set; on day 1 only sign-in is under test.
+
+### 9.5 Fly (deploy day)
+
+Three more secrets join §2's:
+
+| Variable | Value |
+|---|---|
+| `WEB_API_SECRET` | From §9.2 |
+| `VAPID_PRIVATE_KEY` | The private half from §9.2 |
+| `WEB_APP_URL` | The web app's bare origin, `https://<vercel app>`. Web push sends it to Apple and Google as the VAPID subject. A path, a port or `http://` stops the app at boot, rather than failing every push quietly |
+
+`TELEGRAM_*` stays unset: the web app replaces it.
+
+### 9.6 Deploy day, in order (M16 task 16.23)
+
+1. Stage the Fly secrets (§9.5) and deploy, from this working copy:
+
+   ```bash
+   fly secrets set --stage WEB_API_SECRET="..." VAPID_PRIVATE_KEY="..." WEB_APP_URL="https://..."
+   fly deploy --ha=false
+   fly status                    # exactly one machine
+   ```
+
+   Boot applies 007 to 009. Reconciliation then gives any proposal still
+   parked from M15 its row, so the timeline shows it.
+2. Set the `web_reader` password, and download the CA certificate (§9.3).
+3. Set Vercel's deploy-day variables (§9.4), then redeploy production.
+4. On each phone, open the app and sign in, then tap **Turn on
+   notifications** and allow them. On iPhone, first tap Share, then **Add to
+   Home Screen**, and open it from there: a Safari tab cannot receive push.
+5. Check `/health` with the bearer secret. Without it, `/health` shows only
+   M15's public fields:
+
+   ```bash
+   curl -i -H "Authorization: Bearer <WEB_API_SECRET>" https://<app>.fly.dev/health
+   ```
+
+   Expect `200`, `"push_subscriptions"` of at least 2, and
+   `"oldest_open_decision_seconds": null`, which means no decision is waiting
+   for the worker.
+
+### 9.7 Revoking a device
+
+Sessions are signed cookies (Auth.js JWTs), so one device cannot be signed
+out on its own.
+
+1. Generate a new `AUTH_SECRET` (§9.2), set it in Vercel, and redeploy. Every
+   device is signed out.
+2. In Supabase's SQL editor, run `DELETE FROM push_subscriptions;`. Notifications
+   carry no proposal content, but a lost phone should not keep receiving them.
+3. Sign in again on the devices you keep, and open the app on each: it posts
+   its subscription again every time it opens.
+
+### 9.8 Left as it was
+
+- `/health`'s token fields from M15 stay public. They name the token's state,
+  never its value. Whether they move behind the bearer is to be revisited
+  after M16.
+- `DRY_RUN` stays `true`, until M17.
+
+---
+
 ## Checklist
 
 - [ ] Billing enabled and budget alert set **before** the first deploy
-- [ ] Supabase direct connection string, `vector` extension enabled
+- [ ] Supabase direct connection string, `vector` extension enabled, Data API off, SSL enforced
 - [ ] OAuth app published; primary token minted with `--minted-under production` and the production key
 - [ ] Secrets staged with absolute paths; `DRY_RUN=true`
 - [ ] `fly deploy --ha=false`; `fly status` shows one machine
@@ -244,3 +423,13 @@ with a weekly `reauth`, or a Workspace mailbox with an "Internal" app.
 - [ ] Better Stack monitor green
 - [ ] Day 1: planted meeting email parks a proposal
 - [ ] Day 4: standby token uploaded; `/health` shows `standby_token_state`
+
+**M16**
+
+- [ ] Sign-in project separate from the Gmail one, published, `openid email profile` only
+- [ ] Vercel project: root `dashboard`, Node 24, day-1 variables; a second Google account is refused
+- [ ] VAPID pair, `WEB_API_SECRET` and `AUTH_SECRET` generated and pasted straight into Fly and Vercel
+- [ ] Fly secrets staged; `fly deploy --ha=false` from the branch head after M15 closes
+- [ ] `web_reader` password set, and its SQL editor query deleted
+- [ ] Vercel deploy-day variables set, Supabase's CA certificate included, then redeployed
+- [ ] Both phones signed in with notifications on; `/health` with the bearer shows at least 2 subscriptions

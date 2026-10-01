@@ -919,9 +919,11 @@ A settle is one transaction of conditional writes.
 
 ### Checkpoint: ready to deploy
 
-- [ ] The Python and web checks are green, locally and in CI.
-- [ ] Locally: sign in, see a planted proposal, decide it, and receive a push in a desktop browser.
+- [ ] The Python and web checks are green, locally and in CI. Locally green on 2026-10-01: 742 unit tests, lint, format and mypy; 58 web tests, typecheck and build; the integration tests on Neon apart from the known retrieval test. CI waits on the push.
+- [ ] Locally: sign in, see a planted proposal, decide it, and receive a push in a desktop browser. Done on 2026-10-01 without the push: the browser pane has no push service, so the push is proven on the phones at deploy (16.23, 16.25).
 - [ ] The owner reviews before the deploy.
+
+A sixth adversarial review read the web app on 2026-10-01: one HIGH issue (a tap could land on a card that moved into place) and fourteen smaller ones. All were addressed: the fixes, and the three parts left as they are with reasons, are in the spec's Review section.
 
 ---
 
@@ -956,7 +958,8 @@ A settle is one transaction of conditional writes.
 - `.env.example` entries for both apps.
 
 **Acceptance criteria:**
-- [ ] Following the section needs no step outside it. Checked by a read-through against the spec.
+- [x] Following the section needs no step outside it. Checked by a read-through against the spec. `docs/DEPLOY.md` §9 covers the sign-in project, the keys, the `web_reader` role, Vercel, Fly, the deploy-day order, revoking a device, and what stays as it was. The read-through found three steps missing, all now in: the Data API off, SSL enforced (both in §1.3, since M15's day 0 needs them too), and Supabase's CA certificate for the web app.
+- [x] `.env.example` entries for both apps: `WEB_API_SECRET`, `VAPID_PRIVATE_KEY` and `WEB_APP_URL` for Fly; `NEXT_PUBLIC_VAPID_PUBLIC_KEY` and `DATABASE_CA_CERT` for the web app.
 
 **Verification:** the read-through, recorded in the running notes.
 

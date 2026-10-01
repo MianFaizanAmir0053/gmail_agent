@@ -61,7 +61,7 @@ M15 ─┬─► M16 ─────────────────┬─�
 | # | Module | Est. | Status |
 |---|---|---|---|
 | [M15](M15-go-live.md) | Go live and measure | 5d + 8d unattended | ◐ code complete; waiting on day 0 (deploy) |
-| [M16](M16-web-channel.md) | Web channel | 8d | ◐ backend built (16.1, 16.3–16.15); web app next; 16.2 waits on the owner |
+| [M16](M16-web-channel.md) | Web channel | 8d | ◐ built through 16.22: backend, web app, retention, runbook; at the "ready to deploy" checkpoint; 16.2 waits on the owner |
 | M17 | Action policy | 4d | ☐ not specified |
 | M18 | Untrusted input | 4d | ☐ not specified |
 | M19 | Planner | 5d | ☐ not specified |

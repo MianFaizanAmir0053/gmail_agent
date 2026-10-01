@@ -231,11 +231,14 @@ with `.\tasks.ps1 approve --reconcile`.
   - the revision.
 - Its buttons are **Confirm**, **Edit** (hidden at revision 3), and **Cancel**. If the card is stale, the owner is shown the latest version.
 - While a decision is open, the card shows "Applying…" and the page re-reads every 3 seconds. A confirm in dry run settles in seconds; an edit takes as long as re-extraction. A failed decision shows its reason.
+- **Cards never move under a tap.** For a second after the open cards change (one arrives, leaves, changes revision or starts applying), the decision buttons ignore taps. Nothing above the cards appears after load. The page also re-reads whenever the app comes back into view.
 
 **Reads**
 - Through a read-only role, `web_reader`, over Supabase's session pooler (IPv4; Vercel has no IPv6 egress).
 - Migration `008_web_reader.sql` creates the role `NOLOGIN` inside a `DO` block, so it can be re-run, and grants `SELECT` on the tables the app shows.
 - The owner sets `LOGIN PASSWORD` once in Supabase's SQL editor. The password is never in the repo.
+- The connection is always encrypted off the machine, and checked against Supabase's CA when `DATABASE_CA_CERT` holds it.
+- Migration `009_no_data_api.sql` takes back what Supabase grants its Data API roles on every table, and the runbook turns the Data API off.
 
 **PWA**
 - A manifest, icons and a service worker. A push shows a generic notification, and tapping it opens `/`.
@@ -256,7 +259,7 @@ only the session cookie, so no proposal content is handled outside `sin1`.
   - **`ttl` = 24 hours and `Urgency: high`**, because its default `ttl` of 0 drops a push to a sleeping or locked phone.
 
   The VAPID `sub` is the app's URL, not the owner's email: it goes to Apple and Google.
-- **Payloads are generic**: "A proposal needs you" or "Google sign-in needs attention", with no title, sender or time.
+- **Payloads are generic**: "A proposal needs you" or "Google sign-in needs attention", with no title, sender or time. Each carries its kind, so on the phone a proposal never replaces an unread alert.
 - **What triggers a push:**
   - a proposal parking, through the park step (a poll, a re-park after an edit, or D3);
   - a Testing token within two days of expiry;
@@ -470,6 +473,40 @@ It found no HIGH issues, and eight smaller ones, all fixed:
 `/health` still shows M15's token fields to anyone, as M15's runbook relies on
 them; 16.22 revisits that when the runbook is rewritten.
 
+**A sixth review, on 2026-10-01, read the web app against D4, D5 and D6.**
+It found one HIGH issue and fourteen smaller ones (one, the missing push key
+in `dashboard/.env.example`, was 16.22's to do). The HIGH one: a card that
+settled, arrived or changed revision moved every card below it during the
+three-second re-reads, so a tap meant for one card's Cancel could confirm
+another. Fly would accept that, because the other card was pending at the
+revision its form carried. Decision buttons now ignore taps for a second after
+the cards move, set before the moved cards are painted; "Applying…" keeps a
+button's height; and the push set-up, which appears after load, sits below
+the cards.
+
+Fixed with it:
+1. a subscription made with VAPID keys since rotated was re-posted for ever, and every push to it refused; the app now replaces it and drops the old one on Fly;
+2. the web app's database connection was unencrypted; it is now always encrypted off the machine, and checked against Supabase's CA when given;
+3. Supabase grants every table to its Data API roles, so the anon key could read the checkpoints: migration 009 takes the grants back, and the runbook turns the Data API off, for M15 too;
+4. a proposal push replaced an unread sign-in alert; the two now have their own tags;
+5. one malformed payload failed the whole timeline, and a card with no content offered Confirm;
+6. an edit box survived into revision 3, and React's form reset lost a correction Fly refused;
+7. a notification tap did nothing for a window the worker did not control;
+8. a failing cache write failed the page, and old build files piled up in the cache;
+9. a failed re-post showed "could not be set up", a refused secret looked like an outage, and an iPhone app resumed from memory neither re-posted nor re-read;
+10. the proxy refreshed the owner's session cookie on public files; it now skips them;
+11. `/me` trusted the proxy alone, and no test covered the proxy's matcher;
+12. open proposals beyond fifty were hidden without a word;
+13. `OWNER_TIMEZONE`'s description promised times never in UTC; it now says when they are, and to match Fly's `USER_TIMEZONE`.
+
+Left as they are, with reasons:
+- a subscription the push service dropped while the browser still holds it is re-posted until the next push deletes it again. Telling the two apart needs Fly to remember dropped endpoints; the phone tests in 16.25 show whether it happens;
+- recent decisions show the proposal's current title, not the one the owner saw; storing a copy would keep content past D8;
+- Fly's refusal details are shown as they come: they are fixed phrases, never the input.
+
+The owner was not asked about a cross-model review for this round; it is
+offered at the "ready to deploy" checkpoint.
+
 ## Running notes
 
 ### Task 16.1: sign-in slice (2026-09-30)
@@ -496,3 +533,14 @@ them; 16.22 revisits that when the runbook is rewritten.
 - **A thread parked at a revision the decision cannot explain is settled as failed.** For example, a confirm that finds the thread one revision on. D1's table put this under "anything else"; it is now explicit and tested.
 - **Proven on Neon by forcing a crash after each step.** The crash is a `BaseException`, so no error handler runs, as when a process dies. In every case the next tick finished the job, and the fake graph counted exactly one application.
 - **A payload with no recorded mode is stored as a dry run.** This covers proposals parked before M15 recorded one. M17 must never act for real on a proposal whose mode nobody wrote down.
+
+### Tasks 16.21–16.22: retention and runbook (2026-10-01)
+
+- **Retention keys on the ledger, and never touches an open proposal.** A pending card beside a final ledger exists: the M15 CLI left some behind. Its content stays until reconciliation closes it, and the next purge clears it a week after the ledger settled.
+- **The runbook read-through against D4–D6 and tasks 16.2 and 16.23** found three steps outside it, now inside: turning off Supabase's Data API, enforcing SSL, and Supabase's CA certificate for the web app. The first two belong to M15's day 0 as well, so they sit in §1.3, where M15's owner steps are.
+- **Checked in the browser after the sixth review**, against Neon with three planted cards and a local API:
+  - confirming A disabled B's and C's buttons in the same frame A turned "Applying…", for about a second;
+  - when A settled and left, B's and C's buttons were disabled in the same frame, for about a second;
+  - a correction typed, then sent against a card that had moved to revision 2, came back refused with its words intact, beside "This proposal changed";
+  - at revision 3 the edit box closed, leaving Confirm and Cancel;
+  - the proxy no longer sets cookies on the icons, the worker or the manifest, and still sends a request without a session to sign-in.
