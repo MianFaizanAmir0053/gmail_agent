@@ -88,6 +88,7 @@ per source (Outlook gets its own in M23):
 | `arrived_via` | `history`, `switch_over`, `catch_up`, `recall`, `queue` or `backfill`: how the row first arrived, for diagnosis only |
 | `first_seen_at`, `updated_at` | Timing |
 | `gone_at` | When history reported the message deleted, or a fetch answered `404` |
+| `offered_since` | When the row last began to meet the feed's rule, as far as the row itself goes (D4), or null while it does not: the feed recall's stall clock (D5) |
 
 **What is stored.** Messages labelled `SENT`, and every other message except
 Promotions and Social: Primary, Updates (where deadlines and money often
@@ -282,7 +283,7 @@ seeing mail, and a failing sync shows as its own failing job.
 A daily job looks at the window from 26 hours ago to 2 hours ago, which keeps
 it clear of the sync's own timing:
 - **Sync recall.** The ids Gmail lists for the window, using D1's set, are checked against `gmail_messages`. Missing ones are fetched and stored, so a miss is repaired as well as reported. Repaired inbound mail is fed if the rule takes it.
-- **Feed recall.** A stored row that has met the feed's rule for over an hour, with no ledger row, means the feed stalled. Hours when M17 was paused, or the spending cap had stopped work, are left out; the audit log records both. A `SKIPPED` "too old" record for mail under a day old means the age rule is wrong.
+- **Feed recall.** A stored row that has met the feed's rule for over an hour, with no ledger row, means the feed stalled. The hour counts from when the row began to meet the rule (`offered_since`): a change the rule does not see, such as reading the message, does not restart it. Hours when M17 was paused, or the spending cap had stopped work, are left out; the audit log records both. A `SKIPPED` "too old" record for mail under a day old means the age rule is wrong.
 - **Category agreement, both ways.** Ids Gmail lists as not in the four other categories must be `primary` here. Ids it lists in Updates or Forums must not be.
 
 Each result goes to `job_runs`. Any shortfall sends one alert a day ("Mail sync

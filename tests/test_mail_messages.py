@@ -464,6 +464,47 @@ def test_a_gone_message_is_marked_once_and_a_later_fetch_unmarks_it(
     assert row is not None and row["gone_at"] is None
 
 
+@pytest.mark.integration
+def test_the_stall_clock_starts_only_when_a_row_begins_to_meet_the_feeds_rule(
+    mail: psycopg.Connection,
+) -> None:
+    """`offered_since` is the feed recall's clock (D5). Reading the message,
+    which the rule does not look at, must not restart it: reading a stalled
+    message just before the recall would hide the stall."""
+    long_ago = datetime(2020, 1, 1, tzinfo=UTC)
+    store(mail, ME, _primary(), "history")
+    assert _clock(mail) is not None
+    mail.execute("UPDATE gmail_messages SET offered_since = %s", (long_ago,))
+
+    apply_labels(mail, ME, "m1", removed=frozenset({"UNREAD"}))
+    assert _clock(mail) == long_ago
+    store(mail, ME, _primary({"INBOX", "CATEGORY_PERSONAL", "STARRED"}), "queue")
+    assert _clock(mail) == long_ago
+
+    apply_labels(mail, ME, "m1", added=frozenset({"TRASH"}))
+    assert _clock(mail) is None
+    apply_labels(mail, ME, "m1", removed=frozenset({"TRASH"}))
+    restarted = _clock(mail)
+    assert restarted is not None and restarted > long_ago  # it meets the rule only since
+
+    mark_gone(mail, ME, "m1")
+    assert _clock(mail) is None
+
+
+@pytest.mark.integration
+def test_mail_the_feeds_rule_leaves_out_has_no_stall_clock(mail: psycopg.Connection) -> None:
+    store(mail, ME, classify(_meta({"SENT"}, sender=ME, to="sara@example.com"), OWNERS), "history")
+
+    assert _clock(mail) is None
+
+
+def _clock(conn: psycopg.Connection) -> datetime | None:
+    row = _row(conn)
+    assert row is not None
+    found: datetime | None = row["offered_since"]
+    return found
+
+
 def _b64(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode()).decode()
 

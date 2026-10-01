@@ -179,12 +179,14 @@ def recall(
 def _feed_recall(
     conn: psycopg.Connection, account: str, since: datetime, until: datetime, now: datetime
 ) -> tuple[int, int, int]:
-    """(eligible, stalled, held). A row's clock starts at its last change:
-    a row that changed recently -- moved out of spam, say -- may have met the
-    rule only since."""
+    """(eligible, stalled, held). A row's clock starts when it began to meet
+    the rule (`offered_since`): one moved out of spam a moment ago has met it
+    only since, but reading a stalled message restarts nothing. A row with no
+    clock, written before there was one, counts from when it was first seen:
+    a false alarm rather than a silent miss."""
     rows = conn.execute(
         f"""
-        SELECT greatest(m.first_seen_at, m.updated_at)
+        SELECT coalesce(m.offered_since, m.first_seen_at)
           FROM gmail_messages m
           JOIN gmail_cursors c ON c.account = m.account
          WHERE m.account = %(account)s

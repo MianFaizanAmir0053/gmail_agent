@@ -18,6 +18,7 @@ from fake_gmail import FakeMailbox
 
 from app.google.gmail import GmailClient
 from app.mail import feed
+from app.mail.messages import apply_labels
 from app.mail.quota import Pacer
 from app.mail.recall import RecallResult, held_intervals, recall, send_alerts
 from app.store.ledger import MessageLedger, MessageStatus
@@ -44,17 +45,34 @@ def mail(conn: psycopg.Connection) -> Iterator[psycopg.Connection]:
 
 
 def _store(
-    conn: psycopg.Connection, message_id: str, *, at: datetime, category: str = "primary"
+    conn: psycopg.Connection,
+    message_id: str,
+    *,
+    at: datetime,
+    category: str = "primary",
+    labels: set[str] = PRIMARY,
 ) -> None:
-    labels = sorted(PRIMARY) if category == "primary" else [f"CATEGORY_{category.upper()}"]
+    """A row stored at `at`, its stall clock started then, as `store` would
+    have if it meets the feed's rule."""
+    primary = category == "primary"
     conn.execute(
         """
         INSERT INTO gmail_messages (account, message_id, thread_id, internal_at, label_ids,
                                     direction, to_self, category, has_list_unsubscribe,
-                                    arrived_via, first_seen_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, 'in', false, %s, false, 'history', %s, %s)
+                                    arrived_via, first_seen_at, updated_at, offered_since)
+        VALUES (%s, %s, %s, %s, %s, 'in', false, %s, false, 'history', %s, %s, %s)
         """,
-        (ME, message_id, f"t-{message_id}", at, labels, category, at, at),
+        (
+            ME,
+            message_id,
+            f"t-{message_id}",
+            at,
+            sorted(labels) if primary else [f"CATEGORY_{category.upper()}"],
+            category,
+            at,
+            at,
+            at if primary else None,
+        ),
     )
 
 
@@ -145,6 +163,26 @@ def test_a_pause_or_a_stopped_cap_is_not_a_stall(
 
     assert (result.stalled, result.held) == (0, 1)
     assert result.alerts() == []
+
+
+def test_reading_a_stalled_message_does_not_hide_the_stall(mail: psycopg.Connection) -> None:
+    """The clock used to restart at any label change, so opening a stalled
+    message on the phone just before the check hid it."""
+    _store(mail, "waiting", at=NOW - timedelta(hours=3), labels=PRIMARY | {"UNREAD"})
+    apply_labels(mail, ME, "waiting", removed=frozenset({"UNREAD"}))
+
+    assert _recall(mail, FakeMailbox()).stalled == 1
+
+
+def test_mail_that_only_now_meets_the_rule_has_not_stalled(mail: psycopg.Connection) -> None:
+    """Moved out of spam a moment ago: it has met the rule only since."""
+    _store(mail, "rescued", at=NOW - timedelta(hours=3), labels=PRIMARY | {"SPAM"})
+    mail.execute("UPDATE gmail_messages SET offered_since = NULL WHERE message_id = 'rescued'")
+    apply_labels(mail, ME, "rescued", removed=frozenset({"SPAM"}))
+
+    result = _recall(mail, FakeMailbox())
+
+    assert (result.eligible, result.stalled) == (1, 0)
 
 
 def test_a_pause_that_ended_before_the_row_arrived_excuses_nothing(

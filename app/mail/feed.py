@@ -60,15 +60,19 @@ TOO_OLD = "too old when reached"
 GONE = "no longer in the mailbox"
 """Fixed ledger reasons: written by code, quoting no email, kept by the purge."""
 
-OFFERED = """
+ROW = """
         m.direction = 'in' AND m.category = 'primary' AND NOT m.to_self
     AND m.gone_at IS NULL
     AND NOT (m.label_ids && ARRAY['SPAM', 'TRASH'])
     AND (m.precedence IS NULL OR m.precedence NOT IN ('bulk', 'junk'))
     AND (m.auto_submitted IS NULL OR m.auto_submitted = 'no')
     AND (NOT m.has_list_unsubscribe OR 'CATEGORY_PERSONAL' = ANY(m.label_ids))
-    AND m.internal_at >= c.feed_from - %(margin)s
 """
+"""The rule as far as the row itself goes -- its labels, its headers, whether
+it is gone -- with no parameter: `m` is the row. What keeps the stall clock
+(`offered_since`, `app.mail.messages`) reads it too."""
+
+OFFERED = ROW + "    AND m.internal_at >= c.feed_from - %(margin)s\n"
 """What the feed would offer, ledger aside: `m` is the row, `c` its cursor."""
 
 _WAITING = """
