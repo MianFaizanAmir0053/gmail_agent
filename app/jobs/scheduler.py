@@ -29,6 +29,8 @@ from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
 from app.jobs.poll import STOPPING, poll_once
 from app.jobs.purge import PurgeResult, purge
+from app.mail.sync import SYNC_EVERY as MAIL_SYNC_EVERY
+from app.mail.sync import run_scheduled as run_sync
 from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE
 from app.obs.token_report import standby_state, token_report
 from app.store.db import connect
@@ -285,6 +287,79 @@ def _count_subscriptions(settings: Settings) -> None:
     LIVENESS.subscriptions_counted(int(row[0]) if row else 0)
 
 
+# --- the mail sync (M20) -------------------------------------------------------
+
+MAIL_SYNC_RECORDED_EVERY = timedelta(minutes=10)
+"""The sync runs every two minutes, so `job_runs` hears from it at most this
+often for each outcome -- success, failure -- and whenever it records a
+catch-up. The log has every run."""
+
+_mail_sync_recorded: dict[bool, datetime] = {}
+"""When a successful, and a failed, run was last recorded."""
+
+
+def run_mail_sync(settings: Settings) -> None:
+    """One mail sync run (M20, D3). Never raises.
+
+    A run that finds the lock held by a CLI command skips its turn, and
+    records nothing: the command is the run.
+    """
+    started_at = datetime.now(UTC)
+    try:
+        report = run_sync(settings, stop=STOPPING)
+    except Exception as exc:
+        log.exception("mail sync failed")
+        # The type only: exception text can carry addresses or URLs.
+        _record_mail_sync(settings, started_at, ok=False, error=type(exc).__name__)
+        return
+    if report is None:
+        return
+    log.info(
+        "mail sync: %d record(s), %d stored, %d updated, %d gone, %d queued%s",
+        report.records,
+        report.stored,
+        report.updated,
+        report.gone,
+        report.queued,
+        f"; stopped: {report.stopped}" if report.stopped else "",
+    )
+    _record_mail_sync(
+        settings,
+        started_at,
+        ok=report.ok,
+        always=report.catch_up is not None,
+        seen=report.records,
+        started=report.stored,
+        error=report.error,
+    )
+
+
+def _record_mail_sync(
+    settings: Settings, started_at: datetime, *, ok: bool, always: bool = False, **fields: Any
+) -> None:
+    last = _mail_sync_recorded.get(ok)
+    if not always and last is not None and started_at - last < MAIL_SYNC_RECORDED_EVERY:
+        return
+    _mail_sync_recorded[ok] = started_at
+    record_tick(settings, "mail_sync", started_at, ok=ok, **fields)
+
+
+def _add_mail_jobs(scheduler: BackgroundScheduler, settings: Settings) -> None:
+    every = int(MAIL_SYNC_EVERY.total_seconds())
+    # One run at a time: the advisory lock already keeps two runs apart, and
+    # a run that overran would only find the lock taken.
+    scheduler.add_job(
+        run_mail_sync,
+        "interval",
+        seconds=every,
+        args=[settings],
+        id="mail_sync",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=every,
+    )
+
+
 def build_scheduler(settings: Settings) -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="UTC")
 
@@ -367,4 +442,5 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
             misfire_grace_time=3600,
         )
 
+    _add_mail_jobs(scheduler, settings)
     return scheduler
