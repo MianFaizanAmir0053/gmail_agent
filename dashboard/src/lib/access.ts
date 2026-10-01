@@ -34,6 +34,59 @@ export function admitsSignIn(profile: SignInProfile | undefined, ownerEmail: str
   return profile?.email_verified === true && sameAddress(profile.email, ownerEmail);
 }
 
+/** The Auth.js provider id of the pairing fallback (M16, D4). */
+export const PAIRING_PROVIDER_ID = "pairing";
+
+/** What the sign-in callback knows about an attempt. */
+export type SignInAttempt = {
+  /** `account.provider`: the provider the attempt came through. */
+  provider?: string;
+  /** Google's profile. A pairing sign-in has none. */
+  profile?: SignInProfile;
+  /** The address on the user record, which `authorize` sets for a pairing sign-in. */
+  email?: string | null;
+};
+
+/**
+ * The sign-in callback's rule, per provider.
+ *
+ * Google is admitted by `admitsSignIn` alone, reading only Google's profile,
+ * exactly as before pairing existed. A pairing sign-in has no profile: its
+ * `authorize` returns the owner's address once Fly has redeemed the code, and
+ * it counts only while pairing is switched on. Any other provider is refused,
+ * so a provider added later admits nobody until it gets a rule here.
+ */
+export function admitsSignInAttempt(
+  attempt: SignInAttempt,
+  ownerEmail: string | undefined,
+  pairingEnabled: boolean,
+): boolean {
+  switch (attempt.provider) {
+    case "google":
+      return admitsSignIn(attempt.profile, ownerEmail);
+    case PAIRING_PROVIDER_ID:
+      return pairingEnabled && isOwnerSession(attempt.email, ownerEmail);
+    default:
+      return false;
+  }
+}
+
+/**
+ * `PAIRING_ENABLED`: the iPhone fallback is on only when it is exactly
+ * `true`. Anything else, a typo included, leaves it off.
+ */
+export function isPairingEnabled(value: string | undefined): boolean {
+  return value === "true";
+}
+
+/**
+ * Six ASCII digits, as Fly issues them. Fly refuses anything else too; this
+ * spares a round trip for what can never match.
+ */
+export function isPairingCode(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9]{6}$/.test(value);
+}
+
 /**
  * Whether an existing session still belongs to the owner.
  *
