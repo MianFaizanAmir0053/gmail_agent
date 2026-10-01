@@ -123,7 +123,7 @@ Gmail too for threads that cross the backfill's start or the purge.
 
 `gmail_fetch_queue`: messages to fetch outside the incremental pass (D3):
 `message_id` (primary key), `reason`, `queued_at`, `strikes`, `status`
-(`queued` or `unreadable`).
+(`queued` or `unreadable`), and `failed_at`, when it last failed on its own.
 
 Every write to the cursor is conditional on the value it replaces. Every sync
 run holds a Postgres advisory lock, so a CLI run and the scheduled job never
@@ -165,12 +165,14 @@ A crash or a deploy costs at most one page.
 **Errors.**
 - Only a failure of `history.list` itself stops a pass. The cursor stays at the last record handled, and the next tick retries.
 - A fetch that fails for one message, other than with a `404`, sends that message to the fetch queue and the pass moves on. So one bad message never holds up the cursor. A row the database refuses counts the same: each row is stored in a savepoint of its own, so it never rolls back the rest of its page. NUL characters, which Postgres text cannot hold, are dropped from the headers first.
-- An outage (5xx, 429 or the network) stops the pass without blaming any message.
+- An outage (5xx, 429 or the network) stops the pass without blaming any message. A fetch that fails that way is checked first with one cheap call, the profile (1 unit): if Gmail answers it, the failure is the message's own, and it is queued and struck like any other. Otherwise one message that answered 500 every time would stop every pass on it, and with it the cursor, the queue, the backfill and any catch-up. Only if the profile fails too is it an outage.
 
 **The fetch queue** is worked in the background, after the incremental pass,
 within the backfill's share of the quota. A fetch that shows a message older
 than 90 days drops it. A per-message failure counts a strike; five strikes
-mark it `unreadable`, counted in `/health`. Outages count no strikes.
+mark it `unreadable`, counted in `/health`. Outages count no strikes. Entries
+that never failed come first; those that did follow, fewest strikes and
+longest ago first, so a head that fails every time cannot starve the rest.
 
 **Catching up.** `history.list` answers `404` when Gmail no longer keeps the
 cursor, typically after about a week. Only that `404` starts a catch-up. In

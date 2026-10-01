@@ -538,7 +538,9 @@ shows in `--status` and `/health`.
 
 A message that fails to fetch or store on its own five times is marked
 unreadable and passed over; `/health` counts them. An outage (5xx, 429, the
-network) stops a run without counting against any message.
+network) stops a run without counting against any message. A fetch that
+fails that way is checked with one cheap call first: if Gmail answers it, the
+message alone is struck, and the run goes on.
 
 ### 10.7 Retention
 

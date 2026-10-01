@@ -499,21 +499,50 @@ def _fetch_additions(
             continue
         if run.halted():
             return False
-        try:
-            fetched[message_id] = classify(run.gmail.message_metadata(message_id), run.owners)
-        except MessageGoneError:
-            fetched[message_id] = _GONE
-        except ShareExhaustedError:
-            run.report.stopped = "quota"
+        outcome = _fetch(run, message_id, "messages.get")
+        if outcome is None:
             return False
-        except Exception as exc:
-            if is_outage(exc):
-                run.failure(exc, "messages.get")
-                return False
-            log.warning(
-                "mail sync: %s failed to fetch (%s); queued", message_id, type(exc).__name__
-            )
-            fetched[message_id] = _FAILED
+        fetched[message_id] = outcome
+    return True
+
+
+def _fetch(run: _Run, message_id: str, what: str) -> object:
+    """One message's row, `_GONE` for a 404, `_FAILED` for a failure of its
+    own, or None when the run must stop.
+
+    A failure that looks like an outage -- a 5xx or a timeout that outlasted
+    the client's retries -- is checked with one cheap call, the profile (a
+    unit). If Gmail answers that, the failure is the message's own: it is
+    queued and struck like any other, for one message that answers 500 every
+    time would otherwise stop every pass on it, and with it the cursor, the
+    queue, the backfill and any catch-up. Only if the probe fails too is it an
+    outage, which stops the run and blames nobody.
+    """
+    try:
+        return classify(run.gmail.message_metadata(message_id), run.owners)
+    except MessageGoneError:
+        return _GONE
+    except ShareExhaustedError:
+        run.report.stopped = "quota"
+        return None
+    except Exception as exc:
+        if is_outage(exc) and not _gmail_answers(run, exc, what):
+            return None
+        log.warning("mail sync: %s failed to fetch (%s); queued", message_id, type(exc).__name__)
+        return _FAILED
+
+
+def _gmail_answers(run: _Run, exc: Exception, what: str) -> bool:
+    """The probe after a fetch failed as if Gmail were down. False, with the
+    run stopped, when it is: the probe failed too, or the share is spent."""
+    try:
+        run.gmail.profile()
+    except ShareExhaustedError:
+        run.report.stopped = "quota"
+        return False
+    except Exception:
+        run.failure(exc, what)
+        return False
     return True
 
 
@@ -591,14 +620,16 @@ def enqueue(
     conn: psycopg.Connection, message_id: str, reason: QueueReason, *, strikes: int = 0
 ) -> bool:
     """Queue a message to fetch outside the pass. An entry already there,
-    queued or unreadable, is left as it is."""
+    queued or unreadable, is left as it is. One queued with a strike failed
+    just now."""
     return bool(
         conn.execute(
             """
-            INSERT INTO gmail_fetch_queue (message_id, reason, strikes) VALUES (%s, %s, %s)
+            INSERT INTO gmail_fetch_queue (message_id, reason, strikes, failed_at)
+            VALUES (%(id)s, %(reason)s, %(strikes)s, CASE WHEN %(strikes)s > 0 THEN now() END)
             ON CONFLICT (message_id) DO NOTHING
             """,
-            (message_id, reason, strikes),
+            {"id": message_id, "reason": reason, "strikes": strikes},
         ).rowcount
     )
 
@@ -612,7 +643,8 @@ def _strike(conn: psycopg.Connection, message_id: str) -> None:
         """
         UPDATE gmail_fetch_queue
            SET strikes = strikes + 1,
-               status = CASE WHEN strikes + 1 >= %s THEN 'unreadable' ELSE status END
+               status = CASE WHEN strikes + 1 >= %s THEN 'unreadable' ELSE status END,
+               failed_at = now()
          WHERE message_id = %s
         """,
         (STRIKES, message_id),
@@ -620,17 +652,20 @@ def _strike(conn: psycopg.Connection, message_id: str) -> None:
 
 
 def _work_queue(run: _Run) -> None:
-    """Fetch what the queue holds, re-fetches first, each at most once a run.
+    """Fetch what the queue holds, each at most once a run.
 
-    A failure of the message's own counts a strike, and five make it
-    unreadable. An outage stops the queue and counts nothing.
+    Entries that never failed come first, re-fetches first among them; then
+    those that failed, fewest strikes and longest ago first, so a head that
+    fails every time cannot starve the rest. A failure of the message's own
+    counts a strike, and five make it unreadable. An outage stops the queue
+    and counts nothing.
     """
     conn = run.conn
     rows = conn.execute(
         f"""
         SELECT message_id, reason FROM gmail_fetch_queue
          WHERE status = 'queued'
-         ORDER BY {_QUEUE_ORDER}, queued_at, message_id
+         ORDER BY strikes, failed_at NULLS FIRST, {_QUEUE_ORDER}, queued_at, message_id
          LIMIT %s
         """,
         (QUEUE_BATCH,),
@@ -640,21 +675,15 @@ def _work_queue(run: _Run) -> None:
             continue
         if run.halted():
             return
-        try:
-            row = classify(run.gmail.message_metadata(message_id), run.owners)
-        except MessageGoneError:
+        row = _fetch(run, message_id, "the fetch queue")
+        if row is None:
+            return
+        if row is _GONE:
             with conn.transaction():
                 run.report.gone += mark_gone(conn, run.account, message_id)
                 dequeue(conn, message_id)
             continue
-        except ShareExhaustedError:
-            run.report.stopped = "quota"
-            return
-        except Exception as exc:
-            if is_outage(exc):
-                run.failure(exc, "the fetch queue")
-                return
-            log.warning("mail sync: queued %s failed again (%s)", message_id, type(exc).__name__)
+        if not isinstance(row, MessageRow):  # it failed on its own
             run.failed.add(message_id)
             _strike(conn, message_id)
             continue
@@ -733,20 +762,15 @@ def _fetch_and_store(
     """
     if run.halted():
         return False
-    try:
-        row = classify(run.gmail.message_metadata(message_id), run.owners)
-    except MessageGoneError:
-        return True
-    except ShareExhaustedError:
-        run.report.stopped = "quota"
+    row = _fetch(run, message_id, "messages.get")
+    if row is None:
         return False
-    except Exception as exc:
-        if is_outage(exc):
-            run.failure(exc, "messages.get")
-            return False
-        _failed_on_its_own(run, message_id)
-        return True
-    if (before is None or row.internal_at < before) and not _stored(run, row, arrived_via):
+    stored = (
+        not isinstance(row, MessageRow)  # a 404 passes it over
+        or (before is not None and row.internal_at >= before)
+        or _stored(run, row, arrived_via)
+    )
+    if row is _FAILED or not stored:
         _failed_on_its_own(run, message_id)
     return True
 
