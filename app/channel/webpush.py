@@ -47,6 +47,15 @@ ALERT_PUSH = {
 a lock screen. The tag is the kind, so the phone replaces a notification only
 with one of the same kind (`dashboard/public/sw.js`)."""
 
+ALERT_PUSHES: dict[AlertCode, dict[str, str]] = {
+    "token_expiring": ALERT_PUSH,
+    "token_expired": ALERT_PUSH,
+    "standby_in_use": ALERT_PUSH,
+    "mail_sync_missed": ALERT_PUSH | {"body": "Mail sync missed messages."},
+    "mail_feed_stalled": ALERT_PUSH | {"body": "The mail feed has stalled."},
+}
+"""What each alert pushes. Every code has an entry."""
+
 PUSH_TIMEOUT = 10
 """Seconds per push service."""
 
@@ -108,7 +117,7 @@ class WebPushChannel:
         self._push(PROPOSAL_PUSH)
 
     def alert(self, code: AlertCode) -> bool:
-        return self._push(ALERT_PUSH) > 0
+        return self._push(ALERT_PUSHES[code]) > 0
 
     def _push(self, payload: dict[str, str]) -> int:
         """Send to every subscription. Returns how many push services accepted."""

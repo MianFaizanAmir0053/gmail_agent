@@ -287,7 +287,9 @@ it clear of the sync's own timing:
 - **Category agreement, both ways.** Ids Gmail lists as not in the four other categories must be `primary` here. Ids it lists in Updates or Forums must not be.
 
 Each result goes to `job_runs`. Any shortfall sends one alert a day ("Mail sync
-missed messages", or "The mail feed has stalled").
+missed messages", or "The mail feed has stalled") through every configured
+channel, as M16's token alerts are sent: each channel's own `alert`, with its
+own words, and `alerts_sent` keeping it to one a day per channel.
 
 ### D6. Liveness
 

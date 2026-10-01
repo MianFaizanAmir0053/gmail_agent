@@ -9,6 +9,8 @@ look like a pause in these windows.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import nullcontext
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -17,8 +19,10 @@ import pytest
 from fake_gmail import FakeMailbox
 
 from app.channel.channels import Channels
+from app.config import Settings
 from app.google.gmail import GmailClient
 from app.mail import feed, quota
+from app.mail import recall as recall_module
 from app.mail.messages import apply_labels
 from app.mail.quota import Pacer
 from app.mail.recall import (
@@ -27,6 +31,7 @@ from app.mail.recall import (
     check,
     held_intervals,
     recall,
+    run_daily,
     send_alerts,
 )
 from app.mail.sync import sync_lock
@@ -119,17 +124,54 @@ def test_a_missing_id_is_stored_and_fed_and_gives_one_alert(mail: psycopg.Connec
     assert "missed" in feed.candidates(mail, 10, now=NOW)  # repaired inbound mail is fed
     assert result.alerts() == ["mail_sync_missed"]
 
-    asked: list[tuple[str, frozenset[str]]] = []
-
-    def deliver(text: str, skip: frozenset[str]) -> set[str]:
-        asked.append((text, skip))
-        return {"web_push"}
-
+    phone = Phone()
     for _ in range(2):  # a second check the same day sends nothing more
-        send_alerts(
-            mail, result.alerts(), names=frozenset({"web_push"}), deliver=deliver, day="2020-03-10"
-        )
-    assert asked == [("Mail sync missed messages", frozenset())]
+        send_alerts(mail, result.alerts(), channels=Channels([phone]), day="2020-03-10")
+    assert phone.alerted == ["mail_sync_missed"]
+
+
+@dataclass
+class Phone:
+    """A channel that hears alerts: a stand-in for web push or Telegram."""
+
+    name: str = "web_push"
+    delivers: bool = True
+    alerted: list[str] = field(default_factory=list)
+
+    def announce_proposal(self, record: Any) -> None:
+        raise AssertionError("the recall announces no proposal")
+
+    def alert(self, code: str) -> bool:
+        self.alerted.append(code)
+        return self.delivers
+
+
+def test_the_daily_check_alerts_through_the_channels_once_a_day(
+    mail: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_daily` end to end: the sync's own client, the configured
+    channels, and `alerts_sent` keeping each channel to one alert a day."""
+    box = FakeMailbox()
+    box.put("missed", labels=PRIMARY, at=NOW - timedelta(hours=10))
+    phone, telegram = Phone(), Phone(name="telegram", delivers=False)
+    settings = Settings(_env_file=None, database_url="postgresql://unused", gemini_api_key="k")
+    monkeypatch.setattr(recall_module, "_connect", lambda url: nullcontext(mail))
+    monkeypatch.setattr(recall_module, "sync_client", lambda settings: _client(box))
+    monkeypatch.setattr(
+        recall_module, "configured_channels", lambda settings: Channels([phone, telegram])
+    )
+
+    first = run_daily(settings, now=NOW)
+    box.put("missed-again", labels=PRIMARY, at=NOW - timedelta(hours=9))
+    second = run_daily(settings, now=NOW)  # the same day, another shortfall
+
+    assert first is not None and first.alerts() == ["mail_sync_missed"]
+    assert second is not None and second.alerts() == ["mail_sync_missed"]
+    # Delivered once by the phone; Telegram did not deliver, so it is asked again.
+    assert phone.alerted == ["mail_sync_missed"]
+    assert telegram.alerted == ["mail_sync_missed", "mail_sync_missed"]
+    sent = mail.execute("SELECT code, subject, channel FROM alerts_sent").fetchall()
+    assert sent == [("mail_sync_missed", "2020-03-10", "web_push")]
 
 
 def test_mail_the_sync_already_knows_about_is_not_a_miss(mail: psycopg.Connection) -> None:

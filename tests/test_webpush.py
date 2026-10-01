@@ -123,6 +123,23 @@ def test_an_alert_push_is_generic_too() -> None:
     assert json.loads(send.calls[0]["data"]) == ALERT_PUSH
 
 
+@pytest.mark.parametrize(
+    ("code", "body"),
+    [
+        ("mail_sync_missed", "Mail sync missed messages."),
+        ("mail_feed_stalled", "The mail feed has stalled."),
+    ],
+)
+def test_a_mail_alert_pushes_its_own_generic_words(code: str, body: str) -> None:
+    push, _, send = _channel(FCM)
+
+    assert push.alert(code) is True  # type: ignore[arg-type]
+
+    sent = json.loads(send.calls[0]["data"])
+    assert sent["body"] == body
+    assert sent != ALERT_PUSH  # not the sign-in alert's words
+
+
 def test_an_alert_and_a_proposal_are_told_apart_on_the_phone() -> None:
     """The service worker replaces a notification only with one of its own
     kind (`dashboard/public/sw.js`). An unread alert replaced by the next

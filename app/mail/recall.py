@@ -22,15 +22,15 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 
 import psycopg
 
-from app.channel.channels import Channels, TelegramChannel, configured_channels
-from app.channel.webpush import WebPushChannel
+from app.channel.alerts import AlertSender
+from app.channel.channels import AlertCode, configured_channels
 from app.config import Settings
 from app.google.gmail import GmailClient, MessageGoneError, is_outage
 from app.mail import feed, quota
@@ -71,14 +71,12 @@ class SyncBusyError(RuntimeError):
 IN_UPDATES = "category:updates -in:chats -in:drafts"
 IN_FORUMS = "category:forums -in:chats -in:drafts"
 
-AlertCode = Literal["mail_sync_missed", "mail_feed_stalled"]
-
 ALERTS: dict[AlertCode, str] = {
     "mail_sync_missed": "Mail sync missed messages",
     "mail_feed_stalled": "The mail feed has stalled",
 }
-"""Generic words only: an alert crosses Apple's and Google's servers and lands
-on a lock screen."""
+"""The fixed phrase `job_runs` records for each shortfall. Each channel says
+it in its own words (`app.channel.channels`, `app.channel.webpush`)."""
 
 _CAP_ENDS = ("budget_ok", "budget_warning")
 """Audit kinds that say spending has started again after a cap."""
@@ -389,21 +387,26 @@ def _category_agreement(
     return checked, mismatched
 
 
-def run_daily(settings: Settings) -> RecallResult | None:
+def run_daily(settings: Settings, *, now: datetime | None = None) -> RecallResult | None:
     """The scheduler's daily check. None before the first sync run: there is
-    nothing to check yet. Alerts any shortfall, once a day."""
+    nothing to check yet. Alerts any shortfall through the configured
+    channels, once a day."""
     with _connect(settings.database_url) as conn:
         if not feed.active(conn):
             return None
         return check(
-            conn, sync_client(settings), configured_channels(settings), owners=owners_of(settings)
+            conn,
+            sync_client(settings),
+            configured_channels(settings),
+            owners=owners_of(settings),
+            now=now,
         )
 
 
 def check(
     conn: psycopg.Connection,
     gmail: GmailClient,
-    channels: Channels,
+    channels: AlertSender,
     *,
     owners: Iterable[str] = (),
     now: datetime | None = None,
@@ -414,7 +417,7 @@ def check(
     It holds the sync's lock, so no sync run moves the records while it reads
     them, and its calls are charged to the sync's share (`gmail` is built as
     the sync's own client is): it is the sync's work, and the rest of the
-    minute stays the pipeline's.
+    minute stays the pipeline's. The alerts are sent after the lock is let go.
     """
     with sync_lock(conn, wait=True, timeout=lock_wait) as held:
         if not held:
@@ -423,13 +426,7 @@ def check(
         result = recall(conn, gmail, account=gmail.profile().address, owners=owners, now=now)
     codes = result.alerts()
     if codes:
-        send_alerts(
-            conn,
-            codes,
-            names=channels.names,
-            deliver=deliver_through(channels),
-            day=result.until.date().isoformat(),
-        )
+        send_alerts(conn, codes, channels=channels, day=result.until.date().isoformat())
     return result
 
 
@@ -448,20 +445,16 @@ def _connect(database_url: str) -> psycopg.Connection:
 
 # --- alerts ---------------------------------------------------------------------
 
-Deliver = Callable[[str, frozenset[str]], set[str]]
-"""Send a fixed phrase through every channel not in the set given. Returns the
-names of the channels that delivered it."""
-
 
 def send_alerts(
     conn: psycopg.Connection,
     codes: list[AlertCode],
     *,
-    names: frozenset[str],
-    deliver: Deliver,
+    channels: AlertSender,
     day: str,
 ) -> list[AlertCode]:
-    """Send each alert at most once a day per channel.
+    """Send each alert at most once a day per channel, through the channels'
+    own `alert`, so a channel that hangs or raises cannot hold up the rest.
 
     Recorded in `alerts_sent`, as M16's token alerts are: a row is written
     only once a channel delivered, so one that did not is asked again by the
@@ -473,9 +466,9 @@ def send_alerts(
             "SELECT channel FROM alerts_sent WHERE code = %s AND subject = %s", (code, day)
         ).fetchall()
         already = frozenset(row[0] for row in rows)
-        if not names - already:
+        if not channels.names - already:
             continue
-        delivered = deliver(ALERTS[code], already)
+        delivered = channels.alert(code, skip=already)
         for name in sorted(delivered):
             conn.execute(
                 """
@@ -487,32 +480,3 @@ def send_alerts(
         if delivered:
             sent.append(code)
     return sent
-
-
-def deliver_through(channels: Channels) -> Deliver:
-    """Deliver a mail alert through the configured channels.
-
-    M16's channels know only their own alert codes, and M17 is reworking
-    them; until the two merge, this speaks to each kind of channel directly,
-    with the same generic words on the lock screen. A channel of any other
-    kind is not told.
-    """
-
-    def deliver(text: str, skip: frozenset[str]) -> set[str]:
-        delivered: set[str] = set()
-        for channel in channels.channels:
-            if channel.name in skip:
-                continue
-            try:
-                if isinstance(channel, TelegramChannel):
-                    channel.bot.send_message(channel.chat_id, f"⚠️ {text}.")
-                    delivered.add(channel.name)
-                elif isinstance(channel, WebPushChannel):
-                    push = {"title": "mailagent", "body": f"{text}.", "url": "/", "tag": "alert"}
-                    if channel._push(push) > 0:
-                        delivered.add(channel.name)
-            except Exception:
-                log.exception("mail alert via %s failed", channel.name)
-        return delivered
-
-    return deliver

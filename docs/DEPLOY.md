@@ -504,12 +504,13 @@ says).
 - **`job_runs`:** `mail_sync` (at most every ten minutes per outcome, and
   every catch-up), and three rows a day from the recall at 05:15 UTC:
   `mail_recall_sync`, `mail_recall_feed`, `mail_recall_categories`.
-- **Alerts,** once a day each: "Mail sync missed messages" (Gmail listed mail
-  the sync did not have -- it is stored and fed as it is found -- or a
-  category disagreed), and "The mail feed has stalled" (mail met the feed's
-  rule for over an hour without being processed, not counting time paused
-  or stopped by the spending cap; the fetch queue held a message back for
-  over six hours; or the age rule skipped mail under a day old).
+- **Alerts,** once a day each, through every configured channel: "Mail sync
+  missed messages" (Gmail listed mail the sync did not have -- it is stored
+  and fed as it is found -- or a category disagreed), and "The mail feed has
+  stalled" (mail met the feed's rule for over an hour without being
+  processed, not counting time paused or stopped by the spending cap; the
+  fetch queue held a message back for over six hours; or the age rule
+  skipped mail under a day old).
 - **Too old:** mail first reached more than seven days after it arrived --
   after a long outage, restored from the trash, held by a pause -- is
   recorded SKIPPED ("too old when reached"), never processed.

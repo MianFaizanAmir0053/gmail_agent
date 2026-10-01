@@ -33,7 +33,16 @@ from app.telegram.notify import admin_chat_id, send_approval_card
 
 log = logging.getLogger(__name__)
 
-AlertCode = Literal["token_expiring", "token_expired", "standby_in_use"]
+AlertCode = Literal[
+    "token_expiring",
+    "token_expired",
+    "standby_in_use",
+    # The mail recall's (M20, D5), once a day each.
+    "mail_sync_missed",
+    "mail_feed_stalled",
+]
+"""Every alert a channel can be asked to deliver. A new code needs words in
+`TELEGRAM_ALERTS` and a payload in `app.channel.webpush.ALERT_PUSHES`."""
 
 ALERT_TIMEOUT = 60.0
 """Seconds an alert waits for its channels. Longer than any channel's own
@@ -118,6 +127,14 @@ TELEGRAM_ALERTS: dict[AlertCode, str] = {
     "standby_in_use": (
         "⚠️ The primary Google token failed, and the standby is in use. "
         "Run <code>.\\tasks.ps1 reauth</code> to replace the primary."
+    ),
+    "mail_sync_missed": (
+        "⚠️ Mail sync missed messages. They are stored and fed now; "
+        "<code>python -m app.mail.sync --status</code> on the instance shows the last recalls."
+    ),
+    "mail_feed_stalled": (
+        "⚠️ The mail feed has stalled: mail waited over an hour without being processed. "
+        "<code>python -m app.mail.sync --status</code> on the instance shows the last recalls."
     ),
 }
 
