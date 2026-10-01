@@ -387,6 +387,9 @@ def test_boot_settles_old_claims_first_and_the_rest_once_the_guard_has_passed(
     booted_at = second["kwargs"]["claimed_before"]
     assert passes == [booted_at - STRANDED_AFTER]
     assert (second["trigger"], second["run_date"]) == ("date", booted_at + STRANDED_AFTER)
+    # However late the scheduler gets to it: APScheduler skips a job over a
+    # second late by default, which would leave the claims for the next boot.
+    assert second["misfire_grace_time"] is None
 
 
 def test_boot_completes_when_stranded_claims_cannot_be_settled(

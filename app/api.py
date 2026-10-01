@@ -311,6 +311,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             args=[settings],
             kwargs={"claimed_before": booted_at},
             id="stranded_claims",
+            # However late: by default a job over a second late is skipped.
+            misfire_grace_time=None,
         )
         activate(scheduler)
         log.info("scheduler started: poll every %d min", settings.poll_interval_minutes)
