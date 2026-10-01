@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isPairingCode } from "@/lib/access";
 import type { Answer, Decision } from "@/lib/decisionForm";
 import type { SubscriptionBody } from "@/lib/push";
 
@@ -95,5 +96,65 @@ export async function postDecision(decision: Decision): Promise<Answer> {
     default:
       console.error("decision refused with status", response.status);
       return { status: "error" };
+  }
+}
+
+/** A pairing code as Fly issued it (M16, D4): shown to the owner once. */
+export type IssuedPairingCode = { code: string; expiresAt: string };
+
+/**
+ * Ask Fly for a pairing code, which ends any earlier one. Null when Fly could
+ * not be reached, refused the secret, or has pairing switched off; the log
+ * names the status, never the code.
+ */
+export async function issuePairingCode(issuedTo: string): Promise<IssuedPairingCode | null> {
+  const response = await postToFly("/api/pairing/codes", { issued_to: issuedTo });
+  if (response === null) return null;
+  if (response.status !== 201) {
+    console.error("pairing code request answered", response.status);
+    return null;
+  }
+  const body: Record<string, unknown> = await response.json().catch(() => ({}));
+  if (!isPairingCode(body.code) || typeof body.expires_at !== "string") {
+    console.error("pairing code answer was not a code");
+    return null;
+  }
+  return { code: body.code, expiresAt: body.expires_at };
+}
+
+/**
+ * Redeem a pairing code on Fly. True only when Fly accepted it. A refusal
+ * never says why: wrong, expired, spent and absent codes look the same.
+ */
+export async function redeemPairingCode(code: string): Promise<boolean> {
+  const response = await postToFly("/api/pairing/redeem", { code });
+  if (response === null) return false;
+  // A 403 is a code that did not work: an answer, not a fault.
+  if (response.status !== 204 && response.status !== 403) {
+    console.error("pairing redeem answered", response.status);
+  }
+  return response.status === 204;
+}
+
+/** POST a JSON body to Fly with the secret. Null when it could not be sent. */
+async function postToFly(path: string, body: unknown): Promise<Response | null> {
+  const base = process.env.FLY_API_URL;
+  const secret = process.env.WEB_API_SECRET;
+  if (!base || !secret) {
+    console.error("FLY_API_URL or WEB_API_SECRET is not configured");
+    return null;
+  }
+  try {
+    return await fetch(new URL(path, base), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch (error) {
+    // The kind of failure only: a message can carry the URL.
+    console.error(path, "not sent:", error instanceof Error ? error.name : "unknown error");
+    return null;
   }
 }

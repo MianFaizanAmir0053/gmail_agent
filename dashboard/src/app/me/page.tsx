@@ -1,7 +1,8 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth, signOut } from "@/auth";
-import { isOwnerSession } from "@/lib/access";
+import { isOwnerSession, isPairingEnabled } from "@/lib/access";
 
 /**
  * Who is signed in. Reads no database, so it works on a deployment that has
@@ -26,6 +27,13 @@ export default async function MePage() {
     <main>
       <h1>Signed in</h1>
       <p>{session?.user?.email}</p>
+      {isPairingEnabled(process.env.PAIRING_ENABLED) && (
+        <p>
+          <Link href="/pair" prefetch={false}>
+            Pair the installed iPhone app
+          </Link>
+        </p>
+      )}
       <form action={signOutAction}>
         <button type="submit">Sign out</button>
       </form>

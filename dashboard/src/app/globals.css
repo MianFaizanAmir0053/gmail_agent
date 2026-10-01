@@ -351,12 +351,14 @@ h1.section {
   color: var(--err);
 }
 
-/* --- push (M16) ----------------------------------------------------------- */
+/* --- push, and pairing's code (M16) --------------------------------------- */
 
-.push {
+.push,
+.pairing {
   margin: 18px 0;
 }
-.push button {
+.push button,
+.pairing button {
   font: inherit;
   color: var(--text);
   background: #21262d;
@@ -365,4 +367,17 @@ h1.section {
   padding: 7px 14px;
   cursor: pointer;
   min-height: 36px;
+}
+.pairing button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+/* Spaced by CSS rather than a space, so a copied code is still six digits. */
+.pairing-code {
+  font-size: 34px;
+  letter-spacing: 0.25em;
+  margin: 0;
+}
+.pairing .note {
+  margin: 4px 0 14px;
 }
