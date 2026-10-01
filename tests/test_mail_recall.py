@@ -165,6 +165,27 @@ def test_a_pause_or_a_stopped_cap_is_not_a_stall(
     assert result.alerts() == []
 
 
+def test_a_row_the_queue_holds_back_for_over_six_hours_has_stalled(
+    mail: psycopg.Connection,
+) -> None:
+    """The feed holds a row back while its fetch is queued. That was
+    invisible here, so a fetch that never answered held it for ever."""
+    _store(mail, "held-long", at=NOW - timedelta(hours=10))
+    _store(mail, "held-briefly", at=NOW - timedelta(hours=10))
+    mail.execute(
+        """
+        INSERT INTO gmail_fetch_queue (message_id, reason, queued_at)
+        VALUES ('held-long', 'refetch', %s), ('held-briefly', 'refetch', %s)
+        """,
+        (NOW - timedelta(hours=7), NOW - timedelta(hours=5)),
+    )
+
+    result = _recall(mail, FakeMailbox())
+
+    assert (result.eligible, result.stalled) == (0, 1)
+    assert result.alerts() == ["mail_feed_stalled"]
+
+
 def test_reading_a_stalled_message_does_not_hide_the_stall(mail: psycopg.Connection) -> None:
     """The clock used to restart at any label change, so opening a stalled
     message on the phone just before the check hid it."""

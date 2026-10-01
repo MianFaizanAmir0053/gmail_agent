@@ -283,7 +283,7 @@ seeing mail, and a failing sync shows as its own failing job.
 A daily job looks at the window from 26 hours ago to 2 hours ago, which keeps
 it clear of the sync's own timing:
 - **Sync recall.** The ids Gmail lists for the window, using D1's set, are checked against `gmail_messages`. Missing ones are fetched and stored, so a miss is repaired as well as reported. Repaired inbound mail is fed if the rule takes it.
-- **Feed recall.** A stored row that has met the feed's rule for over an hour, with no ledger row, means the feed stalled. The hour counts from when the row began to meet the rule (`offered_since`): a change the rule does not see, such as reading the message, does not restart it. Time when M17 was paused, or the spending cap had stopped work, is taken off a row's wait -- the audit log records both, and a pause and a cap at once count once -- so a short pause cannot excuse a long stall. A cap ends at the next `budget_ok` or `budget_warning`, or at the end of its month. A `SKIPPED` "too old" record for mail under a day old means the age rule is wrong.
+- **Feed recall.** A stored row that has met the feed's rule for over an hour, with no ledger row, means the feed stalled. The hour counts from when the row began to meet the rule (`offered_since`): a change the rule does not see, such as reading the message, does not restart it. Time when M17 was paused, or the spending cap had stopped work, is taken off a row's wait -- the audit log records both, and a pause and a cap at once count once -- so a short pause cannot excuse a long stall. A cap ends at the next `budget_ok` or `budget_warning`, or at the end of its month. A row the fetch queue has held back from the feed for over six hours has stalled too. A `SKIPPED` "too old" record for mail under a day old means the age rule is wrong.
 - **Category agreement, both ways.** Ids Gmail lists as not in the four other categories must be `primary` here. Ids it lists in Updates or Forums must not be.
 
 Each result goes to `job_runs`. Any shortfall sends one alert a day ("Mail sync
@@ -398,7 +398,7 @@ uv run --env-file .env.test pytest -m integration -o addopts="" -q -p no:cachepr
 - **Recall:**
   - a missing id is stored and fed, and gives one alert;
   - a stalled feed raises its alert, but not for time paused or stopped by the cap, which is taken off the wait;
-  - a too-old record for day-old mail raises it;
+  - a too-old record for day-old mail raises it, and so does a row the queue has held back for over six hours;
   - category disagreement in either direction is caught.
 - **Liveness:** a sync that has not reached the end of history for three intervals gives 503, a backlog included; a fresh boot does not.
 - **Content:** a test seeds a subject, a snippet and a body, and checks none is stored. The request carries the field mask and exactly the six headers.

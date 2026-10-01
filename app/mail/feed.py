@@ -75,15 +75,19 @@ it is gone -- with no parameter: `m` is the row. What keeps the stall clock
 OFFERED = ROW + "    AND m.internal_at >= c.feed_from - %(margin)s\n"
 """What the feed would offer, ledger aside: `m` is the row, `c` its cursor."""
 
-_WAITING = """
+UNRECORDED = """
     AND NOT EXISTS (SELECT 1 FROM processed_messages p
                      WHERE p.gmail_message_id = m.message_id)
+"""
+"""No ledger row yet."""
+
+_NOT_HELD = """
     AND NOT EXISTS (SELECT 1 FROM gmail_fetch_queue q
                      WHERE q.message_id = m.message_id AND q.status = 'queued')
 """
-"""No ledger row yet, and not held back for a fetch."""
+"""Not held back for a fetch."""
 
-RULE = OFFERED + _WAITING
+RULE = OFFERED + UNRECORDED + _NOT_HELD
 """The whole rule, for the feed and for the recall and `--check-feed`
 checks that ask whether it held: the same SQL, so they cannot drift apart.
 Its one parameter is `margin`."""

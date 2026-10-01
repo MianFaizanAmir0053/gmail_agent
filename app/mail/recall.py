@@ -48,6 +48,11 @@ STALLED_AFTER = timedelta(hours=1)
 """How long a row may meet the feed's rule with no ledger row. Poll runs every
 ten minutes, so an hour is six chances."""
 
+QUEUE_HOLDS_FOR = timedelta(hours=6)
+"""How long the fetch queue may hold a row back from the feed. The queue tries
+each entry at every run, and five strikes release it; six hours on, the row
+has stalled all the same."""
+
 IN_UPDATES = "category:updates -in:chats -in:drafts"
 IN_FORUMS = "category:forums -in:chats -in:drafts"
 
@@ -83,7 +88,8 @@ class RecallResult:
     """Stored rows in the window that meet the feed's rule today."""
 
     stalled: int
-    """Rows that met the rule for over an hour with no ledger row."""
+    """Rows that met the rule for over an hour with no ledger row, or that
+    the fetch queue has held back for over six."""
 
     held: int
     """Rows left out because M17 had paused the agent or capped its spend."""
@@ -186,21 +192,32 @@ def _feed_recall(
     the rule (`offered_since`): one moved out of spam a moment ago has met it
     only since, but reading a stalled message restarts nothing. A row with no
     clock, written before there was one, counts from when it was first seen:
-    a false alarm rather than a silent miss."""
+    a false alarm rather than a silent miss.
+
+    A row the fetch queue holds back is not eligible, but one held over
+    `QUEUE_HOLDS_FOR` has stalled: the feed would hold it for as long as
+    its fetch kept failing."""
     rows = conn.execute(
         f"""
-        SELECT coalesce(m.offered_since, m.first_seen_at)
+        SELECT coalesce(m.offered_since, m.first_seen_at), q.queued_at
           FROM gmail_messages m
           JOIN gmail_cursors c ON c.account = m.account
+          LEFT JOIN gmail_fetch_queue q ON q.message_id = m.message_id AND q.status = 'queued'
          WHERE m.account = %(account)s
            AND m.internal_at >= %(since)s AND m.internal_at < %(until)s
-           AND {feed.RULE}
+           AND {feed.OFFERED}
+           {feed.UNRECORDED}
         """,
         {"account": account, "since": since, "until": until, "margin": feed.MARGIN},
     ).fetchall()
     held_hours = held_intervals(conn, since, now)
-    stalled = held = 0
-    for (met_since,) in rows:
+    eligible = stalled = held = 0
+    for met_since, queued_at in rows:
+        if queued_at is not None:  # held back for a fetch
+            if now - queued_at > QUEUE_HOLDS_FOR:
+                stalled += 1
+            continue
+        eligible += 1
         waited = now - met_since
         if waited <= STALLED_AFTER:
             continue
@@ -209,7 +226,7 @@ def _feed_recall(
             stalled += 1
         else:
             held += 1
-    return len(rows), stalled, held
+    return eligible, stalled, held
 
 
 def held_for(
