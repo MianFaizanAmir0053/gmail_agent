@@ -20,12 +20,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <div className="shell">
+          {/* No prefetching: every page is dynamic, so a prefetch runs its
+              queries -- and the timeline re-reads every few seconds while a
+              decision is applied, which would re-prefetch them all each time. */}
           <nav>
             <span className="brand">mailagent</span>
-            <Link href="/">Runs</Link>
-            <Link href="/costs">Costs</Link>
-            <Link href="/evals">Evals</Link>
-            <Link href="/failures">Failures</Link>
+            <Link href="/" prefetch={false}>
+              Timeline
+            </Link>
+            <Link href="/analytics" prefetch={false}>
+              Runs
+            </Link>
+            <Link href="/costs" prefetch={false}>
+              Costs
+            </Link>
+            <Link href="/evals" prefetch={false}>
+              Evals
+            </Link>
+            <Link href="/failures" prefetch={false}>
+              Failures
+            </Link>
           </nav>
           {children}
         </div>

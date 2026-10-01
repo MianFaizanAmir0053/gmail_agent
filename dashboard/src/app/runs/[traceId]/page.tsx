@@ -51,7 +51,7 @@ export default async function TracePage({
   return (
     <>
       <p className="sub" style={{ marginBottom: 6 }}>
-        <Link href="/">← Runs</Link>
+        <Link href="/analytics">← Runs</Link>
       </p>
       <h1 style={{ fontFamily: "var(--mono)" }}>{run.gmail_message_id}</h1>
       <p className="sub">

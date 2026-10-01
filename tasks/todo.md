@@ -855,8 +855,12 @@ A settle is one transaction of conditional writes.
 - The current overview moves to `/analytics`, behind the same sign-in.
 
 **Acceptance criteria:**
-- [ ] Pending, deciding, decided and failed proposals render from seeded rows.
-- [ ] The page re-reads only while a decision is open.
+- [x] Pending, deciding, decided and failed proposals render from seeded rows. This was checked in the browser pane against Neon, signed in with a session minted locally from the dummy test secret, on a desktop and a 375-pixel phone width:
+  - times show in the owner's zone, and a card at revision 3 offers no Edit;
+  - the card being decided shows "Applying…";
+  - recent decisions show their outcome. The seeded rows were removed afterwards.
+- [x] The page re-reads only while a decision is open (a unit test, and seen working: settling the decision in the database turned "Applying…" into the outcome without a reload).
+- Found in the browser: each re-read also prefetched every nav page, and so ran their queries every 3 seconds. Nav links no longer prefetch, and only the timeline itself re-reads.
 
 **Verification:** the web checks; a local run against Neon.
 

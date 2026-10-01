@@ -218,3 +218,82 @@ pre {
   color: var(--muted);
   margin: 0;
 }
+
+/* --- the timeline (M16) ------------------------------------------------- */
+
+h1.section {
+  margin-top: 34px;
+  margin-bottom: 14px;
+}
+.muted {
+  color: var(--muted);
+}
+.mono {
+  font-family: var(--mono);
+}
+
+.proposals {
+  display: grid;
+  gap: 12px;
+}
+.proposal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+.proposal.applying {
+  border-color: #5a441a;
+}
+.proposal header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.proposal h2 {
+  font-size: 16px;
+  margin: 0;
+}
+.proposal .badges {
+  display: flex;
+  gap: 6px;
+}
+.proposal .when {
+  font-family: var(--mono);
+  font-size: 15px;
+  margin: 10px 0 4px;
+}
+.proposal .detail {
+  color: var(--muted);
+  margin: 2px 0;
+}
+.proposal footer {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.pill.dry-run {
+  color: var(--warn);
+  border-color: #5a441a;
+}
+.applying-label {
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    padding: 0 14px 48px;
+  }
+  nav {
+    flex-wrap: wrap;
+  }
+  table {
+    font-size: 12px;
+  }
+}
