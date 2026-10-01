@@ -52,6 +52,10 @@ class DecisionRequest(BaseModel):
 
     correction: str = Field(default="", max_length=MAX_CORRECTION_CHARS)
 
+    token: str | None = Field(default=None, max_length=64)
+    """What the owner's card showed: hash prefix, mode and generation (M17,
+    D2). A Confirm without a valid one is refused as stale."""
+
 
 class SubscriptionKeys(BaseModel):
     p256dh: str = Field(min_length=1, max_length=512)
@@ -177,6 +181,8 @@ async def post_decision(
                 },
                 status_code=409,
             )
+        case "not_ready":
+            return JSONResponse({"status": "not_ready", "detail": result.detail}, status_code=409)
         case "not_found":
             return JSONResponse({"status": "not_found", "detail": result.detail}, status_code=404)
         case _:
@@ -192,6 +198,8 @@ def _record_decision(settings: Settings, body: DecisionRequest) -> DecisionResul
             revision=body.revision,
             correction=body.correction,
             via="web",
+            token=body.token,
+            dry_run=settings.dry_run,
         )
 
 

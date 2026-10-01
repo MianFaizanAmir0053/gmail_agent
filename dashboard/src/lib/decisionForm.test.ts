@@ -10,14 +10,30 @@ function form(fields: Record<string, string>): FormData {
 }
 
 const CARD = { message_id: "18c0f2a3b4c5d6e7", revision: "2" };
+const TOKEN = "3f9a1c07be42-dry-1";
 
 describe("parseDecisionForm", () => {
-  it("reads a confirm or a cancel on the card's revision", () => {
-    assert.deepEqual(parseDecisionForm(form({ ...CARD, action: "confirm" })), {
+  it("reads a confirm with the card's token, or a cancel, on the card's revision", () => {
+    assert.deepEqual(parseDecisionForm(form({ ...CARD, action: "confirm", token: TOKEN })), {
       ok: true,
-      value: { message_id: CARD.message_id, revision: 2, action: "confirm", correction: "" },
+      value: {
+        message_id: CARD.message_id,
+        revision: 2,
+        action: "confirm",
+        correction: "",
+        token: TOKEN,
+      },
     });
     assert.equal(parseDecisionForm(form({ ...CARD, action: "cancel" })).ok, true);
+  });
+
+  it("refuses a confirm that carries no token, or a mangled one", () => {
+    // It would bind nothing (M17, D2): Fly refuses it, so this spares the round trip.
+    for (const token of [undefined, "", "3f9a1c07be42-dry", "3F9A1C07BE42-dry-1", "x-live-1"]) {
+      const fields: Record<string, string> = { ...CARD, action: "confirm" };
+      if (token !== undefined) fields.token = token;
+      assert.equal(parseDecisionForm(form(fields)).ok, false, String(token));
+    }
   });
 
   it("reads an edit with its correction, trimmed", () => {
@@ -53,6 +69,7 @@ describe("describeAnswer", () => {
     assert.match(describeAnswer({ status: "stale", current_revision: 3 }).message, /changed/);
     assert.match(describeAnswer({ status: "not_found" }).message, /no longer waiting/);
     assert.equal(describeAnswer({ status: "invalid", detail: "no edits left" }).message, "no edits left");
+    assert.match(describeAnswer({ status: "not_ready" }).message, /being prepared/);
   });
 
   it("never shows a raw server error", () => {

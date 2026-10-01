@@ -82,6 +82,7 @@ export async function postDecision(decision: Decision): Promise<Answer> {
     case 202:
       return { status: "queued" };
     case 409:
+      if (body.status === "not_ready") return { status: "not_ready" };
       return {
         status: "stale",
         current_revision: typeof body.current_revision === "number" ? body.current_revision : null,

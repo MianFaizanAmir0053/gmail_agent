@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import psycopg
@@ -55,6 +55,10 @@ class ProposalRecord:
     args_hash: str | None = None
     """The keyed hash of exactly what it would send (M17, D2), taken from the
     payload under the current code at every write."""
+    generation: int = 1
+    """The row's generation, which goes up whenever the proposal returns to
+    the owner (M17, D2). Read back from the row at every write, so a card
+    announced from this record carries the token the row will accept."""
 
 
 def proposal_from(
@@ -104,8 +108,9 @@ def proposal_from(
 
 def write_park(
     conn: psycopg.Connection, record: ProposalRecord, *, ledger_status: MessageStatus
-) -> None:
-    """Both writes. Must run inside the caller's transaction.
+) -> int:
+    """Both writes. Must run inside the caller's transaction. Returns the
+    row's generation, for the record a card is drawn from.
 
     `ledger_status` is what the caller read. The ledger moves only from that
     status, so a message that reached a final status in the meantime is left
@@ -116,7 +121,7 @@ def write_park(
     if ledger_status in TERMINAL_STATUSES:
         raise ParkConflictError(f"{record.message_id} is already {ledger_status}")
     _move_ledger(conn, record.message_id, ledger_status)
-    _upsert_proposal(conn, record)
+    return _upsert_proposal(conn, record)
 
 
 def require_transaction(conn: psycopg.Connection) -> None:
@@ -143,7 +148,8 @@ def record_park(
 
     record = proposal_from(message_id, pending, session.revision(message_id), session.binding())
     with session.conn.transaction():
-        write_park(session.conn, record, ledger_status=entry.status)
+        generation = write_park(session.conn, record, ledger_status=entry.status)
+    record = replace(record, generation=generation)
 
     if announce is not None:
         try:
@@ -168,7 +174,7 @@ def _move_ledger(conn: psycopg.Connection, message_id: str, expected: MessageSta
         raise ParkConflictError(f"{message_id} is no longer {expected}")
 
 
-def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> None:
+def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> int:
     row = conn.execute(
         """
         INSERT INTO proposals
@@ -188,7 +194,7 @@ def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> None:
                parked_at = now(),
                updated_at = now()
          WHERE proposals.status = 'deciding'
-        RETURNING message_id
+        RETURNING generation
         """,
         (
             record.message_id,
@@ -203,3 +209,4 @@ def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> None:
     ).fetchone()
     if row is None:
         raise ParkConflictError(f"{record.message_id} already has a proposal that is not deciding")
+    return int(row[0])

@@ -36,7 +36,7 @@ export async function openProposals(): Promise<{ rows: ProposalRow[]; total: num
   const rows = await query<ProposalRow & { total: string }>(
     `
     SELECT message_id, revision, status, final_status, action_type, dry_run,
-           payload, parked_at, count(*) OVER () AS total
+           args_hash, generation, payload, parked_at, count(*) OVER () AS total
       FROM proposals
      WHERE status IN ('pending', 'deciding')
      ORDER BY parked_at DESC, message_id

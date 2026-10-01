@@ -11,7 +11,7 @@ def send_approval_card(bot: Sender, chat_id: int, record: ProposalRecord, *, zon
     bot.send_message(
         chat_id,
         cards.approval_card(record, zone=zone),
-        keyboard=cards.keyboard(record.message_id, record.revision),
+        keyboard=cards.keyboard(record.message_id, record.revision, cards.record_token(record)),
     )
 
 

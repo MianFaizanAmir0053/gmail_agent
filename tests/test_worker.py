@@ -17,7 +17,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.channel import worker
-from app.channel.decide import decide
+from app.channel.decide import card_token, decide
 from app.channel.park import ProposalRecord, record_park
 from app.channel.worker import (
     ACT_INTERRUPTED,
@@ -198,6 +198,24 @@ def _parked(conn: psycopg.Connection, session: GraphSession) -> None:
     record_park(session, "m1", pending)
 
 
+def _confirm(conn: psycopg.Connection, message_id: str = "m1", *, revision: int = 1) -> Any:
+    """A Confirm from a current card: it carries the card's token (M17, D2)."""
+    row = conn.execute(
+        "SELECT args_hash, dry_run, generation FROM proposals WHERE message_id = %s",
+        (message_id,),
+    ).fetchone()
+    assert row is not None and row[0] is not None
+    return decide(
+        conn,
+        message_id,
+        action="confirm",
+        revision=revision,
+        via="web",
+        token=card_token(row[0], row[1], row[2]),
+        dry_run=row[1],
+    )
+
+
 def _proposal(conn: psycopg.Connection) -> tuple[Any, ...]:
     row = conn.execute(
         "SELECT status, revision, final_status FROM proposals WHERE message_id = 'm1'"
@@ -223,7 +241,7 @@ def _ledger(conn: psycopg.Connection) -> MessageStatus:
 def test_a_confirm_in_dry_run_settles_as_skipped(conn: psycopg.Connection) -> None:
     session, announced = _world(conn)
     _parked(conn, session)
-    decide(conn, "m1", action="confirm", revision=1, via="web")
+    _confirm(conn, "m1", revision=1)
 
     apply_open(session, announce=lambda record: announced.append(record.message_id))
 
@@ -291,7 +309,7 @@ def test_a_thread_stopped_before_act_fails_and_is_never_re_driven(
     pending = session.pending("m1")
     assert pending is not None
     record_park(session, "m1", pending)
-    decide(conn, "m1", action="confirm", revision=1, via="web")
+    _confirm(conn, "m1", revision=1)
     with pytest.raises(RuntimeError):
         session.resume("m1", {"action": "confirm"})
     marks_before = broken.marks
@@ -310,7 +328,7 @@ def test_a_late_failed_settle_never_overwrites_a_final_ledger_status(
 ) -> None:
     session, _ = _world(conn)
     _parked(conn, session)
-    result = decide(conn, "m1", action="confirm", revision=1, via="web")
+    result = _confirm(conn, "m1", revision=1)
     assert result.decision_id is not None
     MessageLedger(conn).mark("m1", MessageStatus.CREATED, calendar_event_id="evt_1")
 
@@ -467,7 +485,7 @@ def test_a_decision_that_never_reaches_the_graph_returns_as_no_effect(
     """The owner's card comes back, rather than the proposal being lost."""
     session = _counting(conn, fail_resumes=3)
     _parked(conn, session)
-    decide(conn, "m1", action="confirm", revision=1, via="web")
+    _confirm(conn, "m1", revision=1)
 
     apply_open(session)
     _make_due(conn)
@@ -478,14 +496,14 @@ def test_a_decision_that_never_reaches_the_graph_returns_as_no_effect(
     assert _proposal(conn) == ("pending", 1, None)
     assert _outcomes(conn) == [("no_effect", ATTEMPTS_EXHAUSTED, True)]
     assert _ledger(conn) is MessageStatus.AWAITING_APPROVAL
-    assert decide(conn, "m1", action="confirm", revision=1, via="web").status == "queued"
+    assert _confirm(conn, "m1", revision=1).status == "queued"
 
 
 @pytest.mark.integration
 def test_a_second_worker_skips_a_leased_decision(conn: psycopg.Connection) -> None:
     session = _counting(conn)
     _parked(conn, session)
-    result = decide(conn, "m1", action="confirm", revision=1, via="web")
+    result = _confirm(conn, "m1", revision=1)
     assert result.decision_id is not None
     assert worker._take_lease(conn, result.decision_id)
 
@@ -501,7 +519,7 @@ def test_a_crash_after_taking_the_lease_converges_once_it_expires(
 ) -> None:
     session = _counting(conn)
     _parked(conn, session)
-    result = decide(conn, "m1", action="confirm", revision=1, via="web")
+    result = _confirm(conn, "m1", revision=1)
     assert result.decision_id is not None
     assert worker._take_lease(conn, result.decision_id)  # the worker that died
 
@@ -517,7 +535,7 @@ def test_a_crash_after_the_resume_converges_without_resuming_again(
 ) -> None:
     session = _counting(conn)
     _parked(conn, session)
-    decide(conn, "m1", action="confirm", revision=1, via="web")
+    _confirm(conn, "m1", revision=1)
     _crash_once(monkeypatch, "_settle")
 
     with pytest.raises(Crash):
@@ -583,7 +601,7 @@ def test_a_thread_moved_behind_the_workers_back_is_shown_again(conn: psycopg.Con
     can, until 16.10). The live proposal comes back at its real revision."""
     session = _counting(conn)
     _parked(conn, session)
-    decide(conn, "m1", action="confirm", revision=1, via="web")
+    _confirm(conn, "m1", revision=1)
     GraphSession.resume(session, "m1", {"action": "edit", "correction": "make it 5pm"})
     announced: list[str] = []
 
@@ -653,7 +671,7 @@ def test_a_late_settle_never_touches_a_newer_decision(conn: psycopg.Connection) 
     first = decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
     assert first.decision_id is not None
     apply_open(session)
-    decide(conn, "m1", action="confirm", revision=2, via="web")
+    _confirm(conn, "m1", revision=2)
 
     # The first decision's worker wakes up late and settles it again.
     late = OpenDecision(
@@ -699,7 +717,7 @@ def test_the_job_sees_the_oldest_open_decision_and_whether_it_is_due(
 
     session, _ = _world(conn)
     _parked(conn, session)
-    decide(conn, "m1", action="confirm", revision=1, via="web")
+    _confirm(conn, "m1", revision=1)
     decided_at = conn.execute("SELECT decided_at FROM decisions").fetchone()
     assert decided_at is not None
     assert decisions_status(conn) == (decided_at[0], True)

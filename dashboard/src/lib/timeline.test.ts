@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  cardToken,
   cardView,
   formatWindow,
   layoutKey,
@@ -18,6 +19,8 @@ const ROW: ProposalRow = {
   final_status: null,
   action_type: "calendar_invite",
   dry_run: true,
+  args_hash: "3f9a1c07be42" + "0".repeat(52),
+  generation: 1,
   payload: {
     title: "Design review",
     start_utc: "2026-10-02T11:00:00Z",
@@ -122,6 +125,32 @@ describe("cardView", () => {
     const view = cardView({ ...ROW, payload: null }, "UTC");
     assert.equal(view.canDecide, false);
     assert.equal(view.canEdit, false);
+  });
+});
+
+describe("cardToken", () => {
+  it("is the token app/channel/decide.py checks: hash prefix, mode, generation", () => {
+    // The same example is pinned in tests/test_decide.py.
+    assert.equal(cardToken("3f9a1c07be42" + "0".repeat(52), false, 2), "3f9a1c07be42-live-2");
+    assert.equal(cardToken("a".repeat(64), true, 1), "aaaaaaaaaaaa-dry-1");
+  });
+});
+
+describe("cardView's binding", () => {
+  it("carries the token, and offers Confirm only with one", () => {
+    const view = cardView(ROW, "UTC");
+    assert.equal(view.token, "3f9a1c07be42-dry-1");
+    assert.equal(view.canConfirm, true);
+
+    const unbound = cardView({ ...ROW, args_hash: null }, "UTC");
+    assert.equal(unbound.token, null);
+    assert.equal(unbound.canConfirm, false);
+    assert.equal(unbound.canDecide, true); // Edit and Cancel still work
+  });
+
+  it("names the mode the proposal runs under", () => {
+    assert.equal(cardView(ROW, "UTC").live, false);
+    assert.equal(cardView({ ...ROW, dry_run: false }, "UTC").live, true);
   });
 });
 

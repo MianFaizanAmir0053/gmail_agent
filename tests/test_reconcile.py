@@ -193,7 +193,7 @@ def test_a_row_whose_ledger_is_final_is_closed_as_decided(
 def test_a_deciding_proposal_is_never_touched(conn: psycopg.Connection) -> None:
     session = _session(conn)
     _parked_with_row(conn, session, "m1")
-    decide(conn, "m1", action="confirm", revision=1, via="web")
+    decide(conn, "m1", action="cancel", revision=1, via="web")
     MessageLedger(conn).mark("m1", MessageStatus.SKIPPED, error="dry_run")
     session.threads.pop("m1")
 

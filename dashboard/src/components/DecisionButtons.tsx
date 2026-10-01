@@ -20,10 +20,13 @@ export function DecisionButtons({
   messageId,
   revision,
   canEdit,
+  token,
 }: {
   messageId: string;
   revision: number;
   canEdit: boolean;
+  /** What a Confirm binds (M17, D2). Without one there is nothing to confirm. */
+  token: string | null;
 }) {
   const [notice, submit, pending] = useActionState<Notice | null, FormData>(decideFromCard, null);
   const [editing, setEditing] = useState(false);
@@ -37,6 +40,7 @@ export function DecisionButtons({
     <form action={submit} className="decide">
       <input type="hidden" name="message_id" value={messageId} />
       <input type="hidden" name="revision" value={revision} />
+      {token && <input type="hidden" name="token" value={token} />}
 
       {editing && canEdit ? (
         <>
@@ -58,9 +62,11 @@ export function DecisionButtons({
         </>
       ) : (
         <>
-          <button type="submit" name="action" value="confirm" disabled={locked} className="primary">
-            Confirm
-          </button>
+          {token && (
+            <button type="submit" name="action" value="confirm" disabled={locked} className="primary">
+              Confirm
+            </button>
+          )}
           {canEdit && (
             <button type="button" onClick={() => setEditing(true)} disabled={pending}>
               Edit

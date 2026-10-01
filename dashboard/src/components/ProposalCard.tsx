@@ -13,7 +13,11 @@ export function ProposalCard({ view, children }: { view: CardView; children?: Re
       <header>
         <h2>{view.title}</h2>
         <div className="badges">
-          {view.dryRun && <span className="pill dry-run">dry run</span>}
+          {view.live ? (
+            <span className="pill live">live</span>
+          ) : (
+            <span className="pill dry-run">dry run</span>
+          )}
           <span className="pill">{view.invite ? "invite" : "hold"}</span>
           <span className="pill">revision {view.revision}</span>
         </div>

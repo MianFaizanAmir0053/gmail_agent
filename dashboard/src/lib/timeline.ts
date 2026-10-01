@@ -28,6 +28,10 @@ export type ProposalRow = {
   final_status: string | null;
   action_type: string;
   dry_run: boolean;
+  /** The keyed hash a Confirm binds (M17, D2); null when nothing can run. */
+  args_hash: string | null;
+  /** Goes up whenever the proposal returns to the owner (M17, D2). */
+  generation: number;
   /** Null once retention has cleared it. */
   payload: CardPayload | null;
   parked_at: string | Date;
@@ -49,6 +53,12 @@ export type CardView = {
   applying: boolean;
   canDecide: boolean;
   canEdit: boolean;
+  /** Only a proposal with something to bind can be confirmed. */
+  canConfirm: boolean;
+  /** What the card's Confirm carries: what the owner is looking at. */
+  token: string | null;
+  /** Runs for real: `DRY_RUN` was off when it was made. */
+  live: boolean;
 };
 
 /**
@@ -62,6 +72,7 @@ export function cardView(row: ProposalRow, ownerZone: string): CardView {
   // they cannot see. Retention never clears an open proposal, so this holds
   // only for a row nobody expected.
   const pending = row.status === "pending" && card !== null;
+  const token = row.args_hash ? cardToken(row.args_hash, row.dry_run, row.generation) : null;
   return {
     messageId: row.message_id,
     revision: row.revision,
@@ -77,7 +88,18 @@ export function cardView(row: ProposalRow, ownerZone: string): CardView {
     applying: row.status === "deciding",
     canDecide: pending,
     canEdit: pending && row.revision <= LAST_EDITABLE_REVISION,
+    canConfirm: pending && token !== null,
+    token,
+    live: !row.dry_run,
   };
+}
+
+/**
+ * The token a card's Confirm carries, as `app/channel/decide.py` builds and
+ * checks it: the keyed hash's first 12 characters, the mode, the generation.
+ */
+export function cardToken(argsHash: string, dryRun: boolean, generation: number): string {
+  return `${argsHash.slice(0, 12)}-${dryRun ? "dry" : "live"}-${generation}`;
 }
 
 /**

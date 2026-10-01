@@ -282,6 +282,11 @@ h1.section {
   color: var(--warn);
   border-color: #5a441a;
 }
+/* A live proposal books for real when confirmed (M17): it should look it. */
+.pill.live {
+  color: var(--err);
+  border-color: #6e2a2a;
+}
 .applying-label {
   color: var(--warn);
   font-family: var(--mono);

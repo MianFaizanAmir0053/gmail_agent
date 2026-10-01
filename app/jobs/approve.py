@@ -26,7 +26,7 @@ from collections.abc import Callable
 import psycopg
 
 from app.channel.channels import configured_channels
-from app.channel.decide import Action, DecisionResult, decide
+from app.channel.decide import Action, DecisionResult, card_token, decide
 from app.channel.park import Announce
 from app.channel.reconcile import reconcile
 from app.config import get_settings
@@ -47,19 +47,36 @@ def current_revision(conn: psycopg.Connection, message_id: str) -> int | None:
 
 
 def decide_current(
-    conn: psycopg.Connection, message_id: str, *, action: Action, correction: str = ""
+    conn: psycopg.Connection,
+    message_id: str,
+    *,
+    action: Action,
+    correction: str = "",
+    expect: str | None = None,
+    dry_run: bool | None = None,
 ) -> DecisionResult:
     """Record a decision on the revision the proposal is showing now.
 
     The operator names a message, not a revision; the revision read here is
     what `decide()` then holds the claim to, so a proposal that moves in the
     meantime is refused as stale rather than decided blind.
+
+    A Confirm also needs `expect`: the token `--list` printed for the proposal
+    the operator read (M17, D2). It binds the hash, the mode and the
+    generation they saw, exactly as a card's Confirm does.
     """
     revision = current_revision(conn, message_id)
     if revision is None:
         return DecisionResult("not_found", detail="no proposal for this message")
     return decide(
-        conn, message_id, action=action, revision=revision, correction=correction, via="cli"
+        conn,
+        message_id,
+        action=action,
+        revision=revision,
+        correction=correction,
+        via="cli",
+        token=expect,
+        dry_run=dry_run,
     )
 
 
@@ -115,17 +132,19 @@ def list_pending(conn: psycopg.Connection) -> int:
     """Print the proposals waiting for a decision or being decided."""
     rows = conn.execute(
         """
-        SELECT message_id, revision, status, dry_run, payload
+        SELECT message_id, revision, status, dry_run, payload, args_hash, generation
           FROM proposals
          WHERE status IN ('pending', 'deciding')
          ORDER BY parked_at
         """
     ).fetchall()
 
-    for message_id, revision, status, dry_run, payload in rows:
+    for message_id, revision, status, dry_run, payload, args_hash, generation in rows:
         card = payload or {}
         conflicts = card.get("conflicts") or []
-        print(f"  {message_id}  r{revision}  {status}  {card.get('title')}")
+        # The token a Confirm must name with --expect: what the operator read.
+        token = card_token(args_hash, dry_run, generation) if args_hash else "not ready"
+        print(f"  {message_id}  r{revision}  {status}  {token}  {card.get('title')}")
         print(f"      {card.get('start_utc')} -> {card.get('end_utc')} UTC")
         print(f"      attendees: {', '.join(card.get('attendees') or []) or '(none)'}")
         print(f"      dry_run when proposed: {dry_run}")
@@ -160,6 +179,10 @@ def main() -> None:
         "--action", choices=("confirm", "cancel", "edit", "sweep"), default="confirm"
     )
     parser.add_argument("--correction", default="", help="Free text, used with --action edit.")
+    parser.add_argument(
+        "--expect",
+        help="With --action confirm: the token --list printed, e.g. 3f9a1c07be42-dry-1.",
+    )
     parser.add_argument(
         "--wait",
         type=int,
@@ -198,7 +221,12 @@ def main() -> None:
             raise SystemExit("--message-id is required unless --list or --sweep-all is given.")
 
         result = decide_current(
-            conn, args.message_id, action=args.action, correction=args.correction
+            conn,
+            args.message_id,
+            action=args.action,
+            correction=args.correction,
+            expect=args.expect,
+            dry_run=settings.dry_run,
         )
         if result.status != "queued" or result.decision_id is None:
             raise SystemExit(f"{args.message_id}: {result.status}: {result.detail}")

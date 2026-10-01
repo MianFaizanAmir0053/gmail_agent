@@ -13,18 +13,25 @@ from typing import Any, cast
 import psycopg
 import pytest
 
+from app.channel.decide import card_token
 from app.channel.park import proposal_from, write_park
 from app.graph.runner import GraphSession
 from app.jobs import approve
 from app.jobs.approve import decide_current, list_pending, sweep_all, wait_for
+from app.policy.hashing import Binding, args_key
 from app.store.ledger import MessageLedger, MessageStatus
+
+BINDING = Binding(calendar_id="test-calendar", key=args_key("test-key"))
 
 PENDING: dict[str, Any] = {
     "proposed": {
+        "is_meeting": True,
         "title": "Design review",
         "start_utc": "2026-10-02T11:00:00Z",
         "end_utc": "2026-10-02T12:00:00Z",
         "attendees": ["sara@example.com"],
+        "confidence": 0.9,
+        "reasoning": "",
     },
     "conflicts": ["Overlaps Standup"],
     "dry_run": True,
@@ -77,9 +84,19 @@ def _park(conn: psycopg.Connection, message_id: str, revision: int = 1) -> None:
     with conn.transaction():
         write_park(
             conn,
-            proposal_from(message_id, PENDING, revision),
+            proposal_from(message_id, PENDING, revision, BINDING),
             ledger_status=MessageStatus.CLAIMED,
         )
+
+
+def _token(conn: psycopg.Connection, message_id: str) -> str:
+    """The token `--list` prints for the proposal: what the operator read."""
+    row = conn.execute(
+        "SELECT args_hash, dry_run, generation FROM proposals WHERE message_id = %s",
+        (message_id,),
+    ).fetchone()
+    assert row is not None
+    return card_token(row[0], row[1], row[2])
 
 
 def _decisions(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
@@ -93,15 +110,25 @@ def test_a_decision_is_made_on_the_proposals_current_revision(conn: psycopg.Conn
     """The operator names a message, not a revision: they act on what is shown."""
     _park(conn, "m1", revision=2)
 
-    result = decide_current(conn, "m1", action="confirm")
+    result = decide_current(conn, "m1", action="confirm", expect=_token(conn, "m1"), dry_run=True)
 
     assert result.status == "queued"
     assert _decisions(conn) == [("m1", 2, "confirm", "cli")]
 
 
 @pytest.mark.integration
+def test_a_confirm_needs_the_token_the_operator_read(conn: psycopg.Connection) -> None:
+    """Without `--expect`, the operator would confirm whatever is there now,
+    unseen (M17, D2)."""
+    _park(conn, "m1")
+
+    assert decide_current(conn, "m1", action="confirm", dry_run=True).status == "stale"
+    assert _decisions(conn) == []
+
+
+@pytest.mark.integration
 def test_a_message_with_no_proposal_is_not_found(conn: psycopg.Connection) -> None:
-    assert decide_current(conn, "nothing", action="confirm").status == "not_found"
+    assert decide_current(conn, "nothing", action="cancel").status == "not_found"
 
 
 @pytest.mark.integration
@@ -127,14 +154,14 @@ def test_list_shows_revision_status_and_the_dry_run_it_was_made_under(
 ) -> None:
     _park(conn, "a", revision=2)
     _park(conn, "b")
-    decide_current(conn, "b", action="confirm")
+    decide_current(conn, "b", action="confirm", expect=_token(conn, "b"), dry_run=True)
 
     count = list_pending(conn)
 
     out = capsys.readouterr().out
     assert count == 2
-    assert "a  r2  pending  Design review" in out
-    assert "b  r1  deciding  Design review" in out
+    assert f"a  r2  pending  {_token(conn, 'a')}  Design review" in out
+    assert f"b  r1  deciding  {_token(conn, 'b')}  Design review" in out
     assert "dry_run when proposed: True" in out
     assert "Overlaps Standup" in out
 

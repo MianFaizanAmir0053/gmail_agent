@@ -73,6 +73,7 @@ def poll(settings: Settings, bot: TelegramClient, seconds: int) -> None:
                 conn=conn,
                 bot=bot,
                 allowed_chat_ids=frozenset(settings.allowed_chat_ids),
+                dry_run=settings.dry_run,
             )
             for update in updates:
                 try:

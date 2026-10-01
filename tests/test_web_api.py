@@ -143,9 +143,41 @@ def test_a_decision_is_queued_with_a_202_and_wakes_the_worker(
             "revision": 2,
             "correction": "make it 5pm",
             "via": "web",
+            "token": None,
+            "dry_run": True,
         }
     ]
     assert decisions.woken == 1
+
+
+def test_a_confirm_carries_the_cards_token_and_this_process_mode(
+    client: TestClient, decisions: Decisions
+) -> None:
+    """What the owner saw travels with the decision (M17, D2); `decide()` holds
+    the claim to it, and to the setting Fly runs under."""
+    body = DECISION | {"token": "3f9a1c07be42-dry-1"}
+
+    assert client.post("/api/decisions", json=body, headers=_bearer()).status_code == 202
+    assert decisions.made[0]["token"] == "3f9a1c07be42-dry-1"
+    assert decisions.made[0]["dry_run"] is True
+
+
+def test_a_proposal_still_being_prepared_is_a_409_that_says_so(
+    client: TestClient, decisions: Decisions
+) -> None:
+    decisions.answer = DecisionResult("not_ready", detail="the proposal is being prepared")
+
+    response = client.post("/api/decisions", json=DECISION, headers=_bearer())
+
+    assert response.status_code == 409
+    assert response.json()["status"] == "not_ready"
+    assert decisions.woken == 0
+
+
+def test_an_overlong_token_is_a_422(client: TestClient, decisions: Decisions) -> None:
+    body = DECISION | {"token": "x" * 65}
+    assert client.post("/api/decisions", json=body, headers=_bearer()).status_code == 422
+    assert decisions.made == []
 
 
 def test_a_stale_card_is_a_409_that_names_the_current_revision(

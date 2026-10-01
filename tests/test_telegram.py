@@ -16,6 +16,7 @@ import pytest
 
 from app.channel.decide import DecisionResult
 from app.channel.park import ProposalRecord, proposal_from, write_park
+from app.policy.hashing import Binding, args_key
 from app.store.ledger import MessageLedger, MessageStatus
 from app.telegram import cards
 from app.telegram.handler import NotAllowedError, TelegramHandler
@@ -30,6 +31,7 @@ START = datetime(2026, 8, 19, 11, 0, tzinfo=UTC)
 PENDING: dict[str, Any] = {
     "message_id": MESSAGE_ID,
     "proposed": {
+        "is_meeting": True,
         "title": "Design review",
         "start_utc": START.isoformat(),
         "end_utc": (START + timedelta(hours=1)).isoformat(),
@@ -47,8 +49,15 @@ PENDING: dict[str, Any] = {
 }
 
 
+BINDING = Binding(calendar_id="test-calendar", key=args_key("test-key"))
+
+
 def _record(revision: int = 2, **pending: Any) -> ProposalRecord:
-    return proposal_from(MESSAGE_ID, PENDING | pending, revision)
+    return proposal_from(MESSAGE_ID, PENDING | pending, revision, BINDING)
+
+
+TOKEN = cards.record_token(_record())
+assert TOKEN is not None
 
 
 @dataclass
@@ -121,8 +130,12 @@ def _callback(data: str, chat_id: int = CHAT) -> dict[str, Any]:
     }
 
 
-def _button(action: str, revision: int = 2, chat_id: int = CHAT) -> dict[str, Any]:
-    return _callback(cards.callback_data(action, MESSAGE_ID, revision), chat_id)
+def _button(
+    action: str, revision: int = 2, chat_id: int = CHAT, token: str | None = TOKEN
+) -> dict[str, Any]:
+    """A tap on a current card: its Confirm carries the card's token."""
+    carried = token if action == cards.CONFIRM else None
+    return _callback(cards.callback_data(action, MESSAGE_ID, revision, carried), chat_id)
 
 
 def _reply(text: str, replied_to: str) -> dict[str, Any]:
@@ -180,9 +193,21 @@ def test_card_survives_a_missing_title() -> None:
 
 
 def test_callback_data_carries_the_revision_within_the_64_byte_limit() -> None:
-    data = cards.callback_data("confirm", MESSAGE_ID, 3)
+    data = cards.callback_data("cancel", MESSAGE_ID, 3)
     assert len(data.encode()) <= 64
-    assert cards.parse_callback(data) == ("confirm", 3, MESSAGE_ID)
+    assert cards.parse_callback(data) == ("cancel", 3, None, MESSAGE_ID)
+
+
+def test_a_confirm_carries_the_cards_token_within_the_64_byte_limit() -> None:
+    """What the owner saw travels with the tap (M17, D2)."""
+    data = cards.callback_data("confirm", MESSAGE_ID, 3, TOKEN)
+    assert len(data.encode()) <= 64
+    assert cards.parse_callback(data) == ("confirm", 3, TOKEN, MESSAGE_ID)
+
+
+def test_a_proposal_with_nothing_to_bind_gets_no_confirm_button() -> None:
+    keyboard = cards.keyboard(MESSAGE_ID, 1, None)
+    assert [button["text"] for button in keyboard[0]] == ["✏️ Edit", "✖️ Cancel"]
 
 
 def test_callback_data_rejects_an_oversized_id() -> None:
@@ -191,7 +216,7 @@ def test_callback_data_rejects_an_oversized_id() -> None:
 
 
 def test_a_card_from_before_m16_parses_without_a_revision() -> None:
-    assert cards.parse_callback(f"confirm:{MESSAGE_ID}") == ("confirm", None, MESSAGE_ID)
+    assert cards.parse_callback(f"confirm:{MESSAGE_ID}") == ("confirm", None, None, MESSAGE_ID)
 
 
 def test_edit_prompt_round_trips_the_message_and_the_revision() -> None:
@@ -239,19 +264,16 @@ def test_empty_allowlist_rejects_everyone(decisions: Decisions) -> None:
 # --- buttons ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("action", [cards.CONFIRM, cards.CANCEL])
-def test_a_button_records_a_decision_on_the_cards_revision(
-    decisions: Decisions, action: str
-) -> None:
+def test_a_cancel_records_a_decision_on_the_cards_revision(decisions: Decisions) -> None:
     bot = FakeBot()
     queued: list[int] = []
 
-    _handler(bot, queued=queued).handle(_button(action, revision=2))
+    _handler(bot, queued=queued).handle(_button(cards.CANCEL, revision=2))
 
     assert decisions.made == [
         {
             "message_id": MESSAGE_ID,
-            "action": action,
+            "action": "cancel",
             "revision": 2,
             "correction": "",
             "via": "telegram",
@@ -259,6 +281,36 @@ def test_a_button_records_a_decision_on_the_cards_revision(
     ]
     assert "Queued" in bot.texts[-1]
     assert queued == [1]  # the worker is woken
+
+
+def test_a_confirm_records_the_cards_token_and_this_process_mode(decisions: Decisions) -> None:
+    bot = FakeBot()
+
+    _handler(bot).handle(_button(cards.CONFIRM, revision=2))
+
+    assert decisions.made == [
+        {
+            "message_id": MESSAGE_ID,
+            "action": "confirm",
+            "revision": 2,
+            "via": "telegram",
+            "token": TOKEN,
+            "dry_run": True,
+        }
+    ]
+    assert "Queued" in bot.texts[-1]
+
+
+def test_a_confirm_button_from_before_m17_is_refused_with_a_pointer(
+    decisions: Decisions,
+) -> None:
+    """Without a token there is no telling what it approves."""
+    bot = FakeBot()
+
+    _handler(bot).handle(_callback(cards.callback_data("confirm", MESSAGE_ID, 2)))
+
+    assert decisions.made == []
+    assert "web app" in bot.texts[-1]
 
 
 def test_callback_is_answered_before_work_starts(decisions: Decisions) -> None:
@@ -358,9 +410,11 @@ def test_a_tap_lands_in_the_queue_as_a_telegram_decision(conn: psycopg.Connectio
     MessageLedger(conn).claim(MESSAGE_ID, MESSAGE_ID)
     with conn.transaction():
         write_park(conn, _record(revision=1), ledger_status=MessageStatus.CLAIMED)
-    handler = TelegramHandler(conn=conn, bot=FakeBot(), allowed_chat_ids=frozenset({CHAT}))
+    handler = TelegramHandler(
+        conn=conn, bot=FakeBot(), allowed_chat_ids=frozenset({CHAT}), dry_run=True
+    )
 
-    handler.handle(_button(cards.CONFIRM, revision=1))
+    handler.handle(_button(cards.CONFIRM, revision=1, token=cards.record_token(_record(1))))
 
     row = conn.execute("SELECT action, revision, via FROM decisions").fetchone()
     assert row == ("confirm", 1, "telegram")

@@ -15,17 +15,23 @@ export type Decision = {
   revision: number;
   action: DecisionAction;
   correction: string;
+  /** A Confirm's token: what the card showed (M17, D2). */
+  token?: string;
 };
 
 export type Parsed = { ok: true; value: Decision } | { ok: false; error: string };
 
 const ACTIONS: readonly string[] = ["confirm", "edit", "cancel"];
 
+/** `app/channel/decide.py`'s token: hash prefix, mode, generation. */
+const TOKEN = /^[0-9a-f]{12}-(dry|live)-[1-9][0-9]{0,8}$/;
+
 export function parseDecisionForm(data: FormData): Parsed {
   const messageId = String(data.get("message_id") ?? "");
   const revisionText = String(data.get("revision") ?? "");
   const action = String(data.get("action") ?? "");
   const correction = String(data.get("correction") ?? "").trim();
+  const token = String(data.get("token") ?? "");
 
   if (!messageId || messageId.length > 128) return { ok: false, error: "No such proposal." };
   if (!/^[1-9]\d*$/.test(revisionText)) return { ok: false, error: "No such revision." };
@@ -36,6 +42,9 @@ export function parseDecisionForm(data: FormData): Parsed {
   if (correction.length > MAX_CORRECTION_CHARS) {
     return { ok: false, error: `Keep the correction under ${MAX_CORRECTION_CHARS} characters.` };
   }
+  if (action === "confirm" && !TOKEN.test(token)) {
+    return { ok: false, error: "This card is out of date. Reload the page." };
+  }
   return {
     ok: true,
     value: {
@@ -43,12 +52,13 @@ export function parseDecisionForm(data: FormData): Parsed {
       revision: Number(revisionText),
       action: action as DecisionAction,
       correction: action === "edit" ? correction : "",
+      ...(action === "confirm" ? { token } : {}),
     },
   };
 }
 
 export type Answer = {
-  status: "queued" | "stale" | "not_found" | "invalid" | "error";
+  status: "queued" | "stale" | "not_found" | "not_ready" | "invalid" | "error";
   current_revision?: number | null;
   detail?: string;
 };
@@ -69,6 +79,8 @@ export function describeAnswer(answer: Answer): Notice {
       return { tone: "warn", message: "This proposal changed. The latest version is shown." };
     case "not_found":
       return { tone: "warn", message: "That proposal is no longer waiting for a decision." };
+    case "not_ready":
+      return { tone: "warn", message: "This proposal is still being prepared. Try again in a minute." };
     case "invalid":
       return { tone: "warn", message: answer.detail || "That decision was not accepted." };
     default:

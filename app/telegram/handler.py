@@ -38,6 +38,9 @@ class TelegramHandler:
     allowed_chat_ids: frozenset[int]
     on_queued: Callable[[], None] = field(default=_nothing)
     """Called after a decision is recorded -- to wake the worker in this process."""
+    dry_run: bool = True
+    """This process's `DRY_RUN`. A Confirm is held to it (M17, D2); left at the
+    default by mistake, a live proposal is refused rather than run."""
 
     def _check(self, chat_id: int) -> None:
         """Anyone who finds the bot username can message it, and this bot reads
@@ -60,7 +63,7 @@ class TelegramHandler:
         chat_id = int((message.get("chat") or {}).get("id", 0))
         self._check(chat_id)
 
-        action, revision, message_id = cards.parse_callback(query.get("data", ""))
+        action, revision, token, message_id = cards.parse_callback(query.get("data", ""))
 
         # Answer first. Telegram re-delivers an unanswered callback, which shows
         # up as a phantom second tap on a button that books calendar events.
@@ -80,7 +83,12 @@ class TelegramHandler:
             )
             return f"{message_id}: awaiting correction"
 
-        return self._decide(chat_id, message_id, action, revision)
+        if action == cards.CONFIRM and token is None:
+            # It binds nothing, so it confirms nothing (M17, D2).
+            self.bot.send_message(chat_id, cards.FROM_BEFORE_M17)
+            return f"{message_id}: Confirm without a token refused"
+
+        return self._decide(chat_id, message_id, action, revision, token=token)
 
     # --- free-text replies ------------------------------------------------
 
@@ -110,16 +118,34 @@ class TelegramHandler:
     # --- the queue --------------------------------------------------------
 
     def _decide(
-        self, chat_id: int, message_id: str, action: str, revision: int, correction: str = ""
+        self,
+        chat_id: int,
+        message_id: str,
+        action: str,
+        revision: int,
+        correction: str = "",
+        *,
+        token: str | None = None,
     ) -> str:
-        result = decide(
-            self.conn,
-            message_id,
-            action=_action(action),
-            revision=revision,
-            correction=correction,
-            via="telegram",
-        )
+        if action == cards.CONFIRM:
+            result = decide(
+                self.conn,
+                message_id,
+                action="confirm",
+                revision=revision,
+                via="telegram",
+                token=token,
+                dry_run=self.dry_run,
+            )
+        else:
+            result = decide(
+                self.conn,
+                message_id,
+                action=_action(action),
+                revision=revision,
+                correction=correction,
+                via="telegram",
+            )
         match result.status:
             case "queued":
                 self.on_queued()
@@ -128,6 +154,8 @@ class TelegramHandler:
                 self.bot.send_message(chat_id, cards.STALE)
             case "not_found":
                 self.bot.send_message(chat_id, cards.GONE)
+            case "not_ready":
+                self.bot.send_message(chat_id, cards.NOT_READY)
             case _:
                 self.bot.send_message(chat_id, f"Not accepted: {result.detail}.")
         return f"{message_id}: {result.status}"

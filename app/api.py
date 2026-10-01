@@ -148,6 +148,7 @@ def _handle_telegram(settings: Settings, update: dict[str, Any]) -> str:
             bot=TelegramClient(_require_token(settings)),
             allowed_chat_ids=frozenset(settings.allowed_chat_ids),
             on_queued=decision_recorded,
+            dry_run=settings.dry_run,
         )
         return handler.handle(update)
 

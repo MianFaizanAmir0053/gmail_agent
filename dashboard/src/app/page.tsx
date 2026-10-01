@@ -45,6 +45,7 @@ export default async function TimelinePage() {
                       messageId={view.messageId}
                       revision={view.revision}
                       canEdit={view.canEdit}
+                      token={view.token}
                     />
                   )}
                 </ProposalCard>

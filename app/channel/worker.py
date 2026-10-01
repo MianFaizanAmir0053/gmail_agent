@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Literal
 
@@ -315,7 +315,9 @@ def _settle(
             if not _close(conn, decision.id, outcome, reason=step.reason):
                 return "already settled"
             record = proposal_from(decision.message_id, view.payload, view.revision, binding)
-            write_park(conn, record, ledger_status=ledger_status)
+            record = replace(
+                record, generation=write_park(conn, record, ledger_status=ledger_status)
+            )
         elif outcome == "failed":
             if not settle_failed(
                 conn, decision.id, decision.message_id, reason=step.reason or NO_OUTCOME
