@@ -796,12 +796,12 @@ def _fetch_and_store(
     row = _fetch(run, message_id, "messages.get")
     if row is None:
         return False
-    stored = (
-        not isinstance(row, MessageRow)  # a 404 passes it over
-        or (before is not None and row.internal_at >= before)
-        or _stored(run, row, arrived_via)
-    )
-    if row is _FAILED or not stored:
+    if row is _FAILED:
+        _failed_on_its_own(run, message_id)
+        return True
+    if not isinstance(row, MessageRow):  # a 404 passes it over
+        return True
+    if (before is None or row.internal_at < before) and not _stored(run, row, arrived_via):
         _failed_on_its_own(run, message_id)
     return True
 
