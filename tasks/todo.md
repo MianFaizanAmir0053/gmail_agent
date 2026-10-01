@@ -303,7 +303,7 @@ retry plumbing, and rebase onto their merge if both land.
   - Set the secrets.
   - Create the database and the uptime monitor.
 - **Agent, after the owner approves the exact commands:**
-  - `fly deploy --ha=false` and `fly scale count 1`;
+  - `fly deploy --ha=false` and `fly scale count 1`, **from the tag `m15-day0`** (`adac00e`, M15's code-complete commit), not the branch head, which by then carries M16's queue. Decided by the owner on 2026-10-01; see DEPLOY.md §3;
   - check `/health`;
   - run `approve --list` over `fly ssh console`.
 

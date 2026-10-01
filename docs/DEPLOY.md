@@ -115,7 +115,14 @@ fly secrets set --stage DATABASE_URL="..." GEMINI_API_KEY="..." FERNET_KEY="..."
 
 ## 3. Deploy
 
+**M15 deploys the tag `m15-day0`, not the branch head.** The branch has since
+gained M16's decision queue, and the measurement window must run the code M15
+specified. M16 deploys after M15 closes (M16 task 16.23). Deploy from a
+worktree of the tag, so the working copy is left alone:
+
 ```bash
+git worktree add ../mailagent-m15 m15-day0
+cd ../mailagent-m15
 fly launch --no-deploy        # first time only; keeps the existing fly.toml
 fly deploy --ha=false
 fly scale count 1
