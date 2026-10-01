@@ -48,7 +48,7 @@ All modules speak `app/contracts.py`. Get it right early — see [M00](M00-skele
 
 Plan, decisions and capability map: `../../ASSISTANT-PLAN.md`. Evidence: `../research/assistant-landscape-2026-09.md`. The active task list lives in `../../tasks/todo.md`.
 
-Each module is specified and approved just before it is built, so only M15 and M16 have specs so far.
+Each module is specified and approved just before it is built. M15, M16, M17 and M20 have specs so far. The owner moved every end-to-end test to the end (2026-10-01), so modules are built ahead of the deploys that would otherwise prove them.
 
 ```
 M15 ─┬─► M16 ─────────────────┬─► M19 ─┬─► M22 ─┬─► M23
@@ -61,11 +61,11 @@ M15 ─┬─► M16 ─────────────────┬─�
 | # | Module | Est. | Status |
 |---|---|---|---|
 | [M15](M15-go-live.md) | Go live and measure | 5d + 8d unattended | ◐ code complete; waiting on day 0 (deploy) |
-| [M16](M16-web-channel.md) | Web channel | 8d | ◐ built through 16.22: backend, web app, retention, runbook; at the "ready to deploy" checkpoint; 16.2 waits on the owner |
-| M17 | Action policy | 4d | ☐ not specified |
+| [M16](M16-web-channel.md) | Web channel | 8d | ◐ built, pairing included (switched off); deploy and phone tests wait for the owner's end tests |
+| [M17](M17-action-policy.md) | Action policy | 5d | ◐ approved 2026-10-01; building |
 | M18 | Untrusted input | 4d | ☐ not specified |
 | M19 | Planner | 5d | ☐ not specified |
-| M20 | Mail sync | 3d | ☐ not specified |
+| [M20](M20-mail-sync.md) | Mail sync | 4d | ◐ approved 2026-10-01; after M17 |
 | M21 | Loose ends | 7d | ☐ not specified |
 | M22 | Connector gateway | 4d | ☐ not specified |
 | M23 | Connectors, wave 1 | 5d | ☐ not specified |

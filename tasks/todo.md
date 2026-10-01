@@ -1017,3 +1017,314 @@ Built on 2026-10-01, ahead of the iPhone test, because the owner moved every tes
 
 - [ ] Exit criteria 1–5 are met.
 - [ ] The owner has signed off.
+
+---
+
+# M17 · Action policy — tasks
+
+Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). Every task leaves `.\tasks.ps1 check` green. Integration tests run on the Neon test database.
+
+## Phase 1 · Bind approvals to what runs
+
+### Task 17.1: Records and the audit writer
+
+**Description:** Migration `010_action_policy.sql` (D8): `control`, `outbound_actions` (decision foreign key restricting deletes), `confirmed_contacts`, `model_spend`, `audit_log` with its append-only trigger, `proposals.tool` and `proposals.args_hash`, and `web_reader`'s reads. `app/policy/audit.py` writes rows without content. The test fixture and `poll --reset` delete `outbound_actions` before `decisions`.
+
+**Acceptance criteria:**
+- [ ] The migration applies and can be re-run.
+- [ ] `UPDATE` and `DELETE` on `audit_log` fail; a seeded email string never reaches it.
+- [ ] `web_reader` reads `control`, `confirmed_contacts` and `audit_log`, and writes nothing.
+
+**Verification:** `uv run pytest tests/test_audit.py tests/test_web_reader.py`; the integration tests on Neon.
+
+**Dependencies:** None · **Files:** `migrations/010_action_policy.sql`, `app/policy/audit.py`, `app/jobs/poll.py`, `tests/conftest.py`, tests · **Scope:** S
+
+### Task 17.2: The keyed hash, computed before parking
+
+**Description:** `app/policy/hashing.py` (D2): the tool for an extraction, the arguments `act` runs (one function, shared with `act`), and the HMAC over the canonical form, keyed from `FERNET_KEY`. `detect_conflicts` stores `tool` and `args_hash` in the state; `await_approval` copies them into the payload; the park step stores them on the row. The owner's aliases join `OWNER_EMAIL` in being stripped from guests.
+
+**Acceptance criteria:**
+- [ ] The hash is stable under key order, time zone, and guest order and case, and changes with any argument, the calendar or the hash version.
+- [ ] Nothing in `await_approval` calls Gmail or the database.
+- [ ] A different `FERNET_KEY` gives a different hash.
+
+**Verification:** `uv run pytest tests/test_hashing.py tests/test_graph.py tests/test_park.py`.
+
+**Dependencies:** 17.1 · **Files:** `app/policy/hashing.py`, `app/graph/nodes.py`, `app/graph/state.py`, `app/extraction/payloads.py`, `app/channel/park.py`, tests · **Scope:** M
+
+### Task 17.3: Checkpoints written before moving on
+
+**Description:** Every graph invocation (`start`, resume, re-drive) uses `durability="sync"` (D3).
+
+**Acceptance criteria:**
+- [ ] A test fails if an invocation in `app/graph/runner.py` omits it.
+
+**Verification:** `uv run pytest tests/test_runner.py tests/test_worker.py`.
+
+**Dependencies:** None · **Files:** `app/graph/runner.py`, tests · **Scope:** XS
+
+### Task 17.4: What the owner saw travels with the decision
+
+**Description:** The web card's form, the Telegram buttons and `approve --action confirm --expect` carry the hash prefix and the mode. `decide()` refuses a mismatch as stale, refuses a proposal with no hash as not ready, and inserts the `outbound_actions` row for a Confirm, in the claim's transaction. Telegram buttons sent before M17 are refused with a pointer to the web app.
+
+**Acceptance criteria:**
+- [ ] A stale hash or mode is refused on every channel; nothing is recorded.
+- [ ] One Confirm, one action row; Edit, Cancel and Sweep create none; two concurrent Confirms create one (Neon).
+
+**Verification:** `uv run pytest tests/test_decide.py tests/test_web_api.py tests/test_telegram.py tests/test_approve.py`; the web checks.
+
+**Dependencies:** 17.2 · **Files:** `app/channel/decide.py`, `app/web_api.py`, `app/telegram/cards.py`, `app/telegram/handler.py`, `app/jobs/approve.py`, `dashboard/src/components/DecisionButtons.tsx`, `dashboard/src/lib/decisionForm.ts`, tests · **Scope:** M
+
+### Task 17.5: The registry, and `act` through it
+
+**Description:** `app/policy/registry.py` (D1, D2): tiers, the three calendar tools, `execute` with `DRY_RUN`, the pause check at entry, and the action row's checks. The worker resumes a Confirm with the action's id and nonce; `act` calls the registry; every INTERNAL and EXTERNAL attempt is audited.
+
+**Acceptance criteria:**
+- [ ] No T3 tool is registered, and nothing but the registry (and `app/google/smoke.py`) calls the Calendar client's writes.
+- [ ] A changed argument, another decision's nonce, and a mismatched mode at execution are each refused and audited.
+- [ ] Under `DRY_RUN` the provider is never called.
+
+**Verification:** `uv run pytest tests/test_registry.py tests/test_worker.py tests/test_graph.py`.
+
+**Dependencies:** 17.4 · **Files:** `app/policy/registry.py`, `app/graph/nodes.py`, `app/channel/worker.py`, tests · **Scope:** M
+
+### Task 17.6: Calendar writes that can be finished
+
+**Description:** The deterministic id, the lookup before any later attempt, and the `409` path (D3). `step_for` re-drives `act` when the action is `approved`, `executing`, `done` or `dry_run`; giving up resolves an `executing` action by looking the event up.
+
+**Acceptance criteria:**
+- [ ] With a crash injected after each step (fake Calendar, Neon), every case ends with exactly one event, the ledger `CREATED`, and no action left `executing`.
+- [ ] A `409` returns the existing event; a deleted event is not recreated.
+- [ ] `tests/test_one_resumer.py` still passes.
+
+**Verification:** `uv run pytest tests/test_calendar.py tests/test_worker.py tests/test_one_resumer.py`; Neon.
+
+**Dependencies:** 17.3, 17.5 · **Files:** `app/google/calendar.py`, `app/tools/calendar_tool.py`, `app/channel/worker.py`, tests · **Scope:** M
+
+### Task 17.7: Checks before a Confirm, and legacy proposals
+
+**Description:** Before applying a Confirm whose action is `approved`, the worker checks the mode and recomputes the hash; a failure refuses the action, settles the decision as `no_effect`, and returns the proposal to `pending` with what is true now (D2). An M16 Confirm open at deploy is returned the same way. A reconciliation pass gives pending legacy proposals their tool and hash.
+
+**Acceptance criteria:**
+- [ ] A proposal approved under dry run, applied after `DRY_RUN` is off, comes back to the owner and runs nothing; the old card is then refused as stale.
+- [ ] A changed canonical form returns the proposal the same way.
+- [ ] A legacy pending proposal gets a hash, and can then be confirmed.
+
+**Verification:** `uv run pytest tests/test_worker.py tests/test_reconcile.py`; Neon.
+
+**Dependencies:** 17.6 · **Files:** `app/channel/worker.py`, `app/channel/park.py`, `app/channel/reconcile.py`, tests · **Scope:** M
+
+### Checkpoint: bound
+
+- [ ] Checks green; integration tests on Neon.
+- [ ] Fresh-context review of 17.1–17.7 against D1–D3.
+
+## Phase 2 · Recipients
+
+### Task 17.8: The recipient rule
+
+**Description:** Participants from `threads.get` (D4): senders of mail received, recipients of mail sent. The comparator ignores dots and `+tags` for Gmail addresses only. `detect_conflicts` stores `outside_guests`; `decide()` refuses an unconfirmed outsider; the worker re-checks before a Confirm; the registry checks at execution. `POST /api/contacts`, and `app/jobs/contacts.py --remove`. The legacy pass computes outside guests too.
+
+**Acceptance criteria:**
+- [ ] An address only in an inbound `Cc` is outside; a recipient of the owner's own mail, and a confirmed contact, pass.
+- [ ] An outsider blocks Confirm until allowed; an outsider added by an edit is marked.
+- [ ] Gmail being down fails nothing at resume.
+
+**Verification:** `uv run pytest tests/test_recipients.py tests/test_decide.py tests/test_worker.py tests/test_web_api.py`; Neon.
+
+**Dependencies:** 17.7 · **Files:** `app/policy/contacts.py`, `app/policy/participants.py`, `app/google/gmail.py`, `app/graph/nodes.py`, `app/channel/decide.py`, `app/channel/worker.py`, `app/web_api.py`, `app/jobs/contacts.py`, tests · **Scope:** L (split if it grows: the rule and its checks, then the API and CLI)
+
+### Task 17.9: Allow on the card
+
+**Description:** The card marks each outside guest, with **Allow**: a server action that checks the owner and calls Fly. Addresses already allowed are hidden, read from `confirmed_contacts`.
+
+**Acceptance criteria:**
+- [ ] Allow, then Confirm, works against a local API, in the browser.
+- [ ] Confirm before Allow shows Fly's refusal in words.
+
+**Verification:** the web checks; the browser.
+
+**Dependencies:** 17.8 · **Files:** `dashboard/src/components/ProposalCard.tsx`, `dashboard/src/app/actions.ts`, `dashboard/src/lib/fly.ts`, `dashboard/src/lib/timeline.ts`, `dashboard/src/lib/proposals.ts`, tests · **Scope:** S
+
+## Phase 3 · Budget, pause and the record
+
+### Task 17.10: One metered path for model calls
+
+**Description:** `app/policy/models.py` (D5): the wrapper around google-genai and the Gateway call, built wherever a client is built today; `model_spend` rows; the gate's refusals (`UnpricedModel`, `BudgetExhausted`); embedding estimates; search re-raising budget errors. A call-site test like `test_one_resumer.py`.
+
+**Acceptance criteria:**
+- [ ] A model call outside the wrapper fails the call-site test.
+- [ ] An unpriced model is refused before any call.
+- [ ] Every metered call writes one `model_spend` row with no content.
+
+**Verification:** `uv run pytest tests/test_models.py tests/test_budget.py`.
+
+**Dependencies:** 17.1 · **Files:** `app/policy/models.py`, `app/policy/budget.py`, `app/obs/pricing.py`, `app/extraction/llm.py`, `app/extraction/pipeline.py`, `app/extraction/evaluation.py`, `app/agents/reviewer.py`, `app/rag/embed.py`, `app/rag/search.py`, `app/graph/runner.py`, tests · **Scope:** L (split if it grows: the wrapper and the call-site test, then each call site)
+
+### Task 17.11: Where work stops, and what shows
+
+**Description:** Poll's `allows_new_work()` and the reserve; the worker holding edits; ingestion stopping; `control.budget_state`; alerts at 80% and 100%, once per month and cap; `/health` fields, 503 for an unpriced configured model, and held decisions not counted as stuck.
+
+**Acceptance criteria:**
+- [ ] At the cap, poll claims nothing and the tick is still recorded as successful; Edit is held while Confirm and Cancel apply.
+- [ ] Each alert is sent once per month and cap; raising the cap re-arms it.
+- [ ] `/health` stays 200 at the cap.
+
+**Verification:** `uv run pytest tests/test_budget.py tests/test_poll.py tests/test_worker.py tests/test_api.py tests/test_scheduler.py`.
+
+**Dependencies:** 17.10 · **Files:** `app/policy/budget.py`, `app/jobs/poll.py`, `app/channel/worker.py`, `app/jobs/scheduler.py`, `app/obs/liveness.py`, `app/api.py`, tests · **Scope:** M
+
+### Task 17.12: Pause, Resume and Withdraw
+
+**Description:** `app/policy/control.py` (D6); `POST /api/pause`, `/api/resume` and `/api/decisions/withdraw`; `app/jobs/control.py`; poll, the worker, ingestion and the registry stopping; `/health`. In the web app: Pause / Resume and the banner in the header, and Withdraw on a held card.
+
+**Acceptance criteria:**
+- [ ] Poll, the worker and ingestion stop within one tick, and resume afterwards; `/health` stays 200.
+- [ ] Withdraw returns a queued decision while paused.
+- [ ] Pause, Resume and Withdraw work from the web app against a local API; every change is audited.
+
+**Verification:** `uv run pytest tests/test_control.py tests/test_worker.py tests/test_web_api.py`; the web checks; the browser.
+
+**Dependencies:** 17.11 · **Files:** `app/policy/control.py`, `app/jobs/control.py`, `app/web_api.py`, `app/jobs/poll.py`, `app/channel/worker.py`, `app/jobs/scheduler.py`, `tasks.ps1`, `dashboard/src/app/layout.tsx`, `dashboard/src/components/ControlBar.tsx`, `dashboard/src/components/DecisionButtons.tsx`, tests · **Scope:** L (split if it grows: Fly side, then web)
+
+### Task 17.13: The Activity page
+
+**Description:** `/activity`: the latest 100 audit entries, read as `web_reader`, behind the owner's sign-in.
+
+**Acceptance criteria:**
+- [ ] It renders every kind of entry.
+
+**Verification:** the web checks; the browser.
+
+**Dependencies:** 17.12 · **Files:** `dashboard/src/app/activity/page.tsx`, `dashboard/src/lib/activity.ts`, tests · **Scope:** S
+
+### Task 17.14: Runbook and README
+
+**Description:** `docs/DEPLOY.md`: the cap and how to raise it, Pause, Withdraw, contacts, the mode-check procedure for the end tests. README: the safety section. The spec's running notes.
+
+**Acceptance criteria:**
+- [ ] A read-through against the spec finds no step outside the docs.
+
+**Verification:** the read-through, recorded in the running notes.
+
+**Dependencies:** 17.13 · **Files:** `docs/DEPLOY.md`, `README.md`, `docs/plans/M17-action-policy.md` · **Scope:** S
+
+### Checkpoint: M17 built
+
+- [ ] Python and web checks green, locally and in CI.
+- [ ] Fresh-context review of the whole module.
+- [ ] The exit criterion waits for the owner's end tests.
+
+---
+
+# M20 · Mail sync — tasks
+
+Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md).
+
+### Task 20.1: Records
+
+**Description:** Migration `011_mail_sync.sql` (D8): `mail_items`, its indexes, `mail_cursors`.
+
+**Acceptance criteria:**
+- [ ] It applies and can be re-run; `web_reader` reads none of it.
+
+**Verification:** the integration tests on Neon.
+
+**Dependencies:** None · **Files:** `migrations/011_mail_sync.sql`, `tests/test_web_reader.py` · **Scope:** XS
+
+### Task 20.2: Gmail calls for sync
+
+**Description:** The Gmail client gains: `history.list` pages (exclusive start); field-masked metadata fetches with the six headers; day-window id listing; `num_retries` for 429 and 5xx; a pacer counting units by method; `CursorExpired` for a history `404` and `MessageGone` for a fetch `404`.
+
+**Acceptance criteria:**
+- [ ] Every call is covered against a fake service, both `404`s included.
+- [ ] Every metadata request carries the field mask; none asks for a body, snippet or subject.
+- [ ] The pacer holds 2,000 units a minute.
+
+**Verification:** `uv run pytest tests/test_gmail.py`.
+
+**Dependencies:** None · **Files:** `app/google/gmail.py`, `app/mail/quota.py`, tests · **Scope:** M
+
+### Task 20.3: Items
+
+**Description:** `app/mail/items.py` (D1): classify (direction `in`, `out` or `self`; category; the raw bulk signals), upsert idempotently, apply label additions and removals.
+
+**Acceptance criteria:**
+- [ ] `SENT` gives `out`; `SENT` and `INBOX` give `self`; categories map; no category is `primary`; drafts, chats, spam and trash are not stored.
+- [ ] Upserting twice changes nothing; a label delta applies without a fetch.
+- [ ] A seeded subject, snippet and body never reach the table.
+
+**Verification:** `uv run pytest tests/test_mail_items.py`; Neon.
+
+**Dependencies:** 20.1, 20.2 · **Files:** `app/mail/items.py`, tests · **Scope:** S
+
+### Task 20.4: Incremental sync and catching up
+
+**Description:** `app/mail/sync.py` (D3): the first pass (cursor and `feed_from`), incremental passes (the cursor after each page), the catch-up on a history `404`, the shutdown check between pages; the scheduler's `mail_sync` job every 2 minutes.
+
+**Acceptance criteria:**
+- [ ] Each sync case in the spec's tests passes against a fake service.
+- [ ] A crash mid-pass costs at most one page.
+
+**Verification:** `uv run pytest tests/test_mail_sync.py tests/test_scheduler.py`; Neon.
+
+**Dependencies:** 20.3 · **Files:** `app/mail/sync.py`, `app/jobs/scheduler.py`, tests · **Scope:** M
+
+### Task 20.5: The backfill
+
+**Description:** One day at a time, newest first, back to 90 days, resuming from `backfill_until`, within the sync's share of the quota (D3).
+
+**Acceptance criteria:**
+- [ ] It resumes after a restart and stops at 90 days.
+- [ ] Incremental passes always run first; the backfill only spends what they leave.
+
+**Verification:** `uv run pytest tests/test_mail_sync.py`.
+
+**Dependencies:** 20.4 · **Files:** `app/mail/sync.py`, tests · **Scope:** S
+
+### Checkpoint: the mailbox is seen
+
+- [ ] Checks green; Neon.
+
+### Task 20.6: The pipeline's feed, and the switch-over
+
+**Description:** Poll's candidates come from the feed (D4), with the age limit; `list_unread` only until a cursor exists; `feed_from` from the old poller's last pass. The graph's fetch marks a message gone before its turn as `SKIPPED`.
+
+**Acceptance criteria:**
+- [ ] Every feed case in the spec's tests passes, Google Groups mail included.
+- [ ] The backfill, and mail older than 7 days when first seen, never reach poll.
+
+**Verification:** `uv run pytest tests/test_poll.py tests/test_mail_feed.py tests/test_graph.py`; Neon.
+
+**Dependencies:** 20.5 · **Files:** `app/jobs/poll.py`, `app/mail/feed.py`, `app/graph/nodes.py`, tests · **Scope:** M
+
+### Task 20.7: Recall and liveness
+
+**Description:** The daily `mail_recall` job (D5) with its lagged window, repair and alert; `/health` 503 on a stale sync, and its bearer-only fields (D6).
+
+**Acceptance criteria:**
+- [ ] A missing id is inserted, gives below 100%, and raises one alert a day.
+- [ ] A sync older than three intervals gives 503, across a restart.
+
+**Verification:** `uv run pytest tests/test_mail_recall.py tests/test_api.py tests/test_liveness.py`.
+
+**Dependencies:** 20.4 · **Files:** `app/mail/recall.py`, `app/jobs/scheduler.py`, `app/api.py`, `app/obs/liveness.py`, tests · **Scope:** S
+
+### Task 20.8: Retention, the CLI and the runbook
+
+**Description:** The purge (D7); `python -m app.mail.sync --status|--show|--catch-up|--check-feed` (D8); `docs/DEPLOY.md` and the README.
+
+**Acceptance criteria:**
+- [ ] Day 179 kept, day 181 deleted; ledger rows untouched.
+- [ ] Each CLI command works against a fake service and Neon.
+- [ ] A read-through against the spec finds no step outside the docs.
+
+**Verification:** `uv run pytest tests/test_purge.py tests/test_mail_cli.py`; Neon; the read-through.
+
+**Dependencies:** 20.6, 20.7 · **Files:** `app/jobs/purge.py`, `app/mail/sync.py`, `docs/DEPLOY.md`, `README.md`, tests · **Scope:** M
+
+### Checkpoint: M20 built
+
+- [ ] Python checks green, locally and in CI.
+- [ ] Fresh-context review of the module.
+- [ ] The exit criterion waits for the owner's end tests.

@@ -95,3 +95,85 @@ other and can proceed in either order. Checkpoints follow 16.2, 16.7, 16.11,
 ## Open questions
 
 - None. The pairing fallback is decided by the result of 16.2.
+
+# Implementation Plan: M17 · Action policy
+
+## Overview
+
+Put every side effect behind one registry that enforces the security model in
+code: tiers, approvals bound to a keyed hash of the exact arguments and to the
+`DRY_RUN` setting the owner saw, the recipient rule, a fail-closed monthly
+spend cap, Pause, and an append-only audit log. Calendar writes get
+deterministic ids, so an interrupted `act` can be finished without booking
+twice. The spec is
+[`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md); the
+tasks are 17.1–17.14 in [`todo.md`](todo.md). `DRY_RUN` stays `true`; the owner
+tests at the end.
+
+## Architecture decisions
+
+- **The approval is checked three times:** when it is recorded (the card's hash prefix and mode), before it is applied (the worker re-checks mode, hash and guests), and at execution (the registry). Each check catches what the earlier one cannot see: a stale card, a deploy or setting change, a race.
+- **A failed check returns the proposal to the owner, without touching the graph.** The thread stays parked; the proposal goes back to `pending` showing what is true now. No new graph route, no revision arithmetic.
+- **Nothing that can fail runs inside `await_approval`.** LangGraph re-runs that node from its start on every resume, so the thread read, the hash and the outside guests are computed in `detect_conflicts`, once per extraction.
+- **The meter is the gate.** Every model call goes through one wrapper that both refuses and records, so spend counts calls made outside a trace too, and a forgotten call site fails a test rather than spending unmetered.
+- **Checkpoints are synchronous.** LangGraph's default writes them in the background; a crash could otherwise lose the step that recorded an approval.
+
+## Phases
+
+1. **Bind approvals to what runs** (17.1–17.7).
+2. **Recipients** (17.8–17.9).
+3. **Budget, pause and the record** (17.10–17.14).
+
+17.3 (durability) and 17.10 (the metered path) do not depend on the binding
+work, and can be done early.
+
+## Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| A binding check refuses legitimate Confirms in production | High | Every refusal returns the proposal to the owner with a fixed reason and an audit row; nothing fails silently |
+| A model call site is missed by the meter | High | The call-site test fails the build |
+| Google does not detect an id collision at creation | Medium | One leased worker; a lookup before every later attempt |
+| Gmail quota contention with M20's sync | Medium | M20's sync is capped at a third of the per-user quota |
+| The recipient rule asks too often (Cc'd colleagues) | Low | One Allow per address, kept for good |
+
+## Open questions
+
+- Which calendar, and whether invites email their guests: before `DRY_RUN` goes off for real use (spec, Open questions).
+
+---
+
+# Implementation Plan: M20 · Mail sync
+
+## Overview
+
+Replace the poller's newest-unread-page view of the mailbox with a synced,
+metadata-only record of every message, inbound and sent, kept current through
+Gmail's history API, and feed the meeting pipeline from it. The spec is
+[`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md); the tasks are
+20.1–20.8.
+
+## Architecture decisions
+
+- **The cursor first, the past in the background.** The first pass only stores a cursor, so live mail flows at once; the 90-day backfill and any catch-up run behind it within a quota share.
+- **Metadata only, through a field mask.** No subject, snippet or body is even received until M18 can strip one-time codes.
+- **The feed has its own rule.** Narrower than M15's "automated": mailing lists stay in, bulk and auto-submitted mail stay out, and nothing older than 7 days when first seen is processed.
+- **Liveness reads the database.** A dead sync turns `/health` red even when the feed is empty, and survives a deploy.
+
+## Phases
+
+1. **See the mailbox** (20.1–20.5).
+2. **Feed the pipeline, and watch it** (20.6–20.8).
+
+## Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| The switch-over drops mail the old poller would have seen | High | `feed_from` is the old poller's last pass, less an hour; `--check-feed` verifies it |
+| The backfill reaches the meeting pipeline | High | It is older than `feed_from`, and the age limit backs that up; tested |
+| Quota exhaustion fails live mail | Medium | The sync spends at most a third of the per-user quota |
+| A history `404` loops | Medium | Only `history.list`'s `404` catches up; a fetch `404` marks a message gone |
+
+## Open questions
+
+- FAILED messages are never retried (spec, Open questions).
