@@ -40,9 +40,10 @@ from app.channel.park import (
     write_park,
 )
 from app.graph.runner import GraphSession, ThreadView
-from app.policy import audit, control
-from app.policy.hashing import Binding, bound
-from app.policy.registry import Approval, PausedError, refuse_approved
+from app.policy import audit, contacts, control
+from app.policy.hashing import INVITE, Binding, bound
+from app.policy.participants import guest_key
+from app.policy.registry import Approval, HeldError, PausedError, refuse_approved
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
 log = logging.getLogger(__name__)
@@ -72,6 +73,14 @@ MAX_ATTEMPTS = len(RETRY_DELAYS) + 1
 UNCONFIRMED_RETRY = timedelta(hours=1)
 """How often a decision whose calendar write could not be confirmed asks
 Google again, once its attempts are spent (M17, D3)."""
+
+GUEST_RETRY = timedelta(minutes=10)
+"""How long a Confirm waits when Gmail cannot be read for its guest check. It
+costs no attempt: Gmail being down is not the Confirm's failure (M17, D4)."""
+
+GUEST_HOLD = timedelta(hours=1)
+"""How long after the owner confirmed a Gmail outage may hold the Confirm.
+After that its guests count as outside, and the proposal comes back."""
 
 LOOKUP_DELAY = timedelta(minutes=10)
 """How long after its last failed write an action is looked up. Google can
@@ -205,6 +214,16 @@ def apply_one(
         # was being applied. Picked up again as soon as they resume.
         _hold(session.conn, decision)
         return "paused"
+    except HeldError:
+        # Gmail could not be read for the guests at execution. Nothing ran;
+        # it waits like the check before the Confirm, then counts (D4).
+        if _decided_within(session.conn, decision, GUEST_HOLD):
+            _wait(session.conn, decision, GUEST_RETRY)
+            return "held"
+        log.warning("the guests of %s could not be checked for an hour", decision.message_id)
+        if _record_failure(session.conn, decision) < MAX_ATTEMPTS:
+            return "retrying"
+        return _give_up(session, decision, announce)
     except Exception:
         log.exception("attempt %d on %s failed", decision.attempts + 1, decision.message_id)
         if _record_failure(session.conn, decision) < MAX_ATTEMPTS:
@@ -290,7 +309,58 @@ def _check_confirm(
         return _return_to_owner(
             session, decision, view, ledger_status, announce, action_reason="changed"
         )
+    if tool == INVITE:
+        return _check_guests(session, decision, view, ledger_status, announce)
     return None
+
+
+def _check_guests(
+    session: GraphSession,
+    decision: OpenDecision,
+    view: ThreadView,
+    ledger_status: MessageStatus | None,
+    announce: Announce | None,
+) -> str | None:
+    """Every guest of an invite is in its thread or allowed, read now (D4).
+
+    An outsider -- one added since the card, or a contact removed -- sends
+    the proposal back with them marked. Gmail being down holds the Confirm,
+    costing no attempt, for up to an hour; after that every guest counts as
+    outside, and the proposal comes back.
+    """
+    assert view.payload is not None
+    guests = [str(g) for g in (view.payload.get("proposed") or {}).get("attendees") or []]
+    try:
+        outsiders = contacts.unconfirmed_outsiders(
+            session.conn, session.deps.gmail, decision.message_id, guests
+        )
+    except Exception as exc:
+        log.warning("could not read the thread of %s (%s)", decision.message_id, type(exc).__name__)
+        if _decided_within(session.conn, decision, GUEST_HOLD):
+            _wait(session.conn, decision, GUEST_RETRY)
+            return "held"
+        # Still unread after an hour: no one is taken as a participant, but a
+        # contact the owner allowed may always be invited.
+        allowed = contacts.confirmed(session.conn, guests)
+        outsiders = [guest for guest in guests if guest_key(guest) not in allowed]
+    if not outsiders:
+        return None
+    return _return_to_owner(
+        session,
+        decision,
+        view,
+        ledger_status,
+        announce,
+        action_reason="guests",
+        outside_guests=outsiders,
+    )
+
+
+def _decided_within(conn: psycopg.Connection, decision: OpenDecision, span: timedelta) -> bool:
+    row = conn.execute(
+        "SELECT decided_at > now() - %s FROM decisions WHERE id = %s", (span, decision.id)
+    ).fetchone()
+    return bool(row and row[0])
 
 
 def _return_to_owner(
@@ -302,10 +372,12 @@ def _return_to_owner(
     *,
     action_reason: str,
     reason: str | None = None,
+    outside_guests: list[str] | None = None,
 ) -> str:
     """Settle the decision as `no_effect` and show the proposal again, as it
     is now: the current tool and hash, and the next generation, so a Confirm
     from any earlier card is refused as stale. Its action, if any, is refused.
+    `outside_guests`, when given, replaces the card's: read just now.
     """
     assert view.payload is not None and ledger_status is not None
     conn = session.conn
@@ -322,6 +394,8 @@ def _return_to_owner(
         ):
             return "already settled"
         record = proposal_from(decision.message_id, view.payload, view.revision, session.binding())
+        if outside_guests is not None:
+            record = replace(record, payload={**record.payload, "outside_guests": outside_guests})
         record = replace(record, generation=write_park(conn, record, ledger_status=ledger_status))
     if announce is not None:
         _announce(announce, record)

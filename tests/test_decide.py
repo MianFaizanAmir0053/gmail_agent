@@ -504,3 +504,38 @@ def test_an_expiry_records_a_sweep_that_says_why(conn: psycopg.Connection) -> No
         " WHERE kind = 'proposal_expired' AND message_id = 'm1'"
     ).fetchall()
     assert expired == [("made under another mode", True)]
+
+
+@pytest.mark.integration
+def test_a_confirm_waits_until_every_outside_guest_is_allowed(conn: psycopg.Connection) -> None:
+    """Refused, and nothing recorded, until the owner allows them (M17, D4)."""
+    from app.policy import contacts
+
+    conn.execute("DELETE FROM confirmed_contacts")
+    _park(conn, pending=PENDING | {"outside_guests": ["sara@example.com"]})
+
+    refused = _confirm(conn)
+
+    assert (refused.status, refused.detail) == (
+        "outside",
+        "allow or remove the guests outside the thread first",
+    )
+    assert _decisions(conn) == [] and _status(conn) == "pending"
+
+    contacts.allow(conn, "Sara@Example.com", via="web", key=args_key("test-key"))
+    assert _confirm(conn).status == "queued"
+
+
+@pytest.mark.integration
+def test_an_out_of_date_card_is_stale_before_it_hears_about_guests(
+    conn: psycopg.Connection,
+) -> None:
+    """It is told the proposal changed, not to allow guests it does not show."""
+    conn.execute("DELETE FROM confirmed_contacts")
+    _park(conn, pending=PENDING | {"outside_guests": ["sara@example.com"]})
+    old = _token(conn)
+    conn.execute("UPDATE proposals SET generation = generation + 1 WHERE message_id = 'm1'")
+
+    result = _confirm(conn, token=old)
+
+    assert result.status == "stale"

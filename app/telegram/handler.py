@@ -156,6 +156,8 @@ class TelegramHandler:
                 self.bot.send_message(chat_id, cards.GONE)
             case "not_ready":
                 self.bot.send_message(chat_id, cards.NOT_READY)
+            case "outside":
+                self.bot.send_message(chat_id, cards.OUTSIDE)
             case _:
                 self.bot.send_message(chat_id, f"Not accepted: {result.detail}.")
         return f"{message_id}: {result.status}"

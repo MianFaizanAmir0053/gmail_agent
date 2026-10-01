@@ -28,7 +28,7 @@ it only asks: the kill switch never writes.
 from __future__ import annotations
 
 import hmac
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from typing import Any, Literal, Protocol
@@ -58,6 +58,12 @@ TOOLS: dict[str, Tier] = {
 }
 """Every registered tool. `tests/test_registry.py` pins this set: registering
 a new one is the owner's call. The conflict check runs the READ tool itself."""
+
+
+class HeldError(RuntimeError):
+    """A check that cannot be made now: Gmail could not be read for an
+    invite's guests (D4). Nothing started; the worker holds the decision
+    without counting an attempt, for as long as D4 allows."""
 
 
 class PausedError(RuntimeError):
@@ -111,6 +117,10 @@ class Writer(Protocol):
 
     def find(self, calendar_id: str, event_id: str) -> str | None: ...
 
+
+Outsiders = Callable[[str, Sequence[str]], list[str]]
+"""The guests of a message's proposal who are neither in its thread nor
+confirmed contacts, read now (`contacts.unconfirmed_outsiders`)."""
 
 Status = Literal["approved", "executing", "done", "dry_run", "refused", "failed"]
 
@@ -173,10 +183,13 @@ def refuse_approved(conn: psycopg.Connection, decision_id: int, *, reason: str) 
 
 
 class Registry:
-    def __init__(self, conn: psycopg.Connection, writer: Writer, *, key: bytes) -> None:
+    def __init__(
+        self, conn: psycopg.Connection, writer: Writer, *, key: bytes, outsiders: Outsiders
+    ) -> None:
         self._conn = conn
         self._writer = writer
         self._key = key
+        self._outsiders = outsiders
 
     def execute(
         self,
@@ -198,6 +211,16 @@ class Registry:
             return self._refuse_unbound("unknown_tool", message_id=message_id)
         if approval is None:
             return self._refuse_unbound("nonce", message_id=message_id, tool=tool, tier=tier)
+
+        # An invite's guests are read from Gmail before the row is locked, so
+        # no lock is held across the network, and only for a new action: one
+        # already under way never waits on Gmail to finish (D3).
+        outsiders: list[str] | None = None
+        if tier is Tier.EXTERNAL and self._status(approval.action_id) == "approved":
+            try:
+                outsiders = self._outsiders(message_id, args.attendees)
+            except Exception as exc:
+                raise HeldError("the guests could not be checked") from exc
 
         with self._conn.transaction():
             action = self._load(approval.action_id, lock=True)
@@ -222,7 +245,7 @@ class Registry:
             if action.status == "approved":
                 if control.is_paused(self._conn):
                     raise PausedError
-                refusal = self._check(action, tool, args)
+                refusal = self._check(action, tool, args, outsiders)
                 if refusal is not None:
                     return self._refuse(action, refusal)
                 if self._writer.dry_run:
@@ -268,8 +291,12 @@ class Registry:
 
     # --- the checks ----------------------------------------------------------
 
-    def _check(self, action: _Action, tool: str, args: CreateEventInput) -> str | None:
-        """The first check that fails, as a key of `audit.REASONS`, or None."""
+    def _check(
+        self, action: _Action, tool: str, args: CreateEventInput, outsiders: list[str] | None
+    ) -> str | None:
+        """The first check that fails, as a key of `audit.REASONS`, or None.
+        `outsiders` is the guest check's answer, read before the row was
+        locked; None when the action only became new since."""
         if args.start_utc.tzinfo is None or args.end_utc.tzinfo is None:
             return "naive"
         if tool != action.tool:
@@ -283,7 +310,19 @@ class Registry:
         digest = args_hash(self._key, tool=tool, calendar_id=self._writer.calendar_id, args=args)
         if not hmac.compare_digest(digest, action.args_hash):
             return "mismatch"
+        if TOOLS[tool] is Tier.EXTERNAL:
+            # Read from Gmail and the contacts, never the graph state (D4).
+            if outsiders is None:
+                outsiders = self._outsiders(action.message_id, args.attendees)
+            if outsiders:
+                return "guests"
         return None
+
+    def _status(self, action_id: int) -> str | None:
+        row = self._conn.execute(
+            "SELECT status FROM outbound_actions WHERE id = %s", (action_id,)
+        ).fetchone()
+        return None if row is None else str(row[0])
 
     # --- writing -------------------------------------------------------------
 

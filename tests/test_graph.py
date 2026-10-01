@@ -25,7 +25,7 @@ START = datetime(2026, 8, 19, 11, 0, tzinfo=UTC)
 
 EMAIL = EmailMessage(
     id="m1",
-    thread_id="m1",
+    thread_id="t1",
     subject="Design review",
     body_text="Wednesday 4pm",
     sender="sara@example.com",
@@ -48,8 +48,32 @@ def _meeting(title: str = "Design review") -> ExtractionResult:
 
 
 class FakeGmail:
+    """The email, and its thread as the recipient rule reads it: by default
+    the owner wrote to Sara, so she is a participant (M17, D4)."""
+
+    def __init__(self, thread: dict[str, Any] | None = None, *, down: bool = False) -> None:
+        self.thread = (
+            thread
+            if thread is not None
+            else {
+                "messages": [
+                    {
+                        "labelIds": ["SENT"],
+                        "payload": {"headers": [{"name": "To", "value": "sara@example.com"}]},
+                    }
+                ]
+            }
+        )
+        self.down = down
+
     def get_message(self, message_id: str) -> EmailMessage:
         return EMAIL
+
+    def thread_headers(self, thread_id: str) -> dict[str, Any]:
+        if self.down:
+            raise ConnectionError("Gmail unavailable")
+        # Only the email's own thread is known: the graph must ask for it.
+        return self.thread if thread_id == EMAIL.thread_id else {"messages": []}
 
 
 @dataclass
@@ -759,3 +783,49 @@ def test_a_sweep_that_gives_no_reason_keeps_the_m15_one() -> None:
     graph.invoke(Command(resume={"action": "sweep"}), config)
 
     assert ledger.errors == [SWEEP_REASON]
+
+
+# --- guests outside the thread (M17, D4) ------------------------------------------------
+
+
+def test_a_guest_the_thread_does_not_know_is_marked_outside() -> None:
+    graph, config, _ = _run(_deps(gmail=FakeGmail({"messages": []})))
+
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None
+    assert payload["outside_guests"] == ["sara@example.com"]
+
+
+def test_a_guest_the_owner_wrote_to_is_not_outside() -> None:
+    graph, config, _ = _run(_deps())
+
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None
+    assert payload["outside_guests"] == []
+
+
+def test_a_thread_gmail_cannot_read_marks_every_guest_and_still_parks() -> None:
+    """A Gmail outage never fails a park, or an edit's re-park."""
+    graph, config, _ = _run(_deps(gmail=FakeGmail(down=True)))
+
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None
+    assert payload["outside_guests"] == ["sara@example.com"]
+
+
+def test_an_outsider_added_by_an_edit_is_marked() -> None:
+    """The re-park reads the thread again (M17, D4): a guest the edit added,
+    whom the thread does not know, is marked for the owner."""
+    from langgraph.types import Command
+
+    added = _meeting().model_copy(update={"attendees": ["sara@example.com", "new@example.net"]})
+    pipeline = FakePipeline(extractions=[_meeting(), added])
+    graph, config, _ = _run(_deps(pipeline=pipeline))
+    first = _interrupt_payload(graph, config)
+    assert first is not None and first["outside_guests"] == []
+
+    graph.invoke(Command(resume={"action": "edit", "correction": "add new@example.net"}), config)
+
+    second = _interrupt_payload(graph, config)
+    assert second is not None
+    assert second["outside_guests"] == ["new@example.net"]

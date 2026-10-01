@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import psycopg
@@ -23,6 +24,7 @@ from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import Deps
 from app.graph.versioning import pipeline_version
 from app.obs.trace import Tracer
+from app.policy.contacts import unconfirmed_outsiders
 from app.policy.hashing import Binding, args_key
 from app.policy.registry import Registry
 from app.store.ledger import MessageLedger
@@ -178,9 +180,10 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
             dry_run=settings.dry_run,
         )
         key = args_key(settings.fernet_key.get_secret_value())
+        gmail = GmailClient(build_service("gmail", "v1", credentials))
 
         deps = Deps(
-            gmail=GmailClient(build_service("gmail", "v1", credentials)),
+            gmail=gmail,
             pipeline=build_pipeline(
                 owner_email=settings.owner_email,
                 searcher=searcher,
@@ -189,7 +192,9 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
             calendar=calendar,
             ledger=MessageLedger(conn),
             user_timezone=settings.user_timezone,
-            registry=Registry(conn, calendar, key=key),
+            registry=Registry(
+                conn, calendar, key=key, outsiders=partial(unconfirmed_outsiders, conn, gmail)
+            ),
             # The reviewer gets the calendar even when DRY_RUN is set: freebusy
             # is a read, and a reviewer that cannot see the calendar loses the
             # one check the extractor genuinely could not make.

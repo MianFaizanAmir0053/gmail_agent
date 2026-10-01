@@ -26,18 +26,22 @@ from typing import Literal, get_args
 import psycopg
 
 from app.graph.nodes import MAX_REVISIONS
-from app.policy import audit
+from app.policy import audit, contacts
+from app.policy.participants import guest_key
 from app.policy.registry import TOOLS
 
 Action = Literal["confirm", "edit", "cancel", "sweep"]
 Via = Literal["web", "cli", "telegram", "sweep"]
-DecisionStatus = Literal["queued", "stale", "not_found", "invalid", "not_ready"]
+DecisionStatus = Literal["queued", "stale", "not_found", "invalid", "not_ready", "outside"]
 
 ACTIONS: frozenset[str] = frozenset(get_args(Action))
 VIAS: frozenset[str] = frozenset(get_args(Via))
 SWEEPERS = frozenset({"cli", "sweep"})
 """Who may sweep. A sweep is an operator ending observe mode, never an owner's
 tap, and M24 counts the two differently."""
+
+OUTSIDE_GUESTS = "allow or remove the guests outside the thread first"
+"""Why a Confirm on an invite is refused while a guest is outside (M17, D4)."""
 
 MAX_CORRECTION_CHARS = 2000
 """Enough for any instruction a person types on a phone. The correction goes
@@ -221,6 +225,10 @@ def _confirm(
     made in; then record the decision and the approval it binds, together."""
     prefix, seen_dry_run, generation = seen
     with conn.transaction():
+        if _unconfirmed_outsiders(conn, message_id, revision, seen, dry_run):
+            # Nothing is recorded: the owner allows or removes them, then
+            # confirms again (D4).
+            return DecisionResult("outside", detail=OUTSIDE_GUESTS)
         claimed = conn.execute(
             """
             UPDATE proposals
@@ -273,6 +281,35 @@ def _confirm(
         )
 
     return DecisionResult("queued", decision_id=decision_id)
+
+
+def _unconfirmed_outsiders(
+    conn: psycopg.Connection,
+    message_id: str,
+    revision: int,
+    seen: tuple[str, bool, int],
+    dry_run: bool,
+) -> list[str]:
+    """The card's outside guests the owner has not allowed, for the proposal
+    exactly as the card showed it. Locked for the claim that follows. Any
+    other card is answered as stale by the claim, not told about guests it
+    does not show."""
+    prefix, seen_dry_run, generation = seen
+    row = conn.execute(
+        """
+        SELECT payload->'outside_guests' FROM proposals
+         WHERE message_id = %s AND status = 'pending' AND revision = %s
+           AND args_hash IS NOT NULL AND left(args_hash, 12) = %s
+           AND dry_run = %s AND dry_run = %s AND generation = %s
+           FOR UPDATE
+        """,
+        (message_id, revision, prefix, seen_dry_run, dry_run, generation),
+    ).fetchone()
+    guests = [str(guest) for guest in ((row[0] if row else None) or [])]
+    if not guests:
+        return []
+    allowed = contacts.confirmed(conn, guests)
+    return [guest for guest in guests if guest_key(guest) not in allowed]
 
 
 def _why_not(

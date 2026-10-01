@@ -11,6 +11,8 @@ header.
 
     POST   /api/decisions            record a decision (202 queued, 409 stale,
                                      404 no proposal, 422 invalid)
+    POST   /api/contacts             allow a guest outside the thread (204, 422
+                                     not an address)
     POST   /api/push-subscriptions   store or refresh a browser's subscription
     DELETE /api/push-subscriptions   remove one
     POST   /api/pairing/codes        a pairing code for the iPhone fallback (201)
@@ -35,6 +37,8 @@ from app.channel.decide import MAX_CORRECTION_CHARS, DecisionResult, decide
 from app.channel.pairing import IssuedCode, issue_code, redeem
 from app.config import Settings, get_settings
 from app.jobs.scheduler import decision_recorded
+from app.policy import contacts
+from app.policy.hashing import args_key
 from app.store.db import connect_autocommit
 
 router = APIRouter(prefix="/api")
@@ -55,6 +59,14 @@ class DecisionRequest(BaseModel):
     token: str | None = Field(default=None, max_length=64)
     """What the owner's card showed: hash prefix, mode and generation (M17,
     D2). A Confirm without a valid one is refused as stale."""
+
+
+class ContactRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(min_length=3, max_length=contacts.MAX_ADDRESS_CHARS)
+    message_id: str | None = Field(default=None, max_length=128)
+    """The proposal it was allowed from, for the record."""
 
 
 class SubscriptionKeys(BaseModel):
@@ -183,6 +195,8 @@ async def post_decision(
             )
         case "not_ready":
             return JSONResponse({"status": "not_ready", "detail": result.detail}, status_code=409)
+        case "outside":
+            return JSONResponse({"status": "outside", "detail": result.detail}, status_code=422)
         case "not_found":
             return JSONResponse({"status": "not_found", "detail": result.detail}, status_code=404)
         case _:
@@ -201,6 +215,33 @@ def _record_decision(settings: Settings, body: DecisionRequest) -> DecisionResul
             token=body.token,
             dry_run=settings.dry_run,
         )
+
+
+@router.post("/contacts", status_code=204)
+async def post_contact(
+    request: Request, authorization: str | None = Header(default=None)
+) -> Response:
+    """Allow a guest outside the thread (M17, D4). Allowing one already
+    allowed changes nothing."""
+    settings = get_settings()
+    _verify(settings, authorization)
+    body = await _body(request, ContactRequest)
+    if settings.fernet_key is None:
+        raise HTTPException(status_code=503, detail="FERNET_KEY is not configured")
+    try:
+        await run_in_threadpool(_allow_contact, settings, body)
+    except ValueError:
+        return JSONResponse(
+            {"status": "invalid", "detail": "not an email address"}, status_code=422
+        )
+    return Response(status_code=204)
+
+
+def _allow_contact(settings: Settings, body: ContactRequest) -> None:
+    assert settings.fernet_key is not None
+    key = args_key(settings.fernet_key.get_secret_value())
+    with connect_autocommit(settings.database_url) as conn:
+        contacts.allow(conn, body.address, via="web", key=key, message_id=body.message_id)
 
 
 @router.post("/push-subscriptions", status_code=204)

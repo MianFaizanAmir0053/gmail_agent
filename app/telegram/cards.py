@@ -42,6 +42,9 @@ GONE = "That proposal is no longer waiting for a decision."
 FROM_BEFORE_M16 = "This card predates the web app. Decide it there instead."
 FROM_BEFORE_M17 = "This Confirm button predates bound approvals. Confirm it in the web app."
 NOT_READY = "This proposal is still being prepared. Try again in a minute."
+OUTSIDE = (
+    "Some guests are not in this email thread. Allow or remove them in the web app, then confirm."
+)
 
 
 def _escape(value: object) -> str:
@@ -122,6 +125,13 @@ def approval_card(record: ProposalRecord, *, zone: str) -> str:
     attendees = card.get("attendees") or []
     if attendees:
         lines.append(f"👥 {_escape(', '.join(attendees))}")
+    outsiders = card.get("outside_guests") or []
+    if outsiders:
+        # Allowed in the web app only (M17, D4).
+        lines.append(
+            f"🚧 Not in this email thread: {_escape(', '.join(outsiders))}."
+            " Allow them in the web app before confirming."
+        )
     if card.get("location"):
         lines.append(f"📍 {_escape(card['location'])}")
 

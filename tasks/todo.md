@@ -1129,9 +1129,10 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** Participants from `threads.get` (D4): senders of mail received, recipients of mail sent. The comparator ignores dots and `+tags` for Gmail addresses only. `detect_conflicts` stores `outside_guests`; `decide()` refuses an unconfirmed outsider; the worker re-checks before a Confirm; the registry checks at execution. `POST /api/contacts`, and `app/jobs/contacts.py --remove`. The legacy pass computes outside guests too.
 
 **Acceptance criteria:**
-- [ ] An address only in an inbound `Cc` is outside; a recipient of the owner's own mail, and a confirmed contact, pass.
-- [ ] An outsider blocks Confirm until allowed; an outsider added by an edit is marked.
-- [ ] Gmail being down fails nothing at resume.
+- [x] An address only in an inbound `Cc` is outside; a recipient of the owner's own mail, and a confirmed contact, pass.
+- [x] An outsider blocks Confirm until allowed; an outsider added by an edit is marked.
+- [x] Gmail being down fails nothing at resume.
+- [x] A fresh-context review is folded in (running notes in the spec): above all, the checks read the thread Gmail files the message in, not the ledger's thread id.
 
 **Verification:** `uv run pytest tests/test_recipients.py tests/test_decide.py tests/test_worker.py tests/test_web_api.py`; Neon.
 
@@ -1142,8 +1143,8 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** The card marks each outside guest, with **Allow**: a server action that checks the owner and calls Fly. Addresses already allowed are hidden, read from `confirmed_contacts`.
 
 **Acceptance criteria:**
-- [ ] Allow, then Confirm, works against a local API, in the browser.
-- [ ] Confirm before Allow shows Fly's refusal in words.
+- [ ] Allow, then Confirm, works against a local API, in the browser. *Left for the owner's end tests: it needs a signed-in owner session and Fly running locally.*
+- [ ] Confirm before Allow shows Fly's refusal in words. *Built and unit-tested (`describeAnswer`, the 422); seen in the browser at the end tests.*
 
 **Verification:** the web checks; the browser.
 

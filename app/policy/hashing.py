@@ -125,6 +125,12 @@ def event_id_for(key: bytes, message_id: str, args_hash: str) -> str:
     return "ma" + base64.b32hexencode(digest).decode().rstrip("=").lower()[:30]
 
 
+def subject_hash(key: bytes, text: str) -> str:
+    """A keyed hash of something the audit log must link to without naming,
+    such as a contact's address (D7)."""
+    return hmac.new(key, f"subject:{text}".encode(), hashlib.sha256).hexdigest()
+
+
 def args_hash(key: bytes, *, tool: str, calendar_id: str, args: CreateEventInput) -> str:
     """HMAC-SHA256 over the canonical form, as 64 hex characters."""
     return hmac.new(key, _canonical(tool, calendar_id, args), hashlib.sha256).hexdigest()

@@ -31,6 +31,11 @@ class GraphState(TypedDict, total=False):
     email: EmailMessage
     extraction: ExtractionResult
 
+    outside_guests: list[str]
+    """Guests not in the email's thread (M17, D4), for the card and the
+    Confirm's checks. Read when the proposal parks; contacts the owner has
+    allowed are applied where it is shown and checked."""
+
     conflicts: list[str]
     """Human-readable clashes found by the free/busy check, for the approval card."""
 

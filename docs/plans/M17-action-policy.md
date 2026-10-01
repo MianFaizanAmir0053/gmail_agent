@@ -618,3 +618,25 @@ and the owner's end tests.
 - **Nothing from the other mode is shown again.** Every way back to the owner -- a changed hash, an M16 Confirm, a give-up, a resync -- expires the proposal instead when its payload was made under the other `DRY_RUN`. An expiry's sweep and its audit row are one transaction, audited once with the decision's id; a sweep that cannot be recorded rolls the settle back, so the decision is tried again.
 - **Accepted:** an Edit queued under the old mode re-parks under the new one. The edit re-extracts in the running process, so the new revision is made under its mode.
 - **A fresh-context review** of 17.7 found one test the change had broken (the 17.6 refusal test, now D3's "mode change after a resume", held at `act` by a Pause), the command-line expiry above, and smaller gaps, all folded in. Tests now cover a return whose only change is the generation, a changed `HASH_VERSION`, the reconciliation's own re-check of the row, and a failed settle refusing its approval.
+
+### Tasks 17.8–17.9: the recipient rule, and Allow on the card (2026-10-01)
+
+- **The thread is read for the rule alone.** `GmailClient.thread_headers` asks for `From`, `To`, `Cc` and `Authentication-Results`, with a field mask of labels and headers, so no snippet is ever received. A thread Gmail no longer has reads as empty: every guest is then outside.
+- **Only Gmail's own topmost verdict counts.** A sender is a participant when the first `Authentication-Results` header is `mx.google.com`'s and its `dmarc=pass` names the `From` address's domain as `header.from`. A header written lower down by the sender is never read.
+- **Its own comparator.** `guest_key` ignores dots and `+tags` for Gmail only; M15's `normalise_address` strips `+tags` everywhere, which D4 forbids. The web app's `guestKey` mirrors it, and both test files pin the same cases.
+- **Outside guests are computed at park; contacts are applied where they count.** `detect_conflicts` stores the guests not in the thread. The card, `decide()`, the worker and the registry each subtract the contacts confirmed at that moment, so an Allow counts at once.
+- **Before a Confirm on an invite,** the worker reads the thread and the contacts again. An outsider sends the proposal back with them marked. A Gmail error holds the Confirm for ten minutes at a time, without costing an attempt, for up to an hour after the owner confirmed; after that every guest counts as outside. The registry repeats the check before the action starts, through the same function, never the graph state. A Gmail error there fails the attempt: the worker read the thread moments before, so this is rare.
+- **Contacts** are stored as guest keys, and audited with a keyed hash of the address. They are allowed through `POST /api/contacts` (204, 422 for anything that is not one address, 503 without `FERNET_KEY`) or `approve --allow`, and removed only with `python -m app.jobs.contacts --remove`.
+- **Telegram** marks outside guests on the card, and answers a refused Confirm with a pointer to the web app.
+- **The web card** lists each outside guest not yet allowed, with Allow: a server action that checks the owner, then calls Fly. Confirm stays on the card, and Fly's refusal while a guest is outside is shown in words.
+- **Accepted:** reconciliation does not compute outside guests for invites parked before 17.8. Such a card shows none, and the worker's check before the Confirm finds any outsider and sends the card back marked.
+- **A fresh-context review** found that the worker's and the registry's checks read the wrong thread: the ledger's `thread_id` holds the message id, as poll writes it. Both now ask Gmail which thread the message is filed in. The tests' fake threads now have ids of their own, so the mistake would show. The review's other findings are folded in too:
+  - `Authentication-Results` is parsed rather than split. Quoted strings and comments are skipped, and a header with two DMARC results is refused, so a sender cannot write a pass of their own.
+  - Each `To` and `Cc` value is read on its own, so one value the parser cannot read drops only itself.
+  - Guests the owner has all allowed need no read of Gmail. After an hour of Gmail errors, allowed contacts still count.
+  - A Gmail error at execution holds the Confirm like the first check (`HeldError`), and the registry asks Gmail before it locks the row, never during. A write already begun never waits on Gmail.
+  - An out-of-date card is answered "stale" before it is told about guests.
+  - Python and the web app trim and accept the same characters: ASCII space and a byte-order mark trimmed, printable ASCII only.
+  - The card's layout key counts its outside guests, so the buttons an Allow moves are held for a moment.
+  - The Telegram card says to allow guests in the web app.
+- **Left for the owner's end tests:** Allow, then Confirm, in the browser against a local API (17.9's acceptance). It needs a signed-in owner session and Fly running locally.

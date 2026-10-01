@@ -21,7 +21,7 @@ from app.contracts import ExtractionResult
 from app.google.calendar import WriteRejectedError
 from app.policy import audit
 from app.policy.hashing import HOLD, INVITE, Binding, args_key, event_args, event_id_for
-from app.policy.registry import TOOLS, Approval, PausedError, Registry, Tier
+from app.policy.registry import TOOLS, Approval, HeldError, PausedError, Registry, Tier
 from app.store.ledger import MessageLedger, MessageStatus
 from app.tools.calendar_tool import CreateEventInput
 
@@ -224,8 +224,11 @@ def _last_audit(conn: psycopg.Connection) -> tuple[Any, ...]:
     return tuple(row)
 
 
-def _registry(conn: psycopg.Connection, writer: Writer) -> Registry:
-    return Registry(conn, writer, key=KEY)
+def _registry(
+    conn: psycopg.Connection, writer: Writer, *, outsiders: list[str] | None = None
+) -> Registry:
+    """`outsiders`: who the live check finds outside the thread (D4)."""
+    return Registry(conn, writer, key=KEY, outsiders=lambda message_id, guests: outsiders or [])
 
 
 # --- executing an approval ------------------------------------------------------------
@@ -572,9 +575,77 @@ def test_the_start_is_committed_before_google_is_called(
     writer = Peeking(database_url=migrated_database)
 
     with psycopg.connect(migrated_database, autocommit=True) as conn:
-        outcome = Registry(conn, writer, key=KEY).execute(
+        outcome = Registry(conn, writer, key=KEY, outsiders=lambda m, g: []).execute(
             HOLD, _args(message_id=message_id), approval=approval, message_id=message_id
         )
 
     assert outcome.status == "created"
     assert writer.seen == ("executing", CALENDAR, True)
+
+
+@pytest.mark.integration
+def test_an_invite_with_a_guest_outside_the_thread_is_refused(conn: psycopg.Connection) -> None:
+    """Read from Gmail and the contacts at execution, never the graph (D4)."""
+    approval = _approved(conn, attendees=["new@example.net"])
+
+    outcome = _registry(conn, Writer(dry_run=True), outsiders=["new@example.net"]).execute(
+        INVITE, _args(attendees=["new@example.net"]), approval=approval, message_id="m1"
+    )
+
+    assert (outcome.status, outcome.reason) == ("refused", audit.REASONS["guests"])
+    assert _last_audit(conn) == ("action_refused", audit.REASONS["guests"])
+
+
+@pytest.mark.integration
+def test_an_invite_whose_guests_are_all_known_runs(conn: psycopg.Connection) -> None:
+    approval = _approved(conn, attendees=["sara@example.com"])
+
+    outcome = _registry(conn, Writer(dry_run=True)).execute(
+        INVITE, _args(attendees=["sara@example.com"]), approval=approval, message_id="m1"
+    )
+
+    assert outcome.status == "dry_run"
+
+
+@pytest.mark.integration
+def test_an_invite_whose_guests_cannot_be_checked_is_held_not_refused(
+    conn: psycopg.Connection,
+) -> None:
+    """Gmail being down at execution: nothing starts, nothing is refused, and
+    no lock is held while Gmail is asked (D4)."""
+    approval = _approved(conn, attendees=["sara@example.com"])
+
+    def down(message_id: str, guests: object) -> list[str]:
+        raise ConnectionError("Gmail unavailable")
+
+    registry = Registry(conn, Writer(dry_run=True), key=KEY, outsiders=down)
+    with pytest.raises(HeldError):
+        registry.execute(
+            INVITE, _args(attendees=["sara@example.com"]), approval=approval, message_id="m1"
+        )
+
+    assert _action(conn)[0] == "approved"
+
+
+@pytest.mark.integration
+def test_a_write_begun_is_finished_without_asking_gmail_about_its_guests(
+    conn: psycopg.Connection,
+) -> None:
+    """Checked before it started; a later attempt only finishes it (D3)."""
+    approval = _approved(conn, attendees=["sara@example.com"])
+    conn.execute("UPDATE outbound_actions SET dry_run = false")
+    writer = Writer(fail_before=True)
+    with pytest.raises(ConnectionError):
+        _registry(conn, writer).execute(
+            INVITE, _args(attendees=["sara@example.com"]), approval=approval, message_id="m1"
+        )
+    writer.fail_before = False
+
+    def down(message_id: str, guests: object) -> list[str]:
+        raise AssertionError("Gmail must not be asked")
+
+    outcome = Registry(conn, writer, key=KEY, outsiders=down).execute(
+        INVITE, _args(attendees=["sara@example.com"]), approval=approval, message_id="m1"
+    )
+
+    assert outcome.status == "created"

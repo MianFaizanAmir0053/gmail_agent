@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -37,6 +38,7 @@ from app.extraction.payloads import ClassifyPayload
 from app.graph.nodes import Deps
 from app.graph.runner import GraphSession, ThreadView
 from app.policy import audit
+from app.policy.contacts import unconfirmed_outsiders
 from app.policy.hashing import args_key
 from app.policy.registry import Registry
 from app.store.ledger import MessageLedger, MessageStatus
@@ -147,7 +149,7 @@ def test_a_failure_in_words_of_its_own_is_not_copied_into_the_decision() -> None
 
 EMAIL = EmailMessage(
     id="m1",
-    thread_id="m1",
+    thread_id="t1",  # not the message id: the ledger's thread id is (M17, D4)
     subject="Design review",
     body_text="Thursday 4pm",
     sender="sara@example.com",
@@ -170,8 +172,38 @@ def _meeting(title: str = "Design review") -> ExtractionResult:
 
 
 class FakeGmail:
+    """The email, and its thread as the recipient rule reads it: by default
+    the owner wrote to Sara, so she is a participant (M17, D4)."""
+
+    def __init__(self) -> None:
+        self.thread: dict[str, Any] = {
+            "messages": [
+                {
+                    "labelIds": ["SENT"],
+                    "payload": {"headers": [{"name": "To", "value": "sara@example.com"}]},
+                }
+            ]
+        }
+        self.down = False
+        self.down_after: int | None = None
+        """Thread reads that succeed before Gmail goes down."""
+        self.reads = 0
+
     def get_message(self, message_id: str) -> EmailMessage:
         return EMAIL
+
+    def message_metadata(self, message_id: str) -> Any:
+        if self.down:
+            raise ConnectionError("Gmail unavailable")
+        return SimpleNamespace(thread_id=EMAIL.thread_id)
+
+    def thread_headers(self, thread_id: str) -> dict[str, Any]:
+        self.reads += 1
+        if self.down or (self.down_after is not None and self.reads > self.down_after):
+            raise ConnectionError("Gmail unavailable")
+        # Only the email's own thread has Sara in it: reading any other
+        # thread -- the message id, say -- finds no one.
+        return self.thread if thread_id == EMAIL.thread_id else {"messages": []}
 
 
 @dataclass
@@ -258,13 +290,16 @@ def _deps(
     calendar: FakeCalendar | None = None,
 ) -> Deps:
     calendar = calendar or FakeCalendar()
+    gmail = FakeGmail()
     return Deps(
-        gmail=cast(Any, FakeGmail()),
+        gmail=cast(Any, gmail),
         pipeline=cast(Any, pipeline or FakePipeline()),
         calendar=cast(Any, calendar),
         ledger=ledger or MessageLedger(conn),
         user_timezone="Asia/Karachi",
-        registry=Registry(conn, calendar, key=KEY),
+        registry=Registry(
+            conn, calendar, key=KEY, outsiders=partial(unconfirmed_outsiders, conn, gmail)
+        ),
         pipeline_version="0123456789ab",
         args_key=KEY,
     )
@@ -1224,3 +1259,103 @@ def test_a_failed_settle_refuses_an_approval_left_with_it(conn: psycopg.Connecti
         settle_failed(conn, result.decision_id, "m1", reason="late", action_reason="exhausted")
 
     assert _action(conn) == ("refused", audit.REASONS["exhausted"], False)
+
+
+# --- guests outside the thread (M17, 17.8) -------------------------------------------
+
+
+@pytest.mark.integration
+def test_a_guest_no_longer_in_the_thread_sends_the_proposal_back_marked(
+    conn: psycopg.Connection,
+) -> None:
+    """Read again before the Confirm is applied (D4): the proposal comes back
+    with the guest marked, and nothing runs."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    cast(FakeGmail, session.deps.gmail).thread = {"messages": []}
+    announced: list[list[str]] = []
+
+    applied = apply_open(
+        session, announce=lambda record: announced.append(record.payload["outside_guests"])
+    )
+
+    assert applied == [("m1", "no_effect")]
+    assert session.resumes == 0
+    assert announced == [["sara@example.com"]]
+    assert _outcomes(conn) == [("no_effect", "guests outside the thread", True)]
+    assert _action(conn) == ("refused", "guests outside the thread", False)
+
+
+@pytest.mark.integration
+def test_gmail_being_down_holds_a_confirm_without_spending_attempts(
+    conn: psycopg.Connection,
+) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    cast(FakeGmail, session.deps.gmail).down = True
+
+    assert apply_open(session) == [("m1", "held")]
+
+    attempts, wait, leased = cast(tuple[int, float, bool], _open(conn))
+    assert (attempts, leased) == (0, False) and 590 < wait <= 600
+    assert session.resumes == 0
+
+
+@pytest.mark.integration
+def test_gmail_down_for_an_hour_sends_the_proposal_back_with_every_guest_outside(
+    conn: psycopg.Connection,
+) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    conn.execute("UPDATE decisions SET decided_at = now() - interval '2 hours'")
+    cast(FakeGmail, session.deps.gmail).down = True
+
+    assert apply_open(session) == [("m1", "no_effect")]
+
+    payload = conn.execute("SELECT payload FROM proposals WHERE message_id = 'm1'").fetchone()
+    assert payload is not None and payload[0]["outside_guests"] == ["sara@example.com"]
+
+
+@pytest.mark.integration
+def test_gmail_down_for_an_hour_still_lets_an_allowed_guest_through(
+    conn: psycopg.Connection,
+) -> None:
+    """A contact the owner allowed may always be invited (D4): no read of
+    Gmail is needed for them, at the check or at execution."""
+    from app.policy import contacts
+
+    conn.execute("DELETE FROM confirmed_contacts")
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    contacts.allow(conn, "sara@example.com", via="web", key=KEY)
+    conn.execute("UPDATE decisions SET decided_at = now() - interval '2 hours'")
+    cast(FakeGmail, session.deps.gmail).down = True
+
+    assert apply_open(session) == [("m1", "skipped")]
+
+
+@pytest.mark.integration
+def test_gmail_down_at_execution_holds_without_spending_attempts(
+    conn: psycopg.Connection,
+) -> None:
+    """The check before the Confirm read the thread; the registry's own read,
+    a moment later, fails. Nothing ran, and it waits like the first check."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    gmail = cast(FakeGmail, session.deps.gmail)
+    gmail.down_after = gmail.reads + 1  # the worker's read succeeds; the registry's fails
+
+    assert apply_open(session) == [("m1", "held")]
+    attempts, wait, leased = cast(tuple[int, float, bool], _open(conn))
+    assert (attempts, leased) == (0, False) and 590 < wait <= 600
+    assert _action(conn)[0] == "approved"
+
+    gmail.down_after = None
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "skipped")]
+    assert (session.resumes, session.redrives) == (1, 1)

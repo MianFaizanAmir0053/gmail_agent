@@ -15,6 +15,7 @@ turned into state.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -28,9 +29,12 @@ from app.google.gmail import GmailClient
 from app.graph.state import GraphState
 from app.graph.versioning import action_type
 from app.policy.hashing import event_args, tool_for
+from app.policy.participants import outside, participants
 from app.policy.registry import Approval, Registry
 from app.store.ledger import MessageLedger, MessageStatus
 from app.tools.calendar_tool import check_conflicts
+
+log = logging.getLogger(__name__)
 
 MAX_REVISIONS = 2
 """Edit rounds before the graph gives up and asks for a decision.
@@ -168,10 +172,34 @@ def review(deps: Deps, state: GraphState) -> GraphState:
 def detect_conflicts(deps: Deps, state: GraphState) -> GraphState:
     extraction = state["extraction"]
     if extraction.start_utc is None or extraction.end_utc is None:
-        return {"conflicts": []}
+        return {"conflicts": [], "outside_guests": []}
 
-    check = check_conflicts(deps.calendar, event_args(extraction, state["message_id"]))
-    return {"conflicts": [check.describe()] if check.has_conflict else []}
+    args = event_args(extraction, state["message_id"])
+    check = check_conflicts(deps.calendar, args)
+    return {
+        "conflicts": [check.describe()] if check.has_conflict else [],
+        "outside_guests": _outside_guests(deps, state, args.attendees),
+    }
+
+
+def _outside_guests(deps: Deps, state: GraphState, guests: list[str]) -> list[str]:
+    """Guests not in the email's own Gmail thread (M17, D4).
+
+    If the thread cannot be read, every guest is outside: the proposal still
+    parks, and the owner can Allow. A Gmail outage never fails a re-park.
+    """
+    if not guests:
+        return []
+    try:
+        thread = deps.gmail.thread_headers(state["email"].thread_id)
+    except Exception as exc:
+        log.warning(
+            "could not read the thread of %s (%s); every guest is outside",
+            state["message_id"],
+            type(exc).__name__,
+        )
+        return list(guests)
+    return outside(guests, participants=participants(thread), confirmed=frozenset())
 
 
 def await_approval(deps: Deps, state: GraphState) -> GraphState:
@@ -187,6 +215,8 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
             "message_id": state["message_id"],
             "proposed": state["extraction"].model_dump(mode="json"),
             "conflicts": state.get("conflicts", []),
+            # Marked on the card, and checked before any Confirm (M17, D4).
+            "outside_guests": state.get("outside_guests", []),
             # `DRY_RUN` is read when a session is built, not stored with the
             # thread. Recording it here is what lets M17 refuse a proposal that
             # was parked under a different setting than the one it would run in.

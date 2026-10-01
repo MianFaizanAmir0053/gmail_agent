@@ -5,6 +5,7 @@
     python -m app.jobs.approve --message-id 18c0f2a --action edit --correction "4pm not 3pm"
     python -m app.jobs.approve --sweep-all        # end observe mode (M15)
     python -m app.jobs.approve --reconcile        # repair missing proposal rows now (M16)
+    python -m app.jobs.approve --allow sara@example.com   # a guest outside the thread (M17)
 
 Since M16 this records decisions and waits for them; it never resumes a thread
 itself. The worker in the app's scheduler is the only thing that does
@@ -31,6 +32,8 @@ from app.channel.park import Announce
 from app.channel.reconcile import reconcile
 from app.config import get_settings
 from app.graph.runner import GraphSession, graph_session
+from app.policy import contacts
+from app.policy.hashing import args_key
 from app.store.db import connect_autocommit
 
 WAIT_SECONDS = 180
@@ -174,6 +177,11 @@ def main() -> None:
         help="Record parked threads that have no proposal row, and close rows whose "
         "message is final.",
     )
+    parser.add_argument(
+        "--allow",
+        metavar="ADDRESS",
+        help="Allow a guest outside the thread, for every proposal from now on.",
+    )
     parser.add_argument("--message-id")
     parser.add_argument(
         "--action", choices=("confirm", "cancel", "edit", "sweep"), default="confirm"
@@ -191,6 +199,18 @@ def main() -> None:
     )
     args = parser.parse_args()
     settings = get_settings()
+
+    if args.allow:
+        if settings.fernet_key is None:
+            raise SystemExit("FERNET_KEY must be set: it keys the audit log's record of a contact.")
+        key = args_key(settings.fernet_key.get_secret_value())
+        with connect_autocommit(settings.database_url) as conn:
+            try:
+                contacts.allow(conn, args.allow, via="cli", key=key, message_id=args.message_id)
+            except ValueError as exc:
+                raise SystemExit(f"{args.allow!r}: {exc}") from None
+        print(f"Allowed {contacts.guest_key(args.allow)}.")
+        return
 
     if args.reconcile or args.sweep_all:
         # A sweep must reach every parked thread, including one whose row is

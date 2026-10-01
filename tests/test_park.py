@@ -286,3 +286,11 @@ def test_a_proposal_that_returns_to_the_owner_is_a_new_generation(
         )
 
     assert (first, again) == (1, 2)
+
+
+def test_a_record_keeps_the_guests_outside_the_thread() -> None:
+    """The card marks them; a Confirm waits for each to be allowed (M17, D4)."""
+    record = proposal_from("m1", PENDING | {"outside_guests": ["new@example.net"]}, 1)
+
+    assert record.payload["outside_guests"] == ["new@example.net"]
+    assert proposal_from("m1", PENDING, 1).payload["outside_guests"] == []

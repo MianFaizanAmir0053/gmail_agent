@@ -100,6 +100,7 @@ def proposal_from(
             "location": proposed.get("location"),
             "conflicts": list(pending.get("conflicts") or []),
             "review_issues": list(pending.get("review_issues") or []),
+            "outside_guests": list(pending.get("outside_guests") or []),
         },
         tool=tool,
         args_hash=args_hash,

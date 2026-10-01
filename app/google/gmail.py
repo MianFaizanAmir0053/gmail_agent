@@ -59,6 +59,14 @@ SYNC_HEADERS = (
 bulk signals. Unlike `METADATA_HEADERS` there is no Subject -- a subject can
 carry a one-time code, and nothing stores one until M18 can strip it."""
 
+GUEST_HEADERS = ("From", "To", "Cc", "Authentication-Results")
+"""What the recipient rule reads from a thread (M17, D4): who wrote, to whom,
+and Gmail's own verdict on the sender's domain."""
+
+GUEST_FIELDS = "messages(id,labelIds,payload/headers)"
+"""The field mask on the recipient rule's thread read: labels and headers only,
+so no snippet is ever received."""
+
 SYNC_FIELDS = "id,threadId,labelIds,internalDate,payload/headers"
 """The field mask on every sync fetch. Without it Gmail also sends the
 snippet, which can quote a code; with it, a snippet is never even received."""
@@ -552,3 +560,28 @@ class GmailClient:
             ),
         )
         return [to_message_meta(message) for message in response.get("messages", [])]
+
+    def thread_headers(self, thread_id: str) -> dict[str, Any]:
+        """A thread as the recipient rule reads it (M17, D4): each message's
+        labels and `GUEST_HEADERS`, in Gmail's order, and nothing else.
+
+        A thread Gmail no longer has comes back empty: no one in it is a
+        participant, so every guest is outside until the owner allows them.
+        """
+        try:
+            return self._execute(
+                "threads.get",
+                self._service.users()
+                .threads()
+                .get(
+                    userId="me",
+                    id=thread_id,
+                    format="metadata",
+                    metadataHeaders=list(GUEST_HEADERS),
+                    fields=GUEST_FIELDS,
+                ),
+            )
+        except Exception as exc:
+            if _status(exc) == 404:
+                return {"messages": []}
+            raise

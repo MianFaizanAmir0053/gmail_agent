@@ -565,3 +565,89 @@ def test_the_pairing_database_work_runs_off_the_event_loop(
     paired.post("/api/pairing/redeem", json={"code": "123456"}, headers=_bearer())
 
     assert offloaded == ["_issue_pairing_code", "_redeem_pairing_code"]
+
+
+def test_a_confirm_with_guests_outside_the_thread_is_a_422_that_says_so(
+    client: TestClient, decisions: Decisions
+) -> None:
+    decisions.answer = DecisionResult(
+        "outside", detail="allow or remove the guests outside the thread first"
+    )
+
+    response = client.post("/api/decisions", json=DECISION, headers=_bearer())
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "status": "outside",
+        "detail": "allow or remove the guests outside the thread first",
+    }
+
+
+# --- contacts (M17, D4) --------------------------------------------------------------
+
+
+@dataclass
+class Allowed:
+    made: list[dict[str, Any]] = field(default_factory=list)
+
+    def __call__(self, conn: Any, address: str, **kwargs: Any) -> None:
+        if "@" not in address:
+            raise ValueError("not an email address")
+        self.made.append({"address": address, **kwargs})
+
+
+@pytest.fixture
+def allowed(monkeypatch: pytest.MonkeyPatch) -> Allowed:
+    fake = Allowed()
+    monkeypatch.setattr("app.web_api.contacts.allow", fake)
+    monkeypatch.setattr("app.web_api.connect_autocommit", _no_connection)
+    return fake
+
+
+def _with_key(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    return _client(monkeypatch, fernet_key=SecretStr("a-fernet-key-for-tests"))
+
+
+def test_an_allowed_guest_is_recorded_as_the_web_s(
+    monkeypatch: pytest.MonkeyPatch, allowed: Allowed
+) -> None:
+    client = _with_key(monkeypatch)
+
+    response = client.post(
+        "/api/contacts",
+        json={"address": "sara@example.com", "message_id": "m1"},
+        headers=_bearer(),
+    )
+
+    assert response.status_code == 204
+    [made] = allowed.made
+    assert (made["address"], made["via"], made["message_id"]) == ("sara@example.com", "web", "m1")
+
+
+def test_something_that_is_not_an_address_is_a_422(
+    monkeypatch: pytest.MonkeyPatch, allowed: Allowed
+) -> None:
+    client = _with_key(monkeypatch)
+
+    response = client.post("/api/contacts", json={"address": "no address"}, headers=_bearer())
+
+    assert response.status_code == 422
+    assert allowed.made == []
+
+
+def test_allowing_needs_the_secret(monkeypatch: pytest.MonkeyPatch, allowed: Allowed) -> None:
+    client = _with_key(monkeypatch)
+
+    response = client.post("/api/contacts", json={"address": "sara@example.com"})
+
+    assert response.status_code == 401
+    assert allowed.made == []
+
+
+def test_allowing_without_a_key_is_a_503(monkeypatch: pytest.MonkeyPatch, allowed: Allowed) -> None:
+    """The key is what the audit log's record of a contact is hashed with."""
+    response = _client(monkeypatch).post(
+        "/api/contacts", json={"address": "sara@example.com"}, headers=_bearer()
+    )
+
+    assert response.status_code == 503

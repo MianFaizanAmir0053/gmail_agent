@@ -425,3 +425,10 @@ def test_the_bot_token_stays_out_of_reprs() -> None:
     from app.telegram.client import TelegramClient
 
     assert "123:bot-token" not in repr(TelegramClient("123:bot-token"))
+
+
+def test_card_marks_guests_outside_the_thread() -> None:
+    """Allowed in the web app only (M17, D4)."""
+    text = cards.approval_card(_record(outside_guests=["new@example.net"]), zone="UTC")
+
+    assert "Not in this email thread: new@example.net" in text
