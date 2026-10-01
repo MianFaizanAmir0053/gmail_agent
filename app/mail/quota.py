@@ -58,6 +58,11 @@ class ShareExhaustedError(RuntimeError):
     """A share has spent its minute. Stop, and leave the rest to the next tick."""
 
 
+class PacingTimeoutError(TimeoutError):
+    """The minute stays full for longer than the caller can wait. A timeout,
+    so the Gmail client treats it as Gmail being unavailable for everyone."""
+
+
 @dataclass(frozen=True, slots=True)
 class _Spend:
     at: float
@@ -82,13 +87,19 @@ class Pacer:
         self._lock = threading.Lock()
         self._spent: deque[_Spend] = deque()
 
-    def spend(self, method: str, *, share: str | None = None) -> None:
+    def spend(
+        self, method: str, *, share: str | None = None, wait_for: float | None = None
+    ) -> None:
         """Count one call of `method`, waiting if the minute is full.
 
         A call in a share raises `ShareExhaustedError` instead of waiting, both
         when its share is spent and when the whole minute is: the sync yields.
+        Anyone else waits, for at most `wait_for` seconds when given: a wait
+        that would run past it raises `PacingTimeoutError` at once, so a
+        caller's own deadline holds (the pipeline's fetch has one).
         """
         units = UNITS[method]
+        latest = None if wait_for is None else self._clock() + wait_for
         while True:
             with self._lock:
                 now = self._clock()
@@ -105,6 +116,8 @@ class Pacer:
                 # Until the oldest spend leaves the window. Slept outside the
                 # lock, so other callers can still be told their own answer.
                 wait = self._spent[0].at + WINDOW - now
+                if latest is not None and now + wait > latest:
+                    raise PacingTimeoutError(method)
             self._sleep(max(wait, 0.01))
 
     def available(self, share: str | None = None) -> int:

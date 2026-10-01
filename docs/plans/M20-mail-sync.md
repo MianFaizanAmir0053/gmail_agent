@@ -203,7 +203,9 @@ locally in its own process; the runbook says not to run it during a backfill.
 
 **The pipeline's fetch** retries 429 and 5xx for at most 30 seconds in all, so
 a message's run stays well inside `kill_timeout` (120 s). A rate limit
-therefore rarely ends a message in FAILED.
+therefore rarely ends a message in FAILED. The 30 seconds bound the whole
+call: the pacer's wait, every attempt -- each attempt's sockets get only the
+time left -- and jittered pauses. Every retry is charged to the pacer.
 
 ### D4. The meeting pipeline's feed
 
