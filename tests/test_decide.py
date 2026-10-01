@@ -164,8 +164,11 @@ def test_decisions_outlive_any_attempt_to_delete_their_message(conn: psycopg.Con
     _park(conn)
     decide(conn, "m1", action="confirm", revision=1, via="web")
 
-    # RESTRICT reports its own error, not the general foreign-key one.
-    with pytest.raises(psycopg.errors.RestrictViolation), conn.transaction():
+    # Which error depends on the server: Postgres 16 (CI) reports RESTRICT as a
+    # foreign-key violation, and Postgres 18 (Neon) as a restrict violation.
+    # Either way the delete fails, and that is the guarantee.
+    refused = (psycopg.errors.ForeignKeyViolation, psycopg.errors.RestrictViolation)
+    with pytest.raises(refused), conn.transaction():
         conn.execute("DELETE FROM processed_messages WHERE gmail_message_id = 'm1'")
 
     assert len(_decisions(conn)) == 1
