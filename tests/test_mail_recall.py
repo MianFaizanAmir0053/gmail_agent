@@ -195,12 +195,61 @@ def test_a_pause_that_ended_before_the_row_arrived_excuses_nothing(
     assert _recall(mail, FakeMailbox()).stalled == 1
 
 
+def test_a_short_pause_inside_a_long_stall_is_still_a_stall(mail: psycopg.Connection) -> None:
+    """A hold is taken off a row's wait, not used to excuse the whole of it:
+    five minutes' pause cannot hide a day without the feed."""
+    _store(mail, "waiting", at=NOW - timedelta(hours=20))
+    _audit(mail, "paused", NOW - timedelta(hours=10))
+    _audit(mail, "resumed", NOW - timedelta(hours=10) + timedelta(minutes=5))
+
+    result = _recall(mail, FakeMailbox())
+
+    assert (result.stalled, result.held) == (1, 0)
+
+
+def test_a_row_whose_wait_was_mostly_held_is_not_a_stall(mail: psycopg.Connection) -> None:
+    """Under an hour of the wait fell outside the pause and the cap."""
+    _store(mail, "waiting", at=NOW - timedelta(hours=5))
+    _audit(mail, "paused", NOW - timedelta(hours=5))
+    _audit(mail, "budget_exhausted", NOW - timedelta(hours=4))
+    _audit(mail, "resumed", NOW - timedelta(hours=2))
+    _audit(mail, "budget_ok", NOW - timedelta(minutes=30))
+
+    result = _recall(mail, FakeMailbox())
+
+    assert (result.stalled, result.held) == (0, 1)
+
+
+def test_a_pause_and_a_cap_at_once_are_counted_once(mail: psycopg.Connection) -> None:
+    """Two hours paused and capped together are two hours held, not four:
+    three of the five hours waited were the feed's own."""
+    _store(mail, "waiting", at=NOW - timedelta(hours=5))
+    _audit(mail, "paused", NOW - timedelta(hours=5))
+    _audit(mail, "budget_exhausted", NOW - timedelta(hours=5))
+    _audit(mail, "resumed", NOW - timedelta(hours=3))
+    _audit(mail, "budget_ok", NOW - timedelta(hours=3))
+
+    assert _recall(mail, FakeMailbox()).stalled == 1
+
+
 def test_a_cap_ends_with_its_month(mail: psycopg.Connection) -> None:
     exhausted = datetime(2020, 1, 20, tzinfo=UTC)
     _audit(mail, "budget_exhausted", exhausted)
 
     assert held_intervals(mail, NOW - timedelta(days=60), NOW) == [
         (exhausted, datetime(2020, 2, 1, tzinfo=UTC))
+    ]
+
+
+@pytest.mark.parametrize("kind", ["budget_ok", "budget_warning"])
+def test_a_cap_ends_when_spending_starts_again(mail: psycopg.Connection, kind: str) -> None:
+    """A raised cap, or a new month's: `budget_ok` closes it as a warning does."""
+    exhausted = NOW - timedelta(hours=6)
+    _audit(mail, "budget_exhausted", exhausted)
+    _audit(mail, kind, exhausted + timedelta(hours=1))
+
+    assert held_intervals(mail, NOW - timedelta(days=1), NOW) == [
+        (exhausted, exhausted + timedelta(hours=1))
     ]
 
 

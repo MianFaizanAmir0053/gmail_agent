@@ -60,7 +60,10 @@ ALERTS: dict[AlertCode, str] = {
 """Generic words only: an alert crosses Apple's and Google's servers and lands
 on a lock screen."""
 
-_HELD_KINDS = ("paused", "resumed", "budget_exhausted", "budget_warning")
+_CAP_ENDS = ("budget_ok", "budget_warning")
+"""Audit kinds that say spending has started again after a cap."""
+
+_HELD_KINDS = ("paused", "resumed", "budget_exhausted", *_CAP_ENDS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,13 +201,30 @@ def _feed_recall(
     held_hours = held_intervals(conn, since, now)
     stalled = held = 0
     for (met_since,) in rows:
-        if now - met_since <= STALLED_AFTER:
+        waited = now - met_since
+        if waited <= STALLED_AFTER:
             continue
-        if any(start < now and end > met_since for start, end in held_hours):
-            held += 1
-        else:
+        # The hold is taken off the wait: a short pause cannot excuse a day.
+        if waited - held_for(held_hours, met_since, now) > STALLED_AFTER:
             stalled += 1
+        else:
+            held += 1
     return len(rows), stalled, held
+
+
+def held_for(
+    intervals: list[tuple[datetime, datetime]], start: datetime, end: datetime
+) -> timedelta:
+    """How much of `start` to `end` the agent was held, a pause and a cap
+    that overlap counted once."""
+    total = timedelta(0)
+    reached = start
+    for begin, finish in sorted(intervals):
+        begin, finish = max(begin, reached), min(finish, end)
+        if finish > begin:
+            total += finish - begin
+            reached = finish
+    return total
 
 
 def held_intervals(
@@ -213,8 +233,8 @@ def held_intervals(
     """When M17 had paused the agent, or its spending cap had stopped work.
 
     Read from the audit log, if M17's migration has made one. A pause runs
-    until the next resume. A cap runs until a later warning (a raised cap),
-    or the end of its UTC month, when spending starts again.
+    until the next resume. A cap runs until spending starts again: the next
+    `budget_ok` or warning (a raised cap), or the end of its UTC month.
     """
     exists = conn.execute("SELECT to_regclass('audit_log') IS NOT NULL").fetchone()
     if not (exists and exists[0]):
@@ -242,7 +262,7 @@ def held_intervals(
             intervals.append((paused_at, at))
             paused_at = None
         elif kind == "budget_exhausted":
-            later = [t for k, t in rows[index + 1 :] if k == "budget_warning"]
+            later = [t for k, t in rows[index + 1 :] if k in _CAP_ENDS]
             intervals.append((at, min([_next_month(at), now, *later])))
     if paused_at is not None:
         intervals.append((paused_at, now))

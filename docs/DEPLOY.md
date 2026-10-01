@@ -506,8 +506,9 @@ says).
 - **Alerts,** once a day each: "Mail sync missed messages" (Gmail listed mail
   the sync did not have -- it is stored and fed as it is found -- or a
   category disagreed), and "The mail feed has stalled" (mail met the feed's
-  rule for over an hour without being processed, outside a pause or a
-  stopped cap, or the age rule skipped mail under a day old).
+  rule for over an hour without being processed, not counting time paused
+  or stopped by the spending cap, or the age rule skipped mail under a day
+  old).
 - **Too old:** mail first reached more than seven days after it arrived --
   after a long outage, restored from the trash, held by a pause -- is
   recorded SKIPPED ("too old when reached"), never processed.
