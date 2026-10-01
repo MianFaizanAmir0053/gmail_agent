@@ -20,8 +20,9 @@ from app.channel.decide import decide
 from app.channel.park import proposal_from, write_park
 from app.channel.worker import ATTEMPTS_EXHAUSTED, settle_decided, settle_failed
 from app.graph.checkpointer import postgres_checkpointer
-from app.graph.nodes import SWEEP_REASON
+from app.graph.nodes import NOT_A_MEETING, SWEEP_REASON
 from app.jobs.purge import purge
+from app.mail.feed import GONE, TOO_OLD
 from app.store.ledger import STRANDED_REASON, MessageLedger, MessageStatus
 
 pytestmark = pytest.mark.integration
@@ -124,6 +125,28 @@ def test_fixed_operator_reasons_survive(
         ledger.claim(message_id, message_id)
         status = MessageStatus.FAILED if reason == STRANDED_REASON else MessageStatus.REJECTED
         ledger.mark(message_id, status, error=reason)
+        _age(conn, message_id, days=30)
+        kept[message_id] = reason
+
+    purge(conn, migrated_database)
+
+    for message_id, reason in kept.items():
+        entry = ledger.get(message_id)
+        assert entry is not None and entry.error == reason
+
+
+def test_the_mail_feeds_fixed_reasons_survive(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    """Too old, gone before its turn, and the classifier's no (M20, D4): code
+    wrote them, they quote nothing, and `/health` and the failures view count
+    them."""
+    ledger = MessageLedger(conn)
+    kept = {}
+    for reason in (TOO_OLD, GONE, NOT_A_MEETING):
+        message_id = f"kept-{uuid.uuid4().hex[:8]}"
+        ledger.claim(message_id, message_id)
+        ledger.mark(message_id, MessageStatus.SKIPPED, error=reason)
         _age(conn, message_id, days=30)
         kept[message_id] = reason
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import psycopg
 import pytest
 
@@ -178,45 +176,41 @@ def test_sync_state_cannot_gain_a_second_row(conn: psycopg.Connection) -> None:
         conn.execute("INSERT INTO sync_state (id, last_history_id) VALUES (2, 'x')")
 
 
-# --- stranded claims (M15) -------------------------------------------------
+# --- stranded claims (M15, M20) ---------------------------------------------
+#
+# Which stranded claim is released and which fails is the feed's decision
+# (`app/mail/feed.py`, tested in `test_mail_feed.py`). The ledger only does it.
 
 
-def test_boot_recovery_fails_only_stale_claims(
-    ledger: MessageLedger, conn: psycopg.Connection
-) -> None:
-    """A redeploy can kill a poll mid-message. `unseen` never offers that
-    message again, so without recovery its `claimed` row is invisible forever."""
-    ledger.claim("stale", "stale")
-    ledger.claim("fresh", "fresh")
+def test_a_released_claim_can_be_claimed_again(ledger: MessageLedger) -> None:
+    """A redeploy can kill a poll mid-message. Released, the message is
+    offered again rather than left `claimed`, where nothing looks at it."""
+    ledger.claim("stranded", "stranded")
+
+    assert ledger.release("stranded") is True
+
+    assert ledger.get("stranded") is None
+    assert ledger.claim("stranded", "stranded")
+
+
+def test_only_a_claim_is_ever_released(ledger: MessageLedger) -> None:
+    """An outcome is never erased by a release."""
     ledger.claim("done", "done")
     ledger.mark("done", MessageStatus.SKIPPED)
-    conn.execute(
-        "UPDATE processed_messages SET updated_at = now() - interval '2 hours'"
-        " WHERE gmail_message_id IN ('stale', 'done')"
-    )
 
-    recovered = ledger.fail_stranded(timedelta(hours=1))
+    assert ledger.release("done") is False
+    assert ledger.release("never-claimed") is False
+    done = ledger.get("done")
+    assert done is not None and done.status == MessageStatus.SKIPPED
 
-    assert recovered == 1
+
+def test_a_stranded_claim_that_cannot_be_released_fails_with_a_fixed_reason(
+    ledger: MessageLedger,
+) -> None:
+    ledger.claim("stale", "stale")
+
+    ledger.mark("stale", MessageStatus.FAILED, error=STRANDED_REASON)
+
     stale = ledger.get("stale")
     assert stale is not None
-    assert stale.status == MessageStatus.FAILED
-    assert stale.error == STRANDED_REASON
-
-
-def test_boot_recovery_leaves_recent_claims_and_other_statuses_alone(
-    ledger: MessageLedger, conn: psycopg.Connection
-) -> None:
-    ledger.claim("fresh", "fresh")
-    ledger.claim("done", "done")
-    ledger.mark("done", MessageStatus.SKIPPED)
-    conn.execute(
-        "UPDATE processed_messages SET updated_at = now() - interval '2 hours'"
-        " WHERE gmail_message_id = 'done'"
-    )
-
-    ledger.fail_stranded(timedelta(hours=1))
-
-    fresh, done = ledger.get("fresh"), ledger.get("done")
-    assert fresh is not None and fresh.status == MessageStatus.CLAIMED
-    assert done is not None and done.status == MessageStatus.SKIPPED
+    assert (stale.status, stale.error) == (MessageStatus.FAILED, "stranded by shutdown")

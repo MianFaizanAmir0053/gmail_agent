@@ -28,8 +28,9 @@ from datetime import timedelta
 import psycopg
 
 from app.graph.checkpointer import postgres_checkpointer
-from app.graph.nodes import SWEEP_REASON
+from app.graph.nodes import NOT_A_MEETING, SWEEP_REASON
 from app.jobs.poll import CLAIMED_NOT_RUN
+from app.mail.feed import GONE, TOO_OLD
 from app.store.ledger import STRANDED_REASON, MessageStatus
 
 FINAL_STATUSES = (MessageStatus.SKIPPED, MessageStatus.REJECTED, MessageStatus.CREATED)
@@ -46,6 +47,11 @@ FIXED_REASONS = (
     SWEEP_REASON,
     STRANDED_REASON,
     CLAIMED_NOT_RUN,
+    # The mail feed's (M20, D4): mail reached too late, mail deleted before
+    # its turn, and the classifier's no in place of its reasoning.
+    TOO_OLD,
+    GONE,
+    NOT_A_MEETING,
 )
 """Ledger reasons written by code rather than by a model. They quote no email,
 and they are what the failures view and M24's statistics are built from."""

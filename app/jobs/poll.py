@@ -20,7 +20,9 @@ import psycopg
 from app.channel.channels import configured_channels
 from app.channel.park import Announce, record_park
 from app.config import get_settings
+from app.google.gmail import MessageGoneError
 from app.graph.runner import GraphSession, graph_session
+from app.mail import feed
 from app.store.db import connect
 from app.store.ledger import MessageLedger, MessageStatus, SyncCursor
 
@@ -37,7 +39,8 @@ timeout, leaving a `claimed` row that nothing ever offers again.
 
 class PollResult(NamedTuple):
     seen: int
-    """Unread messages the pass looked at."""
+    """Messages the pass looked at: the feed's candidates, or before the first
+    sync run the newest unread page."""
 
     started: int
     """Messages it claimed and ran through the graph."""
@@ -55,7 +58,8 @@ def poll_once(
     show_titles: bool = True,
     announce: Announce | None = None,
 ) -> PollResult:
-    """One pass over the newest unread mail.
+    """One pass over the feed's candidates (M20, D4): new Primary mail, read or
+    not. Before the first sync run, over the newest unread mail, as before.
 
     `announce` tells the owner about each proposal that parks: every configured
     channel, in production (`app.channel.channels`).
@@ -66,23 +70,29 @@ def poll_once(
     """
     ledger = MessageLedger(session.conn)
 
-    message_ids = session.deps.gmail.list_unread(max_results=limit)
+    candidates, seen, from_feed = _candidates(session, ledger, limit)
     started = 0
     failed = 0
     stopped = False
 
-    for message_id in ledger.unseen(message_ids):
+    for message_id in candidates:
         if stop is not None and stop.is_set():
             stopped = True
             break
-        # `unseen` is only a cheap pre-filter -- another run can insert between
-        # that query and this one, so `claim` remains the authority.
+        # The one place a message is claimed. The candidates are only a cheap
+        # pre-filter -- another run can insert between that query and this
+        # one, so `claim` remains the authority.
         if not ledger.claim(message_id, message_id):
             continue
         started += 1
 
         try:
             session.start(message_id, message_id)
+        except MessageGoneError:
+            # Deleted before its turn (M20, D4): a fixed reason, not a failure.
+            ledger.mark(message_id, MessageStatus.SKIPPED, error=feed.GONE)
+            print(f"  {message_id}  SKIPPED  {feed.GONE}")
+            continue
         except Exception as exc:
             # Retries already happened inside the graph. Reaching here means the
             # failure survived them, so dead-letter it: FAILED is deliberately
@@ -110,11 +120,33 @@ def poll_once(
             title = proposed.get("title") if show_titles else ""
             print(f"  {message_id}  AWAITING APPROVAL  {title}".rstrip())
 
-    if not stopped:
+    if not stopped and not from_feed:
         # Left where it was on an early stop: unprocessed mail is still
         # behind it, and moving it forward would skip that mail for good.
+        # Once the feed has started, it is where the sync's first run began,
+        # and nothing moves it again.
         SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
-    return PollResult(seen=len(message_ids), started=started, failed=failed)
+    return PollResult(seen=seen, started=started, failed=failed)
+
+
+def _candidates(
+    session: GraphSession, ledger: MessageLedger, limit: int
+) -> tuple[list[str], int, bool]:
+    """What this pass may claim, how many it looked at, and whether they came
+    from the feed (M20, D4).
+
+    Once the first sync run has made a cursor, candidates come from the
+    synced rows, and candidates over seven days old are recorded SKIPPED
+    first, with no model call. Until then, the newest unread page, as before.
+    """
+    if feed.active(session.conn):
+        too_old = feed.record_too_old(session.conn)
+        for message_id in too_old:
+            print(f"  {message_id}  SKIPPED  {feed.TOO_OLD}")
+        found = feed.candidates(session.conn, limit)
+        return found, len(found), True
+    message_ids = session.deps.gmail.list_unread(max_results=limit)
+    return ledger.unseen(message_ids), len(message_ids), False
 
 
 def reset(conn: psycopg.Connection, *, app_env: str) -> int:

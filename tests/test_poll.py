@@ -1,4 +1,4 @@
-"""One polling pass, with the ledger, the cursor and the graph faked."""
+"""One polling pass, with the ledger, the cursor, the feed and the graph faked."""
 
 from __future__ import annotations
 
@@ -10,13 +10,17 @@ from typing import Any, cast
 import pytest
 
 from app.channel.park import proposal_from
+from app.google.gmail import MessageGoneError
 from app.graph.runner import GraphSession
 from app.jobs import poll
+from app.mail import feed as real_feed
+from app.store.ledger import MessageStatus
 
 
 @dataclass
 class FakeLedger:
     claimed: list[str] = field(default_factory=list)
+    marks: list[tuple[str, MessageStatus, str | None]] = field(default_factory=list)
 
     def unseen(self, message_ids: list[str]) -> list[str]:
         return message_ids
@@ -25,11 +29,40 @@ class FakeLedger:
         self.claimed.append(message_id)
         return True
 
-    def mark(self, *args: Any, **kwargs: Any) -> None:
-        pass
+    def mark(self, message_id: str, status: MessageStatus, *, error: str | None = None) -> None:
+        self.marks.append((message_id, status, error))
 
     def get(self, message_id: str) -> None:
         return None
+
+
+@dataclass
+class FakeFeed:
+    """Stands in for `app.mail.feed`, whose SQL is tested on Postgres. Off
+    until a test turns it on: before the first sync run, poll reads the
+    newest unread page as it always did."""
+
+    on: bool = False
+    waiting: list[str] = field(default_factory=list)
+    too_old: list[str] = field(default_factory=list)
+    GONE: str = real_feed.GONE
+    TOO_OLD: str = real_feed.TOO_OLD
+
+    def active(self, conn: object) -> bool:
+        return self.on
+
+    def candidates(self, conn: object, limit: int) -> list[str]:
+        return self.waiting[:limit]
+
+    def record_too_old(self, conn: object) -> list[str]:
+        return self.too_old
+
+
+@pytest.fixture(autouse=True)
+def feed(monkeypatch: pytest.MonkeyPatch) -> FakeFeed:
+    fake = FakeFeed()
+    monkeypatch.setattr(poll, "feed", fake)
+    return fake
 
 
 @dataclass
@@ -43,8 +76,10 @@ class FakeCursor:
 @dataclass
 class FakeGmail:
     unread: list[str]
+    asked: list[int] = field(default_factory=list)
 
     def list_unread(self, max_results: int = 10) -> list[str]:
+        self.asked.append(max_results)
         return self.unread[:max_results]
 
     def current_history_id(self) -> str:
@@ -63,10 +98,14 @@ class FakeSession:
     parked: dict[str, str] = field(default_factory=dict)
     started: list[str] = field(default_factory=list)
     conn: object = field(default_factory=object)
+    gmail: FakeGmail = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.gmail = FakeGmail(self.unread)
 
     @property
     def deps(self) -> FakeDeps:
-        return FakeDeps(FakeGmail(self.unread))
+        return FakeDeps(self.gmail)
 
     def start(self, message_id: str, thread_id: str) -> None:
         self.started.append(message_id)
@@ -210,3 +249,79 @@ def test_reset_refuses_the_production_ledger() -> None:
     """Decisions are M24's evidence; a reset would try to erase them."""
     with pytest.raises(SystemExit):
         poll.reset(cast(Any, object()), app_env="prod")
+
+
+# --- the feed (M20, D4) ------------------------------------------------------
+
+
+def test_before_the_first_sync_run_poll_reads_the_newest_unread_page(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    session = FakeSession(unread=["a", "b"])
+
+    result = poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
+
+    assert session.gmail.asked == [10]
+    assert ledger.claimed == ["a", "b"]
+    assert cursor.values == ["h42"]
+    assert result.seen == 2
+
+
+def test_once_the_feed_has_started_poll_claims_its_candidates(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """New Primary mail, read or not. The unread page is not even asked for,
+    and the old poller's cursor stays where the first sync run found it."""
+    feed.on = True
+    feed.waiting = ["x", "y", "z"]
+    session = FakeSession(unread=["a"])
+
+    result = poll.poll_once(cast(GraphSession, session), 2, stop=threading.Event())
+
+    assert ledger.claimed == ["x", "y"]
+    assert session.gmail.asked == []
+    assert cursor.values == []
+    assert (result.seen, result.started) == (2, 2)
+
+
+def test_mail_too_old_when_reached_is_recorded_before_anything_is_claimed(
+    ledger: FakeLedger,
+    cursor: FakeCursor,
+    feed: FakeFeed,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    feed.on = True
+    feed.too_old = ["ancient"]
+    session = FakeSession(unread=[])
+
+    poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
+
+    assert session.started == []  # no model call
+    assert "ancient  SKIPPED  too old when reached" in capsys.readouterr().out
+
+
+def test_a_message_gone_before_its_turn_is_skipped_not_failed(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """Deleted between the sync seeing it and the graph fetching it."""
+    feed.on = True
+    feed.waiting = ["gone", "next"]
+
+    def start(message_id: str) -> None:
+        if message_id == "gone":
+            raise MessageGoneError(message_id)
+
+    session = FakeSession(unread=[], on_start=start)
+
+    result = poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
+
+    assert ledger.marks == [("gone", MessageStatus.SKIPPED, "no longer in the mailbox")]
+    assert session.started == ["gone", "next"]
+    assert result.failed == 0
+
+
+def test_messages_are_claimed_in_exactly_one_place() -> None:
+    """M17's spend gate asks before each claim; there must be one to guard."""
+    import inspect
+
+    assert inspect.getsource(poll).count(".claim(") == 1

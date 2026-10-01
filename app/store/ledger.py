@@ -13,7 +13,7 @@ would be a textbook race -- both would read "no" before either wrote.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import StrEnum
 
 import psycopg
@@ -60,14 +60,8 @@ class LedgerEntry:
         return self.status in TERMINAL_STATUSES
 
 
-STRANDED_AFTER = timedelta(hours=1)
-"""How old a `claimed` row must be before boot treats it as abandoned.
-
-Far longer than any single message's trip through the graph, so a second
-instance that is still running during a deploy keeps its live claims.
-"""
-
 STRANDED_REASON = "stranded by shutdown"
+"""A claim found at boot that the feed would not offer again (M20, D4)."""
 
 
 class StatusTransitionError(ValueError):
@@ -95,22 +89,22 @@ class MessageLedger:
         ).fetchone()
         return row is not None
 
-    def fail_stranded(self, older_than: timedelta) -> int:
-        """Turn abandoned claims into visible failures. Returns how many.
+    def release(self, gmail_message_id: str) -> bool:
+        """Give up a claim, so the message is offered again. True if released.
 
         A claim is taken before its graph runs and is replaced by the graph's
         own outcome. If the process dies in between, the row stays `claimed`
-        for ever: `unseen` never offers it again and nothing lists it. Called
-        at boot, when this process has no run in flight.
+        for ever: nothing offers the message again. At boot the feed decides
+        which such claims to release (`app/mail/feed.py`); only a claim is
+        ever released, never an outcome. The caller deletes the thread's
+        checkpoint first.
         """
-        return self._conn.execute(
-            """
-            UPDATE processed_messages
-               SET status = %s, error = %s, updated_at = now()
-             WHERE status = %s AND updated_at < now() - %s
-            """,
-            (MessageStatus.FAILED.value, STRANDED_REASON, MessageStatus.CLAIMED.value, older_than),
-        ).rowcount
+        return bool(
+            self._conn.execute(
+                "DELETE FROM processed_messages WHERE gmail_message_id = %s AND status = %s",
+                (gmail_message_id, MessageStatus.CLAIMED.value),
+            ).rowcount
+        )
 
     def mark(
         self,
