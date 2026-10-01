@@ -202,7 +202,7 @@ def test_participant_filter(corpus: psycopg.Connection) -> None:
 
 @pytest.mark.integration
 def test_since_filter(corpus: psycopg.Connection) -> None:
-    hits = keyword_search(corpus, "Ahmed", since=datetime(2026, 8, 11, tzinfo=UTC).date())
+    hits = keyword_search(corpus, "sentinelalpha", since=datetime(2026, 8, 11, tzinfo=UTC).date())
     assert hits == []
 
 
@@ -210,8 +210,11 @@ def test_since_filter(corpus: psycopg.Connection) -> None:
 
 
 class FakeEmbeddings:
-    def __init__(self, index: int | None = 0, fail: bool = False) -> None:
+    def __init__(
+        self, index: int | None = 0, fail: bool = False, runner_up: int | None = None
+    ) -> None:
         self.index = index
+        self.runner_up = runner_up
         self.fail = fail
 
     def embed_content(self, **kwargs: Any) -> Any:
@@ -220,6 +223,10 @@ class FakeEmbeddings:
         values = [0.0] * DIMENSIONS
         if self.index is not None:
             values[self.index] = 1.0
+        if self.runner_up is not None:
+            # A weaker second match, so the corpus has a strict vector order.
+            # Otherwise both remaining rows sit at cosine distance 1 and tie.
+            values[self.runner_up] = 0.5
         return SimpleNamespace(embeddings=[SimpleNamespace(values=values)])
 
 
@@ -233,37 +240,45 @@ def test_the_default_mode_is_vector_only(corpus: psycopg.Connection) -> None:
     """What M12 measured. Fusion is a setting, not the default."""
     search = ContextSearch(
         conn=corpus,
-        client=FakeClient(FakeEmbeddings(index=1)),
+        client=FakeClient(FakeEmbeddings(index=1, runner_up=2)),
         embedding_model="fake",
         embedding_dimensions=DIMENSIONS,
     )
-    # The query text points squarely at m3; the embedding points at m2. Vector
-    # wins, which is only observable when the keyword half is not fused in.
+    # The query text points squarely at m3; the embedding points at m2, with m3
+    # as its runner-up so that m3 stays among the vector candidates however many
+    # other chunks are stored. Fused, m3 would then win as the pick both halves
+    # agree on. Vector alone keeps m2 first.
     assert search("sentinelgamma")[0].message_id == "m2"
 
 
 @pytest.mark.integration
 def test_hybrid_mode_fuses_both_halves(corpus: psycopg.Connection) -> None:
-    """The embedding points at m1; only the keyword half can reach m3."""
+    """The embedding points at m1, then m2; only the keyword half can reach m3."""
     search = ContextSearch(
         conn=corpus,
-        client=FakeClient(FakeEmbeddings(index=0)),
+        client=FakeClient(FakeEmbeddings(index=0, runner_up=1)),
         embedding_model="fake",
         embedding_dimensions=DIMENSIONS,
         mode="hybrid",
     )
-    assert {h.message_id for h in search("sentinelgamma")} >= {"m1", "m3"}
+    # Two slots, which the embedding alone fills before it reaches m3.
+    assert {h.message_id for h in search("sentinelgamma", limit=2)} == {"m1", "m3"}
 
 
 @pytest.mark.integration
 def test_vector_mode_cannot_reach_a_keyword_only_match(corpus: psycopg.Connection) -> None:
+    """The same search without the keyword half."""
     search = ContextSearch(
         conn=corpus,
-        client=FakeClient(FakeEmbeddings(index=0)),
+        client=FakeClient(FakeEmbeddings(index=0, runner_up=1)),
         embedding_model="fake",
         embedding_dimensions=DIMENSIONS,
     )
-    assert "m3" not in {h.message_id for h in search("sentinelgamma")}
+    # Two slots again, not the default five: vector search has no similarity
+    # cutoff, so on a table with few other chunks (CI's has none) it pads the
+    # list with m3. Two are filled before m3 on any table -- m1, then m2 or a
+    # stored chunk nearer still -- so m3 could only take one through its text.
+    assert "m3" not in {h.message_id for h in search("sentinelgamma", limit=2)}
 
 
 @pytest.mark.integration
@@ -283,14 +298,14 @@ def test_a_failed_embedding_degrades_to_keyword_only(corpus: psycopg.Connection)
 def test_the_reranker_seam_is_actually_applied(corpus: psycopg.Connection) -> None:
     search = ContextSearch(
         conn=corpus,
-        client=FakeClient(FakeEmbeddings(index=0)),
+        client=FakeClient(FakeEmbeddings(index=0, runner_up=1)),
         embedding_model="fake",
         embedding_dimensions=DIMENSIONS,
         rerank=lambda _query, hits: list(reversed(hits)),
     )
     plain: ContextSearch = ContextSearch(
         conn=corpus,
-        client=FakeClient(FakeEmbeddings(index=0)),
+        client=FakeClient(FakeEmbeddings(index=0, runner_up=1)),
         embedding_model="fake",
         embedding_dimensions=DIMENSIONS,
     )
