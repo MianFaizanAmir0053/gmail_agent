@@ -100,12 +100,18 @@ def _old_poller(conn: psycopg.Connection, history_id: str | None, at: datetime) 
     )
 
 
-def _started(conn: psycopg.Connection, box: FakeMailbox) -> None:
-    """A mailbox already synced once: the cursor at its current id, the
-    switch-over done, and nothing left to backfill."""
-    _old_poller(conn, None, NOW)
-    _sync(conn, box)
-    conn.execute("UPDATE gmail_cursors SET backfill_until = feed_from - interval '91 days'")
+def _started(conn: psycopg.Connection, box: FakeMailbox, *, backfilled: bool = True) -> None:
+    """A mailbox already synced: the cursor at its current id, caught up and
+    switched over at NOW, and -- unless asked otherwise -- nothing left to
+    backfill."""
+    conn.execute(
+        """
+        INSERT INTO gmail_cursors (account, history_id, feed_from, switch_over_at,
+                                   caught_up_at, backfill_until)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (ME, str(box.history_id), NOW, NOW, NOW, NOW - timedelta(days=91) if backfilled else NOW),
+    )
 
 
 # --- the first run ----------------------------------------------------------
@@ -122,7 +128,8 @@ def test_the_first_run_starts_where_the_old_poller_stopped(mail: psycopg.Connect
 
     cursor = _cursor(mail)
     assert cursor.feed_from == last_pass
-    assert cursor.backfill_until == last_pass
+    # The backfill starts at `feed_from`; with nothing to store it went all the way.
+    assert cursor.backfill_until == last_pass - timedelta(days=90)
     assert cursor.history_id == str(box.history_id)
     assert cursor.caught_up_at == NOW
     assert report.reached_end
@@ -606,6 +613,106 @@ def test_every_window_is_in_epoch_seconds(mail: psycopg.Connection) -> None:
     for query in queries:
         assert re.search(r"after:\d+ before:\d+$", query), query
         assert "/" not in query and "category:primary" not in query
+
+
+# --- the backfill (20.5) ----------------------------------------------------------
+
+READ = {"INBOX", "CATEGORY_PERSONAL"}
+
+
+def test_the_backfill_reaches_ninety_days_before_feed_from_and_no_further(
+    mail: psycopg.Connection,
+) -> None:
+    box = FakeMailbox()
+    _started(mail, box, backfilled=False)
+    box.put("recent", labels=READ, at=NOW - timedelta(days=1))
+    box.put("updates", labels={"CATEGORY_UPDATES"}, at=NOW - timedelta(days=30))
+    box.put("sent", labels={"SENT"}, at=NOW - timedelta(days=60), sender=ME)
+    box.put("promo", labels={"INBOX", "CATEGORY_PROMOTIONS"}, at=NOW - timedelta(days=10))
+    box.put("too-old", labels=READ, at=NOW - timedelta(days=91))
+
+    _sync(mail, box)
+
+    rows = _rows(mail)
+    assert {m: rows[m]["arrived_via"] for m in ("recent", "updates", "sent")} == dict.fromkeys(
+        ("recent", "updates", "sent"), "backfill"
+    )
+    assert "promo" not in rows and "too-old" not in rows
+    assert _cursor(mail).backfill_until == NOW - timedelta(days=90)
+    listings = len(box.asked("messages.list"))
+    _sync(mail, box)
+    assert len(box.asked("messages.list")) == listings  # done: nothing listed again
+
+
+def test_the_backfill_never_stores_mail_newer_than_feed_from(mail: psycopg.Connection) -> None:
+    """Its windows end at `feed_from`; a listing's spare second is not stored."""
+    box = FakeMailbox()
+    last_pass = NOW - timedelta(hours=2)
+    _old_poller(mail, str(box.history_id), last_pass)
+    box.put("before", labels=READ, at=last_pass - timedelta(minutes=1))
+    box.put("at-the-instant", labels=READ, at=last_pass)
+    box.put("after", labels=READ, at=last_pass + timedelta(minutes=1))
+
+    _sync(mail, box)
+
+    rows = _rows(mail)
+    assert rows["before"]["arrived_via"] == "backfill"
+    assert "at-the-instant" not in rows and "after" not in rows
+
+
+def test_the_backfill_resumes_from_backfill_until_after_a_restart(
+    mail: psycopg.Connection,
+) -> None:
+    box = FakeMailbox()
+    _started(mail, box, backfilled=False)
+    for day in range(1, 11):
+        box.put(f"d{day}", labels=READ, at=NOW - timedelta(days=day, hours=12))
+
+    report = _sync(mail, box, clock=Clock(step=5.0))  # stopped part-way
+
+    assert report.stopped == "time"
+    reached = _cursor(mail).backfill_until
+    assert NOW - timedelta(days=90) < reached < NOW
+    _sync(mail, box)  # the restart
+
+    assert {f"d{day}" for day in range(1, 11)} <= set(_rows(mail))
+    assert len(box.fetched()) == len(set(box.fetched()))  # nothing fetched twice
+
+
+def test_the_backfill_only_spends_what_the_incremental_pass_left(
+    mail: psycopg.Connection,
+) -> None:
+    box = FakeMailbox()
+    _started(mail, box, backfilled=False)
+    for number in range(98):
+        box.deliver(f"new{number:02}", labels=PRIMARY, at=NOW)
+    for number in range(5):
+        box.put(f"old{number}", labels=READ, at=NOW - timedelta(days=2))
+    pacer = Pacer(clock=lambda: 0.0)
+
+    report = _sync(mail, box, pacer=pacer)
+
+    rows = _rows(mail)
+    assert {f"new{number:02}" for number in range(98)} <= set(rows)  # live mail first
+    assert sum(1 for m in rows if m.startswith("old")) <= 1
+    assert report.stopped == "quota"
+    names = [name for name, _ in box.calls]
+    first_listing = names.index("messages.list")
+    assert "history.list" not in names[first_listing:]
+
+
+def test_a_queued_message_older_than_ninety_days_is_dropped(mail: psycopg.Connection) -> None:
+    """A label change can touch years-old mail; only the last 90 days matter."""
+    box = FakeMailbox()
+    _started(mail, box)
+    box.put("ancient", labels={"INBOX", "CATEGORY_PROMOTIONS"}, at=NOW - timedelta(days=120))
+    box.relabel("ancient", remove={"CATEGORY_PROMOTIONS"}, add={"CATEGORY_PERSONAL"})
+
+    _sync(mail, box)
+
+    assert "ancient" in box.fetched()
+    assert "ancient" not in _rows(mail)
+    assert _queue(mail) == {}
 
 
 # --- the lock -------------------------------------------------------------------

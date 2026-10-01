@@ -82,6 +82,13 @@ limit, so nothing trashed during an outage is fed on stale labels."""
 WINDOW = timedelta(days=1)
 """A catch-up and the backfill list a day at a time, newest first."""
 
+BACKFILL_FOR = timedelta(days=90)
+"""How far back from `feed_from` the backfill reaches."""
+
+QUEUE_DROPS_AFTER = timedelta(days=90)
+"""A queued message older than this when fetched is dropped, not stored: a
+label change can touch years-old mail, and only the last 90 days matter."""
+
 STRIKES = 5
 """Failures of its own before a queued message is marked unreadable."""
 
@@ -278,6 +285,8 @@ def sync_once(
     if not run.halted():
         _work_queue(run)
     _close_gap(run)
+    if not run.halted():
+        _backfill(run, _reload(run))
     return report
 
 
@@ -573,6 +582,9 @@ def _work_queue(run: _Run) -> None:
             run.failed.add(message_id)
             _strike(conn, message_id)
             continue
+        if row.internal_at < run.started - QUEUE_DROPS_AFTER:
+            dequeue(conn, message_id)
+            continue
         with conn.transaction():
             _count(run.report, store(conn, run.account, row, _ARRIVALS[reason]))
             dequeue(conn, message_id)
@@ -587,22 +599,11 @@ def _switch_over(run: _Run, cursor: Cursor) -> None:
     Done when every listed message not yet stored has been fetched; a run
     that stops part-way lists again next time, and skips what it stored.
     """
-    try:
-        ids = run.gmail.message_ids(
-            SWITCH_OVER_QUERY, after=run.started - SWITCH_OVER_FOR, before=run.started
-        )
-    except ShareExhaustedError:
-        run.report.stopped = "quota"
+    ids = _list(
+        run, SWITCH_OVER_QUERY, run.started - SWITCH_OVER_FOR, run.started, "the switch-over"
+    )
+    if ids is None or not _store_listed(run, ids, "switch_over"):
         return
-    except Exception as exc:
-        run.failure(exc, "the switch-over listing")
-        return
-    have = stored_ids(run.conn, run.account, ids)
-    for message_id in ids:
-        if message_id in have:
-            continue
-        if not _fetch_and_store(run, message_id, "switch_over"):
-            return
     run.conn.execute(
         """
         UPDATE gmail_cursors SET switch_over_at = %s, updated_at = now()
@@ -611,6 +612,31 @@ def _switch_over(run: _Run, cursor: Cursor) -> None:
         (run.now(), run.account),
     )
     log.info("mail sync: switch-over listing done, %d message(s) listed", len(ids))
+
+
+def _list(run: _Run, query: str, after: datetime, before: datetime, what: str) -> list[str] | None:
+    """A window's ids, or None if the run must stop."""
+    try:
+        return run.gmail.message_ids(query, after=after, before=before)
+    except ShareExhaustedError:
+        run.report.stopped = "quota"
+    except Exception as exc:
+        run.failure(exc, what)
+    return None
+
+
+def _store_listed(
+    run: _Run, ids: list[str], arrived_via: ArrivedVia, *, before: datetime | None = None
+) -> bool:
+    """Fetch and store the listed messages not stored yet. False if the run
+    must stop first: what it stored stays, and the next run skips it."""
+    have = stored_ids(run.conn, run.account, ids)
+    for message_id in ids:
+        if message_id in have:
+            continue
+        if not _fetch_and_store(run, message_id, arrived_via, before=before):
+            return False
+    return True
 
 
 def _fetch_and_store(
@@ -738,13 +764,8 @@ def _list_gap(run: _Run, cursor: Cursor) -> None:
     progress = cursor.gap_progress or cursor.gap_until
     while progress > cursor.gap_from and not run.halted():
         start = max(cursor.gap_from, progress - WINDOW)
-        try:
-            ids = run.gmail.message_ids(D1_QUERY, after=start, before=progress)
-        except ShareExhaustedError:
-            run.report.stopped = "quota"
-            return
-        except Exception as exc:
-            run.failure(exc, "the catch-up's listing")
+        ids = _list(run, D1_QUERY, start, progress, "the catch-up's listing")
+        if ids is None:
             return
         with run.conn.transaction():
             for message_id in ids:
@@ -779,6 +800,47 @@ def _close_gap(run: _Run) -> None:
     ).rowcount
     if closed:
         log.info("mail sync: the catch-up is done")
+
+
+# --- the backfill ---------------------------------------------------------------
+
+
+def _backfill(run: _Run, cursor: Cursor) -> None:
+    """Last, with whatever quota the rest left (D3).
+
+    A day at a time, newest first, from `feed_from` back to 90 days before it,
+    listing D1's set and storing what D1 keeps. Its windows end at
+    `feed_from`, and nothing at or after it is stored: the feed starts an hour
+    before it, so a backfilled message must never look new. `backfill_until`
+    records how far back it has reached, so a restart resumes rather than
+    starting over; a day with no mail is recorded with the next one that has
+    some, or when the run stops.
+    """
+    floor = cursor.feed_from - BACKFILL_FOR
+    written = until = cursor.backfill_until
+    while until > floor and not run.halted():
+        start = max(floor, until - WINDOW)
+        ids = _list(run, D1_QUERY, start, until, "the backfill's listing")
+        if ids is None or not _store_listed(run, ids, "backfill", before=cursor.feed_from):
+            break
+        until = start
+        if ids:
+            written = _backfilled(run, written, until)
+    if until != written:
+        _backfilled(run, written, until)
+
+
+def _backfilled(run: _Run, old: datetime, new: datetime) -> datetime:
+    moved = run.conn.execute(
+        """
+        UPDATE gmail_cursors SET backfill_until = %s, updated_at = now()
+         WHERE account = %s AND backfill_until = %s
+        """,
+        (new, run.account, old),
+    ).rowcount
+    if not moved:
+        raise CursorMovedError(f"the backfill for {run.account} moved under this run")
+    return new
 
 
 # --- the lock -----------------------------------------------------------------
