@@ -21,6 +21,7 @@ Each result goes to `job_runs`, and a shortfall sends one alert a day.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -31,11 +32,11 @@ import psycopg
 from app.channel.channels import Channels, TelegramChannel, configured_channels
 from app.channel.webpush import WebPushChannel
 from app.config import Settings
-from app.google.auth import build_service, load_credentials
 from app.google.gmail import GmailClient, MessageGoneError, is_outage
-from app.mail import feed
+from app.mail import feed, quota
 from app.mail.messages import D1_QUERY, PRIMARY_QUERY, classify, owner_addresses, store, stored_ids
-from app.mail.sync import owners_of
+from app.mail.quota import ShareExhaustedError
+from app.mail.sync import load_cursor, owners_of, sync_client, sync_lock
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +53,20 @@ QUEUE_HOLDS_FOR = timedelta(hours=6)
 """How long the fetch queue may hold a row back from the feed. The queue tries
 each entry at every run, and five strikes release it; six hours on, the row
 has stalled all the same."""
+
+LOCK_WAIT = 180.0
+"""Seconds the recall waits for a sync run to let go of the lock: a run takes
+a minute, and one Gmail call in it half a minute more."""
+
+CHECKS_NEED = 500
+"""Units of the sync's share the checks want free before they start: a few
+listings, and a handful of fetches for anything missed."""
+
+
+class SyncBusyError(RuntimeError):
+    """The sync held its lock for longer than the recall waits for it. The
+    hourly job tries again."""
+
 
 IN_UPDATES = "category:updates -in:chats -in:drafts"
 IN_FORUMS = "category:forums -in:chats -in:drafts"
@@ -138,40 +153,21 @@ def recall(
     owners: Iterable[str] = (),
     now: datetime | None = None,
 ) -> RecallResult:
-    """The day's three checks. An outage while fetching raises: the checks
-    are only worth recording whole."""
+    """The day's three checks. The caller holds the sync's lock (`check`). An
+    outage while fetching raises, and so does a spent share: the checks are
+    only worth recording whole."""
     now = now or datetime.now(UTC)
     since, until = now - WINDOW_FROM, now - WINDOW_TO
     everyone = owner_addresses(account, *owners)
 
-    listed = gmail.message_ids(D1_QUERY, after=since, before=until)
-    have = stored_ids(conn, account, listed)
-    missed = repaired = 0
-    for message_id in listed:
-        if message_id in have:
-            continue
-        try:
-            row = classify(gmail.message_metadata(message_id), everyone)
-        except MessageGoneError:
-            continue  # deleted since it was listed: nothing to repair
-        except Exception as exc:
-            if is_outage(exc):
-                raise
-            log.warning("recall: %s could not be fetched (%s)", message_id, type(exc).__name__)
-            missed += 1
-            continue
-        outcome = store(conn, account, row, "recall")
-        if outcome != "not_kept":
-            missed += 1
-            repaired += outcome == "inserted"
-
+    listed, missed, repaired = _sync_recall(conn, gmail, account, everyone, since, until)
     eligible, stalled, held = _feed_recall(conn, account, since, until, now)
     too_old_young = _too_old_young(conn, since)
     checked, mismatched = _category_agreement(conn, gmail, account, since, until)
     result = RecallResult(
         since=since,
         until=until,
-        listed=len(listed),
+        listed=listed,
         missed=missed,
         repaired=repaired,
         eligible=eligible,
@@ -183,6 +179,67 @@ def recall(
     )
     log.info("recall: %s", result.summary())
     return result
+
+
+def _sync_recall(
+    conn: psycopg.Connection,
+    gmail: GmailClient,
+    account: str,
+    everyone: frozenset[str],
+    since: datetime,
+    until: datetime,
+) -> tuple[int, int, int]:
+    """(listed, missed, repaired).
+
+    Mail the sync already has in hand is no miss: what the fetch queue holds
+    (a catch-up's work, a fetch that failed), and mail older than the backfill
+    has reached -- the listing starts no earlier than `backfill_until`. A
+    missing message is fetched and stored, each in a savepoint of its own;
+    one that turns out stored after all was not missed.
+    """
+    cursor = load_cursor(conn, account)
+    start = since if cursor is None else max(since, cursor.backfill_until)
+    listed = gmail.message_ids(D1_QUERY, after=start, before=until) if start < until else []
+    known = stored_ids(conn, account, listed) | _queued(conn, listed)
+    missed = repaired = 0
+    for message_id in listed:
+        if message_id in known:
+            continue
+        try:
+            row = classify(gmail.message_metadata(message_id), everyone)
+        except MessageGoneError:
+            continue  # deleted since it was listed: nothing to repair
+        except ShareExhaustedError:
+            raise
+        except Exception as exc:
+            if is_outage(exc):
+                raise
+            log.warning("recall: %s could not be fetched (%s)", message_id, type(exc).__name__)
+            missed += 1
+            continue
+        try:
+            with conn.transaction():
+                outcome = store(conn, account, row, "recall")
+        except psycopg.DatabaseError as exc:
+            log.warning("recall: %s could not be stored (%s)", message_id, type(exc).__name__)
+            missed += 1
+            continue
+        # Unchanged or updated, the row was there after all; not kept, D1
+        # leaves the message out now.
+        if outcome == "inserted":
+            missed += 1
+            repaired += 1
+    return len(listed), missed, repaired
+
+
+def _queued(conn: psycopg.Connection, message_ids: list[str]) -> set[str]:
+    """Which of these the fetch queue holds, queued or unreadable."""
+    if not message_ids:
+        return set()
+    rows = conn.execute(
+        "SELECT message_id FROM gmail_fetch_queue WHERE message_id = ANY(%s)", (message_ids,)
+    ).fetchall()
+    return {row[0] for row in rows}
 
 
 def _feed_recall(
@@ -335,22 +392,58 @@ def _category_agreement(
 def run_daily(settings: Settings) -> RecallResult | None:
     """The scheduler's daily check. None before the first sync run: there is
     nothing to check yet. Alerts any shortfall, once a day."""
-    with psycopg.connect(settings.database_url, autocommit=True) as conn:
+    with _connect(settings.database_url) as conn:
         if not feed.active(conn):
             return None
-        gmail = GmailClient(build_service("gmail", "v1", load_credentials(settings)))
-        result = recall(conn, gmail, account=gmail.profile().address, owners=owners_of(settings))
-        codes = result.alerts()
-        if codes:
-            channels = configured_channels(settings)
-            send_alerts(
-                conn,
-                codes,
-                names=channels.names,
-                deliver=deliver_through(channels),
-                day=result.until.date().isoformat(),
-            )
+        return check(
+            conn, sync_client(settings), configured_channels(settings), owners=owners_of(settings)
+        )
+
+
+def check(
+    conn: psycopg.Connection,
+    gmail: GmailClient,
+    channels: Channels,
+    *,
+    owners: Iterable[str] = (),
+    now: datetime | None = None,
+    lock_wait: float = LOCK_WAIT,
+) -> RecallResult:
+    """The recall, then its alerts.
+
+    It holds the sync's lock, so no sync run moves the records while it reads
+    them, and its calls are charged to the sync's share (`gmail` is built as
+    the sync's own client is): it is the sync's work, and the rest of the
+    minute stays the pipeline's.
+    """
+    with sync_lock(conn, wait=True, timeout=lock_wait) as held:
+        if not held:
+            raise SyncBusyError("the mail sync held its lock")
+        _room_in_the_share()
+        result = recall(conn, gmail, account=gmail.profile().address, owners=owners, now=now)
+    codes = result.alerts()
+    if codes:
+        send_alerts(
+            conn,
+            codes,
+            names=channels.names,
+            deliver=deliver_through(channels),
+            day=result.until.date().isoformat(),
+        )
     return result
+
+
+def _room_in_the_share() -> None:
+    """Wait, a minute at most, for room in the sync's share. The run that has
+    just let go of the lock may have spent it, and a spend leaves the window
+    within the minute."""
+    deadline = time.monotonic() + quota.WINDOW
+    while quota.PACER.available(quota.SYNC) < CHECKS_NEED and time.monotonic() < deadline:
+        time.sleep(1.0)
+
+
+def _connect(database_url: str) -> psycopg.Connection:
+    return psycopg.connect(database_url, autocommit=True)
 
 
 # --- alerts ---------------------------------------------------------------------

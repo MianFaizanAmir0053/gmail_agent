@@ -985,18 +985,25 @@ def _backfilled(run: _Run, old: datetime, new: datetime) -> datetime:
 
 
 @contextmanager
-def sync_lock(conn: psycopg.Connection, *, wait: bool) -> Iterator[bool]:
+def sync_lock(
+    conn: psycopg.Connection, *, wait: bool, timeout: float | None = None
+) -> Iterator[bool]:
     """Hold the sync's advisory lock for the block.
 
     The scheduled job does not wait (`wait=False`): it is told False at once,
-    and skips its turn. The CLI waits for the scheduled run to finish.
+    and skips its turn. The CLI waits for the scheduled run to finish. The
+    recall waits at most `timeout` seconds, and is told False if the lock
+    stayed taken.
     """
-    if wait:
+    if wait and timeout is None:
         conn.execute("SELECT pg_advisory_lock(%s)", (LOCK,))
         held = True
     else:
-        row = conn.execute("SELECT pg_try_advisory_lock(%s)", (LOCK,)).fetchone()
-        held = bool(row and row[0])
+        held = _try_lock(conn)
+        deadline = time.monotonic() + (timeout or 0.0)
+        while wait and not held and time.monotonic() < deadline:
+            time.sleep(min(1.0, max(deadline - time.monotonic(), 0.0)))
+            held = _try_lock(conn)
     try:
         yield held
     finally:
@@ -1006,6 +1013,11 @@ def sync_lock(conn: psycopg.Connection, *, wait: bool) -> Iterator[bool]:
             except psycopg.Error:
                 # Closing the connection releases it all the same.
                 log.warning("could not release the mail sync's lock; the connection will")
+
+
+def _try_lock(conn: psycopg.Connection) -> bool:
+    row = conn.execute("SELECT pg_try_advisory_lock(%s)", (LOCK,)).fetchone()
+    return bool(row and row[0])
 
 
 # --- the command line (D8) --------------------------------------------------------

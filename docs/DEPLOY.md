@@ -471,8 +471,9 @@ released, and the rest are marked FAILED ("stranded by shutdown").
 ### 10.3 The quota
 
 Gmail allows 6,000 units per user per minute for everything. The sync,
-its queue, its catch-up and its backfill spend at most 2,000; the rest is
-the pipeline's and M17's. A fetch costs 20 units, a listing 5, a history page
+its queue, its catch-up, its backfill and the daily recall spend at most
+2,000; the rest is the pipeline's and M17's. The recall holds the sync's
+lock while it checks, so the two never run at once. A fetch costs 20 units, a listing 5, a history page
 2, and every retry costs the same again. One Gmail call -- waiting for the
 quota, retrying a 429 or a 5xx -- takes at most about 30 seconds in all.
 

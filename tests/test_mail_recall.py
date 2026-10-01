@@ -16,11 +16,20 @@ import psycopg
 import pytest
 from fake_gmail import FakeMailbox
 
+from app.channel.channels import Channels
 from app.google.gmail import GmailClient
-from app.mail import feed
+from app.mail import feed, quota
 from app.mail.messages import apply_labels
 from app.mail.quota import Pacer
-from app.mail.recall import RecallResult, held_intervals, recall, send_alerts
+from app.mail.recall import (
+    RecallResult,
+    SyncBusyError,
+    check,
+    held_intervals,
+    recall,
+    send_alerts,
+)
+from app.mail.sync import sync_lock
 from app.store.ledger import MessageLedger, MessageStatus
 
 pytestmark = pytest.mark.integration
@@ -76,9 +85,13 @@ def _store(
     )
 
 
+def _client(box: FakeMailbox) -> GmailClient:
+    """As the recall's own: charged to the sync's share."""
+    return GmailClient(box, pacer=Pacer(), share=quota.SYNC, retry_for=0)
+
+
 def _recall(conn: psycopg.Connection, box: FakeMailbox) -> RecallResult:
-    gmail = GmailClient(box, pacer=Pacer(), retry_for=0)
-    return recall(conn, gmail, account=ME, owners=(ME,), now=NOW)
+    return recall(conn, _client(box), account=ME, owners=(ME,), now=NOW)
 
 
 def _audit(conn: psycopg.Connection, kind: str, at: datetime) -> None:
@@ -117,6 +130,57 @@ def test_a_missing_id_is_stored_and_fed_and_gives_one_alert(mail: psycopg.Connec
             mail, result.alerts(), names=frozenset({"web_push"}), deliver=deliver, day="2020-03-10"
         )
     assert asked == [("Mail sync missed messages", frozenset())]
+
+
+def test_mail_the_sync_already_knows_about_is_not_a_miss(mail: psycopg.Connection) -> None:
+    """Queued for a fetch (a catch-up's, or one that failed), or older than
+    the backfill has reached: the sync has it in hand, and fetching it here
+    would only spend its quota."""
+    mail.execute(
+        "UPDATE gmail_cursors SET feed_from = %s, backfill_until = %s",
+        (NOW - timedelta(hours=3), NOW - timedelta(hours=12)),
+    )
+    box = FakeMailbox()
+    box.put("queued", labels=PRIMARY, at=NOW - timedelta(hours=5))
+    box.put("not-backfilled-yet", labels=PRIMARY, at=NOW - timedelta(hours=20))
+    box.put("missed", labels=PRIMARY, at=NOW - timedelta(hours=6))
+    mail.execute("INSERT INTO gmail_fetch_queue (message_id, reason) VALUES ('queued', 'catch_up')")
+
+    result = _recall(mail, box)
+
+    assert (result.missed, result.repaired) == (1, 1)
+    assert box.fetched() == ["missed"]
+
+
+def test_mail_stored_while_the_recall_looked_is_not_a_miss(mail: psycopg.Connection) -> None:
+    """A store that comes back unchanged means the row was there after all."""
+    box = FakeMailbox()
+    box.put("raced", labels=PRIMARY, at=NOW - timedelta(hours=5))
+    fetch = box._get
+
+    def stored_meanwhile(**kwargs: Any) -> Any:
+        _store(mail, kwargs["id"], at=NOW - timedelta(hours=5))
+        return fetch(**kwargs)
+
+    box._get = stored_meanwhile  # type: ignore[method-assign]
+
+    assert _recall(mail, box).missed == 0
+
+
+def test_the_recall_waits_for_the_syncs_lock_and_gives_up_in_time(
+    mail: psycopg.Connection, migrated_database: str
+) -> None:
+    """A sync run and the recall never interleave; one that held the lock too
+    long fails the recall, and the hourly job tries again."""
+    with (
+        psycopg.connect(migrated_database, autocommit=True) as other,
+        sync_lock(other, wait=False) as held,
+    ):
+        assert held
+        with pytest.raises(SyncBusyError):
+            check(mail, _client(FakeMailbox()), Channels([]), now=NOW, lock_wait=0.3)
+
+    assert check(mail, _client(FakeMailbox()), Channels([]), now=NOW).alerts() == []
 
 
 def test_a_clean_day_raises_nothing(mail: psycopg.Connection) -> None:

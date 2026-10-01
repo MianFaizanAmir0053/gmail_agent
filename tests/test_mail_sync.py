@@ -996,6 +996,20 @@ def test_a_scheduled_run_skips_its_turn_while_another_holds_the_lock(
             assert after
 
 
+def test_a_wait_for_the_lock_can_be_bounded(migrated_database: str) -> None:
+    """The recall waits for a sync run to finish, but not for ever."""
+    with (
+        psycopg.connect(migrated_database, autocommit=True) as other,
+        psycopg.connect(migrated_database, autocommit=True) as conn,
+    ):
+        with sync_lock(other, wait=False) as held:
+            assert held
+            with sync_lock(conn, wait=True, timeout=0.3) as waited:
+                assert not waited
+        with sync_lock(conn, wait=True, timeout=0.3) as waited:
+            assert waited
+
+
 def test_a_cli_run_waits_for_the_scheduled_run(migrated_database: str) -> None:
     order: list[str] = []
     with psycopg.connect(migrated_database, autocommit=True) as scheduled:
