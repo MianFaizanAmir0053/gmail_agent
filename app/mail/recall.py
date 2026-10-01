@@ -7,12 +7,16 @@ once a day after 05:15 UTC (`app.jobs.scheduler`):
 - **Sync recall.** The ids Gmail lists for the window, using D1's set, are
   checked against `gmail_messages`. Missing ones are fetched and stored, so a
   miss is repaired as well as reported; repaired inbound mail is fed if the
-  rule takes it.
+  rule takes it. Mail the sync already has in hand -- queued for a fetch, or
+  older than the backfill has reached -- is no miss. The recall holds the
+  sync's lock, and spends the sync's share.
 - **Feed recall.** A stored row that has met the feed's rule for over an
-  hour, with no ledger row, means the feed stalled. Hours when M17 had paused
-  the agent, or its spending cap had stopped work, are left out: the audit
-  log records both. A `SKIPPED` "too old" record for mail under a day old
-  means the age rule is wrong.
+  hour, counted from when it began to (`offered_since`), with no ledger row,
+  means the feed stalled. Time when M17 had paused the agent, or its spending
+  cap had stopped work, is taken off the wait: the audit log records both. A
+  row the fetch queue has held back for over six hours has stalled too. A
+  `SKIPPED` "too old" record for mail under a day old means the age rule is
+  wrong.
 - **Category agreement, both ways.** Ids Gmail lists as not in the four other
   tabs must be `primary` here; ids it lists in Updates or Forums must not be.
 
