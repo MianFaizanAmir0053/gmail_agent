@@ -149,7 +149,11 @@ catch-up from `sync_state.updated_at`.
 is not in the other four categories (`is:unread -category:promotions
 -category:social -category:updates -category:forums -in:chats`, as an epoch
 window) is fetched and stored. That is what the old poller would still have
-reached, had its page of ten not overflowed. `switch_over_at` records it.
+reached, had its page of ten not overflowed. `switch_over_at` records it. The
+window runs to the moment of the listing, not to the run's start: on a fresh
+database, mail accepted between the run's start (`feed_from`) and the profile
+read that set the cursor is in no history page after the cursor, and newer
+than anything the backfill stores.
 
 **Incremental passes.** `history.list` from the cursor, with types
 `messageAdded`, `messageDeleted`, `labelAdded` and `labelRemoved`, page by

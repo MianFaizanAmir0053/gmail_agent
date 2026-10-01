@@ -160,6 +160,38 @@ def test_a_fresh_database_starts_from_the_mailbox_as_it_is_now(mail: psycopg.Con
     assert (cursor.history_id, cursor.feed_from) == ("4242", NOW)
 
 
+def test_mail_accepted_while_a_fresh_first_run_reads_the_profile_is_not_lost(
+    mail: psycopg.Connection,
+) -> None:
+    """`feed_from` is the run's start, and the cursor is the profile's id,
+    read a moment later. Mail accepted in between is in no history page after
+    the cursor and newer than anything the backfill stores, so the
+    switch-over listing must reach past the profile read."""
+    box = FakeMailbox()
+    _old_poller(mail, None, NOW - timedelta(days=30))
+    read_profile = box._profile
+
+    def profile_after_a_delivery(**kwargs: Any) -> Any:
+        if "in-between" not in box.messages:
+            box.deliver("in-between", labels=PRIMARY, at=NOW + timedelta(seconds=20))
+        return read_profile(**kwargs)
+
+    box._profile = profile_after_a_delivery  # type: ignore[method-assign]
+    readings = iter([NOW])  # the run's start; a minute later from then on
+
+    sync_once(
+        mail,
+        _client(box),
+        owners=(ME,),
+        now=lambda: next(readings, NOW + timedelta(minutes=1)),
+        clock=Clock(),
+    )
+
+    assert _cursor(mail).feed_from == NOW
+    assert "in-between" in _rows(mail)
+    assert feed.candidates(mail, 10, now=NOW + timedelta(minutes=1)) == ["in-between"]
+
+
 def test_an_expired_old_cursor_makes_the_first_run_a_catch_up(mail: psycopg.Connection) -> None:
     box = FakeMailbox()
     last_pass = NOW - timedelta(days=9)

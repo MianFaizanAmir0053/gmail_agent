@@ -457,7 +457,7 @@ The sync runs every two minutes, each run at most a minute.
    last pass. The feed takes mail from `feed_from` less an hour; nothing
    older ever reaches the pipeline.
 3. **The switch-over listing,** once: unread mail outside the four other tabs
-   from the last seven days is stored.
+   from the last seven days, up to the moment of the listing, is stored.
 4. **The backfill** works back 90 days from `feed_from`, one day at a time,
    in whatever quota is left. A busy mailbox takes hours. Nothing waits for
    it, and nothing it stores is fed.

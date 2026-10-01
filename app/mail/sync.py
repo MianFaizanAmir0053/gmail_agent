@@ -708,11 +708,17 @@ def _work_queue(run: _Run, *, floor: datetime) -> None:
 def _switch_over(run: _Run, cursor: Cursor) -> None:
     """Once: unread mail outside the four other tabs, from the last seven days.
 
+    The window runs to the listing itself, not to the run's start. On a
+    fresh database `feed_from` is the run's start and the cursor is the
+    profile's id, read a moment later: mail accepted in between is in no
+    history page after the cursor, and newer than anything the backfill
+    stores. What the listing shares with history is stored once.
+
     Done when every listed message not yet stored has been fetched; a run
     that stops part-way lists again next time, and skips what it stored.
     """
     ids = _list(
-        run, SWITCH_OVER_QUERY, run.started - SWITCH_OVER_FOR, run.started, "the switch-over"
+        run, SWITCH_OVER_QUERY, run.started - SWITCH_OVER_FOR, run.now(), "the switch-over"
     )
     if ids is None or not _store_listed(run, ids, "switch_over"):
         return
