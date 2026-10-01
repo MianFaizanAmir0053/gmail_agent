@@ -59,6 +59,7 @@ REASONS: dict[str, str] = {
     "too_costly": "too costly to read",
     "exhausted": "attempts exhausted",
     "naive": "a time without a zone",
+    "settled": "settled without running",
 }
 """The only reasons a row can give. Fixed phrases, so a statistic can count
 them and no email can hide in one."""

@@ -577,6 +577,7 @@ def test_a_decision_that_never_reaches_the_graph_returns_as_no_effect(
     """The owner's card comes back, rather than the proposal being lost."""
     session = _counting(conn, fail_resumes=3)
     _parked(conn, session)
+    old = _token(conn)
     _confirm(conn, "m1", revision=1)
 
     apply_open(session)
@@ -588,6 +589,11 @@ def test_a_decision_that_never_reaches_the_graph_returns_as_no_effect(
     assert _proposal(conn) == ("pending", 1, None)
     assert _outcomes(conn) == [("no_effect", ATTEMPTS_EXHAUSTED, True)]
     assert _ledger(conn) is MessageStatus.AWAITING_APPROVAL
+    # No approval outlives its decision (M17, D2), and the card comes back
+    # under a new generation: the same hash, yet the old card's Confirm dies.
+    assert _action(conn) == ("refused", "attempts exhausted", False)
+    stale = decide(conn, "m1", action="confirm", revision=1, via="web", token=old, dry_run=True)
+    assert stale.status == "stale"
     assert _confirm(conn, "m1", revision=1).status == "queued"
 
 
@@ -706,6 +712,7 @@ def test_a_thread_moved_behind_the_workers_back_is_shown_again(conn: psycopg.Con
     assert _ledger(conn) is MessageStatus.AWAITING_APPROVAL
     assert announced == ["m1"]
     assert session.resumes == 0
+    assert _action(conn) == ("refused", "the proposal changed", False)
 
 
 @pytest.mark.integration
@@ -1059,14 +1066,23 @@ def test_giving_up_on_a_dry_run_settles_it_as_skipped(conn: psycopg.Connection) 
 
 
 @pytest.mark.integration
-def test_a_refusal_cut_off_at_the_ledger_keeps_its_reason(conn: psycopg.Connection) -> None:
-    """Approved under dry run, then run live: the registry refuses it. The
-    re-drive returns the stored refusal, and the decision gives its reason."""
+def test_a_mode_change_after_the_resume_fails_visibly_and_keeps_its_reason(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D3's "a mode change after a resume": resumed, then held at `act` by a
+    Pause, then a restart with DRY_RUN off. The registry refuses it; the
+    ledger's mark is cut off once; the re-drive returns the stored refusal,
+    and the decision gives its reason."""
     calendar = FakeCalendar()  # parked and approved under dry run
     session = _counting(conn, calendar=calendar, ledger=BrokenLedger(MessageLedger(conn), 1))
     _parked(conn, session)
     _confirm(conn, "m1", revision=1)
-    calendar.dry_run = False  # a restart with DRY_RUN off
+    conn.execute("UPDATE control SET paused = true")
+    with monkeypatch.context() as patched:
+        patched.setattr(worker, "control", SimpleNamespace(is_paused=lambda conn: False))
+        assert apply_open(session) == [("m1", "paused")]  # held at `act`
+    conn.execute("UPDATE control SET paused = false")
+    calendar.dry_run = False  # the restart
 
     assert apply_open(session) == [("m1", "retrying")]
     _make_due(conn)
@@ -1075,3 +1091,136 @@ def test_a_refusal_cut_off_at_the_ledger_keeps_its_reason(conn: psycopg.Connecti
     assert calendar.calls == 0
     assert _outcomes(conn) == [("failed", audit.REASONS["mode"], True)]
     assert _action(conn) == ("refused", audit.REASONS["mode"], False)
+
+
+# --- checks before a Confirm (M17, 17.7) --------------------------------------------
+
+
+def _token(conn: psycopg.Connection) -> str:
+    row = conn.execute(
+        "SELECT args_hash, dry_run, generation FROM proposals WHERE message_id = 'm1'"
+    ).fetchone()
+    assert row is not None
+    return card_token(row[0], row[1], row[2])
+
+
+@pytest.mark.integration
+def test_a_confirm_approved_under_dry_run_and_applied_live_expires_the_proposal(
+    conn: psycopg.Connection,
+) -> None:
+    """The owner's end test, in miniature: approved under dry run, then a
+    restart with DRY_RUN off. Nothing runs, the proposal is expired, and the
+    old card is refused as stale."""
+    calendar = FakeCalendar()
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    old = _token(conn)
+    _confirm(conn, "m1", revision=1)
+    calendar.dry_run = False
+    announced: list[str] = []
+
+    assert apply_open(session, announce=lambda r: announced.append(r.message_id)) == [
+        ("m1", "no_effect")
+    ]
+    assert session.resumes == 0
+    assert announced == []  # expired, never shown again
+    assert _action(conn) == ("refused", audit.REASONS["mode"], False)
+
+    assert apply_open(session) == [("m1", "rejected")]  # the expiry's sweep
+
+    entry = MessageLedger(conn).get("m1")
+    assert entry is not None
+    assert (entry.status, entry.error) == (MessageStatus.REJECTED, "made under another mode")
+    assert _outcomes(conn) == [
+        ("no_effect", "made under another mode", True),
+        ("rejected", "made under another mode", True),
+    ]
+    assert calendar.calls == 0
+    stale = decide(conn, "m1", action="confirm", revision=1, via="web", token=old, dry_run=False)
+    assert stale.status == "stale"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("change", ["calendar", "canonical form"])
+def test_a_confirm_whose_arguments_changed_returns_to_the_owner(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """A deploy moved the calendar, or changed the canonical form, so the
+    approval no longer matches what would run. The proposal comes back as it
+    is now, under a new generation."""
+    calendar = FakeCalendar()
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    old = _token(conn)
+    _confirm(conn, "m1", revision=1)
+    if change == "calendar":
+        calendar.calendar_id = "another-calendar"
+    else:
+        monkeypatch.setattr("app.policy.hashing.HASH_VERSION", 2)
+    announced: list[tuple[str, int]] = []
+
+    applied = apply_open(
+        session, announce=lambda record: announced.append((record.message_id, record.generation))
+    )
+
+    assert applied == [("m1", "no_effect")]
+    assert session.resumes == 0
+    assert announced == [("m1", 2)]
+    assert _proposal(conn) == ("pending", 1, None)
+    assert _outcomes(conn) == [("no_effect", "the proposal changed", True)]
+    assert _action(conn) == ("refused", "the proposal changed", False)
+    stale = decide(conn, "m1", action="confirm", revision=1, via="web", token=old, dry_run=True)
+    assert stale.status == "stale"
+    assert _confirm(conn, "m1", revision=1).status == "queued"  # the new card's
+
+
+@pytest.mark.integration
+def test_a_confirm_recorded_before_m17_returns_to_the_owner(conn: psycopg.Connection) -> None:
+    """It has no approval: it is shown again ("approve again"), never run."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    conn.execute("DELETE FROM outbound_actions WHERE message_id = 'm1'")  # as M16 left it
+
+    assert apply_open(session) == [("m1", "no_effect")]
+
+    assert session.resumes == 0
+    assert _outcomes(conn) == [("no_effect", "approve again", True)]
+    assert _proposal(conn) == ("pending", 1, None)
+    generation = conn.execute("SELECT generation FROM proposals WHERE message_id = 'm1'").fetchone()
+    assert generation == (2,)
+
+
+@pytest.mark.integration
+def test_a_confirm_recorded_before_m17_under_the_other_mode_is_expired(
+    conn: psycopg.Connection,
+) -> None:
+    """Returned to the owner it would be shown as if it could run: it is
+    expired instead (D2)."""
+    calendar = FakeCalendar()
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    conn.execute("DELETE FROM outbound_actions WHERE message_id = 'm1'")  # as M16 left it
+    calendar.dry_run = False
+
+    assert apply_open(session) == [("m1", "no_effect")]
+
+    assert _outcomes(conn)[0] == ("no_effect", "made under another mode", True)
+    assert conn.execute(
+        "SELECT action, reason FROM decisions WHERE message_id = 'm1' AND outcome IS NULL"
+    ).fetchone() == ("sweep", "made under another mode")
+
+
+@pytest.mark.integration
+def test_a_failed_settle_refuses_an_approval_left_with_it(conn: psycopg.Connection) -> None:
+    """No action outlives its decision, whatever settles it (D2)."""
+    session, _ = _world(conn)
+    _parked(conn, session)
+    result = _confirm(conn, "m1", revision=1)
+    assert result.decision_id is not None
+
+    with conn.transaction():
+        settle_failed(conn, result.decision_id, "m1", reason="late", action_reason="exhausted")
+
+    assert _action(conn) == ("refused", audit.REASONS["exhausted"], False)

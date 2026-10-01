@@ -82,11 +82,14 @@ def decide(
     via: Via,
     token: str | None = None,
     dry_run: bool | None = None,
+    reason: str | None = None,
 ) -> DecisionResult:
     """Validate, then claim the proposal and enqueue the decision atomically.
 
     A Confirm needs `token`, from the card the owner tapped, and `dry_run`,
-    the setting this process runs under. Other actions use neither.
+    the setting this process runs under. Other actions use neither. A sweep
+    may give a `reason`, one of the audit log's fixed phrases; the worker
+    hands it to the graph, and it becomes the ledger's.
 
     The caller's connection must commit: autocommit, or `app.store.db.connect`,
     which commits on exit. On a connection already inside a transaction, the
@@ -99,6 +102,8 @@ def decide(
         return DecisionResult("invalid", detail="only an operator sweeps")
     if via == "sweep" and action != "sweep":
         return DecisionResult("invalid", detail="the sweep path only sweeps")
+    if reason is not None and (action != "sweep" or reason not in audit.REASONS.values()):
+        return DecisionResult("invalid", detail="only a sweep gives a reason, and a fixed one")
 
     correction = (correction or "").strip()
     if "\x00" in correction:
@@ -156,8 +161,8 @@ def decide(
             """
             INSERT INTO decisions
                    (message_id, revision, action, via, action_type, pipeline_version,
-                    correction, decided_at, latency_seconds)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s)
+                    correction, reason, decided_at, latency_seconds)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), %s)
             RETURNING id
             """,
             (
@@ -168,12 +173,40 @@ def decide(
                 action_type,
                 pipeline_version,
                 correction if action == "edit" else None,
+                reason,
                 float(latency),
             ),
         ).fetchone()
 
     assert inserted is not None
     return DecisionResult("queued", decision_id=int(inserted[0]))
+
+
+def expire(conn: psycopg.Connection, message_id: str, revision: int) -> bool:
+    """End a pending proposal made under another `DRY_RUN` (M17, D2). True
+    when this call recorded the expiry.
+
+    A sweep, so the thread ends REJECTED the way M15's sweep ends it, with
+    "made under another mode" as the reason. Turning `DRY_RUN` off starts
+    afresh: the proposal is never shown again as if it could run. The sweep
+    and its audit row are one transaction; an expiry already queued is not
+    recorded twice.
+    """
+    phrase = audit.REASONS["mode"]
+    with conn.transaction():
+        result = decide(
+            conn, message_id, action="sweep", revision=revision, via="sweep", reason=phrase
+        )
+        if result.status != "queued" or result.detail == "already queued":
+            return False
+        audit.record(
+            conn,
+            "proposal_expired",
+            decision_id=result.decision_id,
+            message_id=message_id,
+            reason=phrase,
+        )
+    return True
 
 
 def _confirm(

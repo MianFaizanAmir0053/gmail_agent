@@ -215,6 +215,8 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
         "approved": action == "confirm",
         "correction": "",
         "swept": action == "sweep",
+        # Why an operator or the worker swept it, when it says (M17, D2).
+        "sweep_reason": str(decision.get("reason") or "") if action == "sweep" else "",
         # What `decide()` recorded for a Confirm (M17, D2). Without it, `act`
         # refuses: a Confirm from before M17 never runs unchecked.
         "approval": decision.get("approval") if action == "confirm" else None,
@@ -274,7 +276,7 @@ def reject(deps: Deps, state: GraphState) -> GraphState:
     if state.get("review_decision") == "reject":
         reason = "; ".join(state.get("review_issues", [])) or "rejected by reviewer"
     elif state.get("swept"):
-        reason = SWEEP_REASON
+        reason = state.get("sweep_reason") or SWEEP_REASON
     else:
         reason = "declined by user"
     deps.ledger.mark(state["message_id"], MessageStatus.REJECTED, error=reason)

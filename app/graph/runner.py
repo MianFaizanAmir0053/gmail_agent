@@ -98,6 +98,11 @@ class GraphSession:
         """
         return self._run(message_id, None)
 
+    @property
+    def dry_run(self) -> bool:
+        """The `DRY_RUN` this session runs under."""
+        return self.deps.calendar.dry_run
+
     def binding(self) -> Binding:
         """What this session binds proposals to (M17, D2): the calendar its
         actions write to, and the key of the hash."""

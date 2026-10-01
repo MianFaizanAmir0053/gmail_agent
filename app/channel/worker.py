@@ -9,7 +9,7 @@ applied is recognised from that state and never applied twice.
 
 | Stored state                                   | Step                          |
 |------------------------------------------------|-------------------------------|
-| Parked at the decision's revision              | resume                        |
+| Parked at the decision's revision              | resume, a Confirm once checked |
 | Parked at the next revision, after an edit     | settle: reparked              |
 | Ledger final                                   | settle: that status           |
 | Stopped mid-graph, `act` not next              | re-drive                      |
@@ -31,6 +31,7 @@ from typing import Any, Literal
 
 import psycopg
 
+from app.channel.decide import expire
 from app.channel.park import (
     Announce,
     ProposalRecord,
@@ -40,8 +41,8 @@ from app.channel.park import (
 )
 from app.graph.runner import GraphSession, ThreadView
 from app.policy import audit, control
-from app.policy.hashing import Binding
-from app.policy.registry import Approval, PausedError
+from app.policy.hashing import Binding, bound
+from app.policy.registry import Approval, PausedError, refuse_approved
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
 log = logging.getLogger(__name__)
@@ -102,6 +103,9 @@ class OpenDecision:
     Confirm left open by M16."""
     nonce: str | None = field(default=None, repr=False)
     action_status: str | None = None
+    reason: str | None = None
+    """Why a sweep was recorded, when it says: the graph ends the thread with
+    it (M17, D2's expiry)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,14 +226,135 @@ def _advance(session: GraphSession, decision: OpenDecision, announce: Announce |
 
         if step.kind == "settle":
             return _settle(
-                session.conn, decision, step, view, ledger_status, announce, session.binding()
+                session.conn,
+                decision,
+                step,
+                view,
+                ledger_status,
+                announce,
+                session.binding(),
+                dry_run=session.dry_run,
             )
         if step.kind == "resume":
+            if decision.action == "confirm":
+                returned = _check_confirm(session, decision, view, ledger_status, announce)
+                if returned is not None:
+                    return returned
             session.resume(decision.message_id, _resume_value(decision))
         else:
             session.redrive(decision.message_id)
 
     raise RuntimeError(f"no progress on {decision.message_id} after {MAX_PASSES} passes")
+
+
+def _check_confirm(
+    session: GraphSession,
+    decision: OpenDecision,
+    view: ThreadView,
+    ledger_status: MessageStatus | None,
+    announce: Announce | None,
+) -> str | None:
+    """Before a Confirm is applied (M17, D2). Returns its outcome when it is
+    not applied, or None to apply it.
+
+    - A Confirm recorded before M17 has no approval: the proposal goes back
+      to the owner ("approve again").
+    - An approval made under another `DRY_RUN` is never run: the proposal is
+      expired, as at boot.
+    - An approval whose arguments the current code would build differently
+      -- a deploy changed the canonical form, the description or the
+      calendar -- is not run either: the proposal goes back to the owner with
+      what is true now, under the next generation.
+
+    The registry checks again at execution; these checks are what let a
+    failed one end cleanly, with the thread still parked.
+    """
+    if decision.action_id is None:
+        return _return_to_owner(
+            session, decision, view, ledger_status, announce, action_reason="legacy"
+        )
+    row = session.conn.execute(
+        "SELECT status, tool, args_hash, dry_run FROM outbound_actions WHERE id = %s",
+        (decision.action_id,),
+    ).fetchone()
+    if row is None or row[0] != "approved":
+        return None  # the registry answers for anything already under way
+    _, tool, digest, dry_run = row
+    if dry_run != session.dry_run:
+        return _expire_queued(session.conn, decision, view)
+    assert view.payload is not None
+    if bound(decision.message_id, view.payload.get("proposed") or {}, session.binding()) != (
+        tool,
+        digest,
+    ):
+        return _return_to_owner(
+            session, decision, view, ledger_status, announce, action_reason="changed"
+        )
+    return None
+
+
+def _return_to_owner(
+    session: GraphSession,
+    decision: OpenDecision,
+    view: ThreadView,
+    ledger_status: MessageStatus | None,
+    announce: Announce | None,
+    *,
+    action_reason: str,
+    reason: str | None = None,
+) -> str:
+    """Settle the decision as `no_effect` and show the proposal again, as it
+    is now: the current tool and hash, and the next generation, so a Confirm
+    from any earlier card is refused as stale. Its action, if any, is refused.
+    """
+    assert view.payload is not None and ledger_status is not None
+    conn = session.conn
+    if _made_under(view.payload) != session.dry_run:
+        # Never shown again as if it could run (D2): expired instead.
+        return _expire_queued(conn, decision, view)
+    with conn.transaction():
+        if not _close(
+            conn,
+            decision.id,
+            "no_effect",
+            reason=reason or audit.REASONS[action_reason],
+            action_reason=action_reason,
+        ):
+            return "already settled"
+        record = proposal_from(decision.message_id, view.payload, view.revision, session.binding())
+        record = replace(record, generation=write_park(conn, record, ledger_status=ledger_status))
+    if announce is not None:
+        _announce(announce, record)
+    return "no_effect"
+
+
+def _made_under(payload: dict[str, Any]) -> bool:
+    """The `DRY_RUN` a parked payload was made under. Unrecorded counts as a
+    dry run, as the park step reads it."""
+    return bool(payload.get("dry_run", True))
+
+
+def _expire_queued(conn: psycopg.Connection, decision: OpenDecision, view: ThreadView) -> str:
+    """A proposal made under the other `DRY_RUN`, on its way back to the
+    owner. Its decision settles as `no_effect`, any action is refused, and the
+    proposal is expired: a sweep, recorded in the same transaction, ends the
+    thread on the next pass. Nothing is announced."""
+    phrase = audit.REASONS["mode"]
+    with conn.transaction():
+        if not _close(conn, decision.id, "no_effect", reason=phrase, action_reason="mode"):
+            return "already settled"
+        conn.execute(
+            """
+            UPDATE proposals SET status = 'pending', generation = generation + 1, updated_at = now()
+             WHERE message_id = %s AND status = 'deciding'
+            """,
+            (decision.message_id,),
+        )
+        if not expire(conn, decision.message_id, view.revision):
+            # Rolls the settle back: the decision stays open and is tried
+            # again, rather than leaving a live proposal from the other mode.
+            raise RuntimeError(f"could not expire {decision.message_id}")
+    return "no_effect"
 
 
 def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce | None) -> str:
@@ -250,24 +375,39 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
         step = step_for(view, ledger_status, decision, ledger_error=entry.error if entry else None)
 
         if step.kind == "settle":
-            return _settle(conn, decision, step, view, ledger_status, announce, session.binding())
+            return _settle(
+                conn,
+                decision,
+                step,
+                view,
+                ledger_status,
+                announce,
+                session.binding(),
+                dry_run=session.dry_run,
+            )
         if step.kind == "redrive" and decision.action_status in ("executing", "done"):
             return _unfinished_write(session, decision)
         if step.kind == "redrive" and decision.action_status == "dry_run":
             return _settle_dry_run(conn, decision)
 
+        if step.kind == "resume":
+            return _return_to_owner(
+                session,
+                decision,
+                view,
+                ledger_status,
+                announce,
+                action_reason="exhausted",
+                reason=ATTEMPTS_EXHAUSTED,
+            )
         with conn.transaction():
-            if step.kind == "resume":
-                if _close(conn, decision.id, "no_effect", reason=ATTEMPTS_EXHAUSTED):
-                    conn.execute(
-                        """
-                        UPDATE proposals SET status = 'pending', updated_at = now()
-                         WHERE message_id = %s AND status = 'deciding'
-                        """,
-                        (decision.message_id,),
-                    )
-                return "no_effect"
-            settle_failed(conn, decision.id, decision.message_id, reason=ATTEMPTS_EXHAUSTED)
+            settle_failed(
+                conn,
+                decision.id,
+                decision.message_id,
+                reason=ATTEMPTS_EXHAUSTED,
+                action_reason="exhausted",
+            )
             return "failed"
     except Exception:
         # Even the clean settle failed -- a surprise constraint, a conflicting
@@ -279,7 +419,13 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
             _unconfirmed(conn, decision)
             return "unconfirmed"
         with conn.transaction():
-            settle_failed(conn, decision.id, decision.message_id, reason=ATTEMPTS_EXHAUSTED)
+            settle_failed(
+                conn,
+                decision.id,
+                decision.message_id,
+                reason=ATTEMPTS_EXHAUSTED,
+                action_reason="exhausted",
+            )
         return "failed"
 
 
@@ -289,6 +435,8 @@ def _resume_value(decision: OpenDecision) -> dict[str, Any]:
     value: dict[str, Any] = {"action": decision.action, "correction": decision.correction or ""}
     if decision.action_id is not None and decision.nonce is not None:
         value["approval"] = Approval(decision.action_id, decision.nonce).to_state()
+    if decision.action == "sweep" and decision.reason:
+        value["reason"] = decision.reason
     return value
 
 
@@ -432,16 +580,22 @@ def settle_decided(
 
 
 def settle_failed(
-    conn: psycopg.Connection, decision_id: int, message_id: str, *, reason: str
+    conn: psycopg.Connection,
+    decision_id: int,
+    message_id: str,
+    *,
+    reason: str,
+    action_reason: str = "settled",
 ) -> bool:
     """Nothing more can be done for this decision. Must run inside a transaction.
 
     The ledger becomes FAILED only from `awaiting_approval`: a message that
     reached a final status keeps it, and with it any calendar event id.
     Returns False, changing nothing, if the decision was already settled.
+    An action still `approved` is refused with `action_reason`.
     """
     require_transaction(conn)
-    if not _close(conn, decision_id, "failed", reason=reason):
+    if not _close(conn, decision_id, "failed", reason=reason, action_reason=action_reason):
         return False
     _mark_failed(conn, message_id, reason)
     return True
@@ -455,14 +609,24 @@ def _settle(
     ledger_status: MessageStatus | None,
     announce: Announce | None,
     binding: Binding | None = None,
+    *,
+    dry_run: bool | None = None,
 ) -> str:
     """Record a step's outcome in one transaction. Returns the outcome.
 
     Each settle closes its own decision first and changes the rest only if
     that close took effect. A late settle -- from a worker whose lease ran
     out -- therefore never reaches a proposal that has moved on to a newer
-    decision.
+    decision. A resync of a proposal made under the other `DRY_RUN` expires
+    it instead of showing it again (M17, D2).
     """
+    if (
+        step.outcome == "resync"
+        and dry_run is not None
+        and view.payload is not None
+        and _made_under(view.payload) != dry_run
+    ):
+        return _expire_queued(conn, decision, view)
     shows_again = step.outcome in ("reparked", "resync")
     outcome = "no_effect" if step.outcome == "resync" else step.outcome
     assert outcome is not None
@@ -471,7 +635,13 @@ def _settle(
     with conn.transaction():
         if shows_again:
             assert view.payload is not None and ledger_status is not None
-            if not _close(conn, decision.id, outcome, reason=step.reason):
+            if not _close(
+                conn,
+                decision.id,
+                outcome,
+                reason=step.reason,
+                action_reason="changed" if step.outcome == "resync" else "settled",
+            ):
                 return "already settled"
             record = proposal_from(decision.message_id, view.payload, view.revision, binding)
             record = replace(
@@ -555,16 +725,32 @@ def _announce(announce: Announce, record: ProposalRecord) -> None:
         log.exception("could not announce %s", record.message_id)
 
 
-def _close(conn: psycopg.Connection, decision_id: int, outcome: str, *, reason: str | None) -> bool:
-    """Write the outcome, once. True if this call wrote it."""
+def _close(
+    conn: psycopg.Connection,
+    decision_id: int,
+    outcome: str,
+    *,
+    reason: str | None,
+    action_reason: str = "settled",
+) -> bool:
+    """Write the outcome, once. True if this call wrote it.
+
+    A reason the decision was recorded with -- a sweep's -- is kept unless
+    the settle gives one. Its action, if still `approved`, is refused in the
+    same transaction with `action_reason`, a key of `audit.REASONS`: no
+    action outlives its decision (M17, D2).
+    """
     closed = conn.execute(
         """
         UPDATE decisions
-           SET outcome = %s, reason = %s, settled_at = now(), lease_until = NULL
+           SET outcome = %s, reason = coalesce(%s, reason), settled_at = now(),
+               lease_until = NULL
          WHERE id = %s AND outcome IS NULL
         """,
         (outcome, reason, decision_id),
     ).rowcount
+    if closed:
+        refuse_approved(conn, decision_id, reason=action_reason)
     return bool(closed)
 
 
@@ -572,7 +758,7 @@ def _due(conn: psycopg.Connection, limit: int) -> list[OpenDecision]:
     rows = conn.execute(
         """
         SELECT d.id, d.message_id, d.revision, d.action, d.correction, d.attempts,
-               a.id, a.nonce, a.status
+               a.id, a.nonce, a.status, d.reason
           FROM decisions d
           LEFT JOIN outbound_actions a ON a.decision_id = d.id
          WHERE d.outcome IS NULL AND d.next_attempt_at <= now()

@@ -1105,12 +1105,13 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 
 ### Task 17.7: Checks before a Confirm, and legacy proposals
 
-**Description:** Before applying a Confirm whose action is `approved`, the worker checks the mode and recomputes the hash; a failure refuses the action, settles the decision as `no_effect`, and returns the proposal to `pending` with what is true now (D2). An M16 Confirm open at deploy is returned the same way. A reconciliation pass gives pending legacy proposals their tool and hash.
+**Description:** Before applying a Confirm whose action is `approved`, the worker checks the mode and recomputes the hash. A mode that differs expires the proposal (D2: a sweep, "made under another mode"); a hash that differs refuses the action, settles the decision as `no_effect`, and returns the proposal to `pending` with what is true now and the next generation. An M16 Confirm open at deploy is returned the same way ("approve again"). A reconciliation pass gives pending legacy proposals their tool and hash, and expires pending proposals made under the other mode. No action is left `approved` once its decision settles.
 
 **Acceptance criteria:**
-- [ ] A proposal approved under dry run, applied after `DRY_RUN` is off, comes back to the owner and runs nothing; the old card is then refused as stale.
-- [ ] A changed canonical form returns the proposal the same way.
-- [ ] A legacy pending proposal gets a hash, and can then be confirmed.
+- [x] A proposal approved under dry run, applied after `DRY_RUN` is off, is expired ("made under another mode") and runs nothing; the old card is then refused as stale.
+- [x] A changed canonical form returns the proposal to the owner under the next generation; the old card is refused as stale, the new one accepted.
+- [x] A legacy pending proposal gets a hash, and can then be confirmed.
+- [x] An M16 Confirm open at deploy is returned to the owner, a pending proposal made under the other mode is expired by reconciliation, and a settled decision leaves no `approved` action.
 
 **Verification:** `uv run pytest tests/test_worker.py tests/test_reconcile.py`; Neon.
 
@@ -1118,8 +1119,8 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 
 ### Checkpoint: bound
 
-- [ ] Checks green; integration tests on Neon.
-- [ ] Fresh-context review of 17.1–17.7 against D1–D3.
+- [x] Checks green; integration tests on Neon.
+- [x] Fresh-context review of 17.1–17.7 against D1–D3: one review of 17.5–17.6 and one of 17.7, each folded in (running notes in the spec).
 
 ## Phase 2 · Recipients
 

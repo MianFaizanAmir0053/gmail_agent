@@ -158,7 +158,7 @@ def reconcile_now(session: GraphSession, *, announce: Announce | None = None) ->
     result = reconcile(session, announce=announce)
     return (
         f"Recorded {result.recorded} parked thread(s); closed {result.closed} row(s); "
-        f"{result.errors} error(s)."
+        f"bound {result.bound}; expired {result.expired}; {result.errors} error(s)."
     )
 
 

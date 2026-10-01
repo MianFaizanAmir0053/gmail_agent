@@ -14,6 +14,15 @@ reached a final status, with its thread no longer parked, is closed as
 `decided`. The M15 CLI, which resumes threads directly until 16.10, leaves
 exactly that behind.
 
+**Every pending proposal can be bound, and runs as it was made (M17, D2).**
+One parked before M17 has no hash: it gets its tool and hash from its
+thread's payload under the current code, while it is still pending at the
+revision read, and can then be confirmed. One made under the other
+`DRY_RUN`, awaiting the owner, is expired: a sweep ends it, "made under
+another mode". Both passes run only when asked, and only the scheduler asks:
+it runs under production's `DRY_RUN`, calendar and key. A command-line run
+under its own would bind with the wrong hash, or expire live proposals.
+
 A `deciding` proposal is never touched: it belongs to the worker.
 
 Runs when the scheduler starts, hourly after that, and on
@@ -28,9 +37,11 @@ from datetime import timedelta
 
 import psycopg
 
+from app.channel.decide import expire
 from app.channel.park import Announce, ParkConflictError, record_park
 from app.graph.runner import GraphSession
 from app.jobs.purge import FAILED_KEPT_FOR
+from app.policy.hashing import bound
 from app.store.ledger import MessageStatus
 
 log = logging.getLogger(__name__)
@@ -54,8 +65,16 @@ class ReconcileResult:
     errors: int
     """Threads that could not be read or recorded. Tried again next run."""
 
+    bound: int = 0
+    """Pending proposals from before M17 given their tool and hash."""
 
-def reconcile(session: GraphSession, *, announce: Announce | None = None) -> ReconcileResult:
+    expired: int = 0
+    """Pending proposals made under the other `DRY_RUN`, swept."""
+
+
+def reconcile(
+    session: GraphSession, *, announce: Announce | None = None, bind_and_expire: bool = False
+) -> ReconcileResult:
     recorded = closed = errors = 0
 
     for message_id in _unrecorded(session.conn):
@@ -64,7 +83,9 @@ def reconcile(session: GraphSession, *, announce: Announce | None = None) -> Rec
             if not view.parked:
                 continue
             assert view.payload is not None
-            record_park(session, message_id, view.payload, announce=announce)
+            # One about to be expired below is recorded but never announced.
+            doomed = bind_and_expire and bool(view.payload.get("dry_run", True)) != session.dry_run
+            record_park(session, message_id, view.payload, announce=None if doomed else announce)
             recorded += 1
         except ParkConflictError:
             # The ledger moved between the read and the write: someone else
@@ -72,6 +93,28 @@ def reconcile(session: GraphSession, *, announce: Announce | None = None) -> Rec
             log.info("%s changed while being reconciled", message_id)
         except Exception:
             log.exception("could not reconcile %s", message_id)
+            errors += 1
+
+    bound_rows = expired = 0
+    for message_id, revision in _unbound(session.conn) if bind_and_expire else []:
+        try:
+            view = session.thread(message_id)
+            if not view.parked or view.revision != revision:
+                continue
+            assert view.payload is not None
+            tool, digest = bound(message_id, view.payload.get("proposed") or {}, session.binding())
+            if digest is None:
+                continue  # nothing to run: a Confirm stays "not ready"
+            bound_rows += session.conn.execute(
+                """
+                UPDATE proposals SET tool = %s, args_hash = %s, updated_at = now()
+                 WHERE message_id = %s AND status = 'pending' AND revision = %s
+                   AND args_hash IS NULL
+                """,
+                (tool, digest, message_id, revision),
+            ).rowcount
+        except Exception:
+            log.exception("could not bind %s", message_id)
             errors += 1
 
     for message_id, final_status in _closable(session.conn):
@@ -91,9 +134,51 @@ def reconcile(session: GraphSession, *, announce: Announce | None = None) -> Rec
             log.exception("could not close %s", message_id)
             errors += 1
 
-    if recorded or closed:
-        log.info("reconcile: recorded %d parked thread(s), closed %d row(s)", recorded, closed)
-    return ReconcileResult(recorded=recorded, closed=closed, errors=errors)
+    # After the closing pass: a row whose message is already final is closed,
+    # not expired.
+    for message_id, revision in (
+        _made_under_another_mode(session.conn, session.dry_run) if bind_and_expire else []
+    ):
+        try:
+            expired += expire(session.conn, message_id, revision)
+        except Exception:
+            log.exception("could not expire %s", message_id)
+            errors += 1
+
+    if recorded or closed or bound_rows or expired:
+        log.info(
+            "reconcile: recorded %d parked thread(s), closed %d row(s), bound %d, expired %d",
+            recorded,
+            closed,
+            bound_rows,
+            expired,
+        )
+    return ReconcileResult(
+        recorded=recorded, closed=closed, errors=errors, bound=bound_rows, expired=expired
+    )
+
+
+def _unbound(conn: psycopg.Connection) -> list[tuple[str, int]]:
+    """Pending proposals with no hash yet: parked before M17."""
+    rows = conn.execute(
+        "SELECT message_id, revision FROM proposals WHERE status = 'pending' AND args_hash IS NULL"
+    ).fetchall()
+    return [(row[0], row[1]) for row in rows]
+
+
+def _made_under_another_mode(conn: psycopg.Connection, dry_run: bool) -> list[tuple[str, int]]:
+    """Pending proposals made under the other `DRY_RUN`, still awaiting the
+    owner."""
+    rows = conn.execute(
+        """
+        SELECT p.message_id, p.revision
+          FROM proposals p
+          JOIN processed_messages m ON m.gmail_message_id = p.message_id
+         WHERE p.status = 'pending' AND p.dry_run <> %s AND m.status = %s
+        """,
+        (dry_run, MessageStatus.AWAITING_APPROVAL.value),
+    ).fetchall()
+    return [(row[0], row[1]) for row in rows]
 
 
 def _unrecorded(conn: psycopg.Connection) -> list[str]:

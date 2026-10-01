@@ -140,6 +140,38 @@ _KINDS: dict[str, audit.Kind] = {
 }
 
 
+def refuse_approved(conn: psycopg.Connection, decision_id: int, *, reason: str) -> None:
+    """A decision settled without its action running: an action still
+    `approved` is refused with it, and audited (D2). Runs inside the caller's
+    transaction, with the settle, so no action is left `approved` once its
+    decision has settled. `reason` is a key of `audit.REASONS`."""
+    phrase = audit.REASONS[reason]
+    row = conn.execute(
+        """
+        UPDATE outbound_actions
+           SET status = 'refused', reason = %s, request = NULL, finished_at = now()
+         WHERE decision_id = %s AND status = 'approved'
+        RETURNING message_id, tool, tier, args_hash, dry_run
+        """,
+        (phrase, decision_id),
+    ).fetchone()
+    if row is None:
+        return
+    message_id, tool, tier, digest, dry_run = row
+    audit.record(
+        conn,
+        "action_refused",
+        tool=tool,
+        tier=tier,
+        args_hash=digest,
+        dry_run=dry_run,
+        outcome="refused",
+        decision_id=decision_id,
+        message_id=message_id,
+        reason=phrase,
+    )
+
+
 class Registry:
     def __init__(self, conn: psycopg.Connection, writer: Writer, *, key: bytes) -> None:
         self._conn = conn

@@ -48,6 +48,10 @@ class GraphState(TypedDict, total=False):
     judging this one. Recorded apart so the ledger never reports a sweep as a
     human decline."""
 
+    sweep_reason: str
+    """Why a sweep ended it, when the sweep said: "made under another mode"
+    for a proposal M17 expired. Otherwise the M15 sweep's own reason."""
+
     revisions: int
     """Human edit rounds so far. Bounded in the graph, never in the prompt."""
 

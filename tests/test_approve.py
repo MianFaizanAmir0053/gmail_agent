@@ -175,9 +175,11 @@ def test_reconcile_on_demand_reports_what_it_did(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         approve,
         "reconcile",
-        lambda session, **kwargs: ReconcileResult(recorded=2, closed=1, errors=0),
+        lambda session, **kwargs: ReconcileResult(
+            recorded=2, closed=1, errors=0, bound=3, expired=1
+        ),
     )
 
     line = approve.reconcile_now(cast(GraphSession, object()))
 
-    assert line == "Recorded 2 parked thread(s); closed 1 row(s); 0 error(s)."
+    assert line == ("Recorded 2 parked thread(s); closed 1 row(s); bound 3; expired 1; 0 error(s).")

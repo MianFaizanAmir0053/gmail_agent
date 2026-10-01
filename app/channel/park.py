@@ -191,6 +191,9 @@ def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> int:
                dry_run = EXCLUDED.dry_run,
                tool = EXCLUDED.tool,
                args_hash = EXCLUDED.args_hash,
+               -- Back to the owner: a Confirm from any card shown before
+               -- carries the old generation, and dies (M17, D2).
+               generation = proposals.generation + 1,
                parked_at = now(),
                updated_at = now()
          WHERE proposals.status = 'deciding'

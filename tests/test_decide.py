@@ -17,6 +17,7 @@ from app.channel.decide import (
     DecisionResult,
     card_token,
     decide,
+    expire,
     parse_token,
 )
 from app.channel.park import proposal_from, write_park
@@ -466,3 +467,40 @@ def test_two_concurrent_decisions_on_one_revision_one_wins(
         assert len(decisions) == 1
         # An approval exists exactly when the Confirm won.
         assert len(_actions(check, committed_proposal)) == (decisions[0][1] == "confirm")
+
+
+@pytest.mark.parametrize(
+    ("action", "via", "reason"),
+    [
+        ("cancel", "web", "made under another mode"),  # only a sweep says why
+        ("sweep", "sweep", "because I said so"),  # and only in fixed words
+    ],
+)
+def test_a_reason_comes_only_with_a_sweep_and_only_in_fixed_words(
+    action: Any, via: Any, reason: str
+) -> None:
+    result = decide(
+        cast(psycopg.Connection, None), "m1", action=action, revision=1, via=via, reason=reason
+    )
+    assert result.status == "invalid"
+
+
+@pytest.mark.integration
+def test_an_expiry_records_a_sweep_that_says_why(conn: psycopg.Connection) -> None:
+    """A proposal made under the other DRY_RUN is ended, never shown as if it
+    could run (M17, D2)."""
+    _park(conn)
+
+    assert expire(conn, "m1", 1) is True
+    assert expire(conn, "m1", 1) is False  # already queued: not recorded twice
+
+    row = conn.execute(
+        "SELECT action, via, reason FROM decisions WHERE message_id = 'm1'"
+    ).fetchone()
+    assert row == ("sweep", "sweep", "made under another mode")
+    assert _status(conn) == "deciding"
+    expired = conn.execute(
+        "SELECT reason, decision_id IS NOT NULL FROM audit_log"
+        " WHERE kind = 'proposal_expired' AND message_id = 'm1'"
+    ).fetchall()
+    assert expired == [("made under another mode", True)]

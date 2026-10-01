@@ -211,7 +211,11 @@ def run_reconcile(settings: Settings) -> None:
     started_at = datetime.now(UTC)
     try:
         with graph_session(settings) as session:
-            result = reconcile(session, announce=configured_channels(settings).announce)
+            # M17's passes too: this process runs under production's own
+            # DRY_RUN, calendar and key (D2).
+            result = reconcile(
+                session, announce=configured_channels(settings).announce, bind_and_expire=True
+            )
     except Exception as exc:
         log.exception("reconcile failed")
         record_tick(settings, "reconcile", started_at, ok=False, error=type(exc).__name__)

@@ -120,7 +120,12 @@ def test_fixed_operator_reasons_survive(
     """These are what M24's statistics and M15's evidence are built from."""
     ledger = MessageLedger(conn)
     kept = {}
-    for reason in ("declined by user", SWEEP_REASON, STRANDED_REASON):
+    for reason in (
+        "declined by user",
+        SWEEP_REASON,
+        STRANDED_REASON,
+        "made under another mode",  # an expiry (M17, D2)
+    ):
         message_id = f"kept-{uuid.uuid4().hex[:8]}"
         ledger.claim(message_id, message_id)
         status = MessageStatus.FAILED if reason == STRANDED_REASON else MessageStatus.REJECTED

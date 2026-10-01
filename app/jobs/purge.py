@@ -31,6 +31,7 @@ from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import NOT_A_MEETING, SWEEP_REASON
 from app.jobs.poll import CLAIMED_NOT_RUN
 from app.mail.feed import GONE, TOO_OLD
+from app.policy import audit
 from app.store.ledger import STRANDED_REASON, MessageStatus
 
 FINAL_STATUSES = (MessageStatus.SKIPPED, MessageStatus.REJECTED, MessageStatus.CREATED)
@@ -52,6 +53,8 @@ FIXED_REASONS = (
     TOO_OLD,
     GONE,
     NOT_A_MEETING,
+    # The action policy's (M17, D7): a refusal or an expiry, in its fixed words.
+    *audit.REASONS.values(),
 )
 """Ledger reasons written by code rather than by a model. They quote no email,
 and they are what the failures view and M24's statistics are built from."""

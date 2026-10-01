@@ -10,7 +10,13 @@ import psycopg
 import pytest
 
 from app.channel import park
-from app.channel.park import ParkConflictError, ProposalRecord, proposal_from, record_park
+from app.channel.park import (
+    ParkConflictError,
+    ProposalRecord,
+    proposal_from,
+    record_park,
+    write_park,
+)
 from app.graph.runner import GraphSession
 from app.policy.hashing import INVITE, Binding, args_key
 from app.store.ledger import MessageLedger, MessageStatus
@@ -259,3 +265,24 @@ def test_a_park_does_not_reopen_a_decided_proposal(conn: psycopg.Connection) -> 
     row = _proposal(conn)
     assert row is not None
     assert row[:2] == ("decided", 1)
+
+
+@pytest.mark.integration
+def test_a_proposal_that_returns_to_the_owner_is_a_new_generation(
+    conn: psycopg.Connection,
+) -> None:
+    """A Confirm from any card shown before carries the old generation, and
+    is refused as stale (M17, D2)."""
+    MessageLedger(conn).claim("m1", "m1")
+    with conn.transaction():
+        first = write_park(
+            conn, proposal_from("m1", PENDING, 1), ledger_status=MessageStatus.CLAIMED
+        )
+    conn.execute("UPDATE proposals SET status = 'deciding' WHERE message_id = 'm1'")
+
+    with conn.transaction():
+        again = write_park(
+            conn, proposal_from("m1", PENDING, 1), ledger_status=MessageStatus.AWAITING_APPROVAL
+        )
+
+    assert (first, again) == (1, 2)

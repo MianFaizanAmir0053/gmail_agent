@@ -13,7 +13,7 @@ from typing import Any, cast
 import psycopg
 import pytest
 
-from app.channel.decide import decide
+from app.channel.decide import card_token, decide
 from app.channel.park import proposal_from, write_park
 from app.channel.reconcile import CLAIM_GRACE, reconcile
 from app.graph.runner import GraphSession, ThreadView
@@ -36,6 +36,7 @@ LEGACY: dict[str, Any] = {"proposed": {"title": "Old one", "attendees": []}, "co
 class FakeSession:
     conn: psycopg.Connection
     threads: dict[str, ThreadView] = field(default_factory=dict)
+    dry_run: bool = True
 
     def thread(self, message_id: str) -> ThreadView:
         return self.threads.get(message_id, ThreadView(payload=None, revision=1, next=()))
@@ -56,10 +57,15 @@ def _session(conn: psycopg.Connection) -> FakeSession:
     return FakeSession(conn)
 
 
-def _run(session: FakeSession, announced: list[str] | None = None) -> Any:
+def _run(
+    session: FakeSession, announced: list[str] | None = None, *, bind_and_expire: bool = True
+) -> Any:
+    """As the scheduler runs it, M17's passes included, unless told not to."""
     sink = announced if announced is not None else []
     return reconcile(
-        cast(GraphSession, session), announce=lambda record: sink.append(record.message_id)
+        cast(GraphSession, session),
+        announce=lambda record: sink.append(record.message_id),
+        bind_and_expire=bind_and_expire,
     )
 
 
@@ -215,3 +221,162 @@ def test_a_proposal_that_is_still_parked_is_not_closed(conn: psycopg.Connection)
 
     assert (result.closed, result.errors) == (0, 1)
     assert _proposal(conn, "m1") == ("pending", 1, "0123456789ab", None)
+
+
+# --- every pending proposal can be bound, and runs as it was made (M17, D2) ------
+
+TIMED: dict[str, Any] = {
+    **PAYLOAD,
+    "proposed": {
+        "is_meeting": True,
+        "title": "Design review",
+        "start_utc": "2026-10-05T11:00:00Z",
+        "end_utc": "2026-10-05T12:00:00Z",
+        "timezone": "Asia/Karachi",
+        "attendees": ["sara@example.com"],
+        "location": None,
+        "confidence": 0.9,
+        "reasoning": "r",
+    },
+}
+
+
+def _parked_before_m17(conn: psycopg.Connection, payload: dict[str, Any] = TIMED) -> None:
+    """A pending proposal written before M17: no tool, no hash."""
+    MessageLedger(conn).claim("m1", "m1")
+    with conn.transaction():
+        write_park(conn, proposal_from("m1", payload, 1), ledger_status=MessageStatus.CLAIMED)
+
+
+@pytest.mark.integration
+def test_a_proposal_parked_before_m17_is_bound_and_can_then_be_confirmed(
+    conn: psycopg.Connection,
+) -> None:
+    session = _session(conn)
+    _parked_before_m17(conn)
+    session.parks("m1", TIMED)
+
+    assert _run(session).bound == 1
+
+    row = conn.execute(
+        "SELECT tool, args_hash, dry_run, generation FROM proposals WHERE message_id = 'm1'"
+    ).fetchone()
+    assert row is not None and row[0] == "calendar.create_invite" and row[1] is not None
+    confirmed = decide(
+        conn,
+        "m1",
+        action="confirm",
+        revision=1,
+        via="web",
+        token=card_token(row[1], row[2], row[3]),
+        dry_run=row[2],
+    )
+    assert confirmed.status == "queued"
+
+
+@pytest.mark.integration
+def test_a_proposal_whose_thread_moved_on_is_not_bound(conn: psycopg.Connection) -> None:
+    """Only while still pending at the revision read."""
+    session = _session(conn)
+    _parked_before_m17(conn)
+    session.parks("m1", TIMED, revision=2)
+
+    assert _run(session).bound == 0
+
+
+@pytest.mark.integration
+def test_a_proposal_made_under_the_other_mode_is_expired(conn: psycopg.Connection) -> None:
+    """DRY_RUN went off: a proposal made under dry run is ended by a sweep,
+    never shown as if it could run."""
+    session = _session(conn)
+    session.dry_run = False
+    _parked_before_m17(conn, PAYLOAD)
+    session.parks("m1", PAYLOAD)
+
+    assert _run(session).expired == 1
+
+    row = conn.execute(
+        "SELECT action, via, reason FROM decisions WHERE message_id = 'm1'"
+    ).fetchone()
+    assert row == ("sweep", "sweep", "made under another mode")
+
+
+@pytest.mark.integration
+def test_a_proposal_made_under_this_mode_is_left_alone(conn: psycopg.Connection) -> None:
+    session = _session(conn)
+    _parked_before_m17(conn, PAYLOAD)
+    session.parks("m1", PAYLOAD)
+
+    assert _run(session).expired == 0
+
+
+@pytest.mark.integration
+def test_a_command_line_run_neither_binds_nor_expires(conn: psycopg.Connection) -> None:
+    """It runs under its own DRY_RUN, calendar and key, not production's: a
+    local `approve --reconcile` must never expire live proposals."""
+    session = _session(conn)
+    session.dry_run = False
+    _parked_before_m17(conn)
+    session.parks("m1", TIMED)
+
+    result = _run(session, bind_and_expire=False)
+
+    assert (result.bound, result.expired) == (0, 0)
+    assert conn.execute("SELECT count(*) FROM decisions").fetchone() == (0,)
+
+
+@pytest.mark.integration
+def test_a_proposal_whose_message_is_final_is_closed_not_expired(
+    conn: psycopg.Connection,
+) -> None:
+    """Left behind by the M15 CLI: no sweep, and no expiry in the audit log."""
+    session = _session(conn)
+    session.dry_run = False
+    _parked_before_m17(conn, PAYLOAD)
+    MessageLedger(conn).mark("m1", MessageStatus.REJECTED)
+
+    result = _run(session)
+
+    assert (result.closed, result.expired) == (1, 0)
+    assert conn.execute("SELECT count(*) FROM decisions").fetchone() == (0,)
+
+
+@pytest.mark.integration
+def test_a_proposal_parked_under_the_other_mode_is_never_announced(
+    conn: psycopg.Connection,
+) -> None:
+    """Recorded, then expired in the same pass: the owner is not pushed a card
+    that is gone a moment later."""
+    session = _session(conn)
+    session.dry_run = False
+    _ledger_row(conn, "m1", MessageStatus.AWAITING_APPROVAL, "1 minute")
+    session.parks("m1", PAYLOAD)
+    announced: list[str] = []
+
+    result = _run(session, announced)
+
+    assert (result.recorded, result.expired) == (1, 1)
+    assert announced == []
+
+
+@pytest.mark.integration
+def test_a_proposal_decided_while_it_was_being_bound_is_left_alone(
+    conn: psycopg.Connection,
+) -> None:
+    """The update checks the row again: a Confirm or Cancel recorded after
+    the read must not have the row bound under it."""
+
+    @dataclass
+    class Racing(FakeSession):
+        def thread(self, message_id: str) -> ThreadView:
+            self.conn.execute("UPDATE proposals SET status = 'deciding' WHERE message_id = 'm1'")
+            return super().thread(message_id)
+
+    session = Racing(conn)
+    _parked_before_m17(conn)
+    session.parks("m1", TIMED)
+
+    assert _run(session).bound == 0
+    assert conn.execute("SELECT args_hash FROM proposals WHERE message_id = 'm1'").fetchone() == (
+        None,
+    )

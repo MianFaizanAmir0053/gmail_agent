@@ -732,3 +732,30 @@ def test_every_state_type_is_registered_for_checkpointing(migrated_database: str
 
     registered = {name for _, name in CHECKPOINT_TYPES}
     assert {"EmailMessage", "ExtractionResult", "ActionResult"} <= registered
+
+
+def test_an_expiry_ends_the_thread_with_its_own_reason() -> None:
+    """Not the M15 sweep's: M24 must not count a mode change as observe mode
+    ending (M17, D2)."""
+    from langgraph.types import Command
+
+    ledger = FakeLedger()
+    graph, config, _ = _run(_deps(ledger=ledger))
+
+    graph.invoke(Command(resume={"action": "sweep", "reason": "made under another mode"}), config)
+
+    assert ledger.statuses == [MessageStatus.REJECTED]
+    assert ledger.errors == ["made under another mode"]
+
+
+def test_a_sweep_that_gives_no_reason_keeps_the_m15_one() -> None:
+    from langgraph.types import Command
+
+    from app.graph.nodes import SWEEP_REASON
+
+    ledger = FakeLedger()
+    graph, config, _ = _run(_deps(ledger=ledger))
+
+    graph.invoke(Command(resume={"action": "sweep"}), config)
+
+    assert ledger.errors == [SWEEP_REASON]
