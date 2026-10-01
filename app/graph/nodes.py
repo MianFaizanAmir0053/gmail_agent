@@ -27,9 +27,10 @@ from app.google.calendar import CalendarClient
 from app.google.gmail import GmailClient
 from app.graph.state import GraphState
 from app.graph.versioning import action_type
-from app.policy.hashing import event_args
+from app.policy.hashing import event_args, tool_for
+from app.policy.registry import Approval, Registry
 from app.store.ledger import MessageLedger, MessageStatus
-from app.tools.calendar_tool import check_conflicts, execute_create_event
+from app.tools.calendar_tool import check_conflicts
 
 MAX_REVISIONS = 2
 """Edit rounds before the graph gives up and asks for a decision.
@@ -65,6 +66,9 @@ class Deps:
     calendar: CalendarClient
     ledger: MessageLedger
     user_timezone: str
+    registry: Registry
+    """The only way `act` writes (M17, D1). It checks the approval again and
+    finishes a write an earlier attempt began."""
     reviewer: Reviewer | None = None
     """M13. Left unset, `review` approves everything and the graph behaves
     exactly as it did before the reviewer existed."""
@@ -198,27 +202,44 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
     # Any other answer ends the edit round. Left in place, the previous
     # correction outlives it: `_decision` would still see an edit in progress
     # and send a Confirm or Cancel straight back to `extract`.
-    return {"approved": action == "confirm", "correction": "", "swept": action == "sweep"}
+    return {
+        "approved": action == "confirm",
+        "correction": "",
+        "swept": action == "sweep",
+        # What `decide()` recorded for a Confirm (M17, D2). Without it, `act`
+        # refuses: a Confirm from before M17 never runs unchecked.
+        "approval": decision.get("approval") if action == "confirm" else None,
+    }
 
 
 def act(deps: Deps, state: GraphState) -> GraphState:
-    args = event_args(state["extraction"], state["message_id"])
-    result = execute_create_event(deps.calendar, args)
+    """Run the approved write through the registry (M17, D1).
 
-    if result.status == "created" and result.event_id:
-        deps.ledger.mark(
-            state["message_id"], MessageStatus.CREATED, calendar_event_id=result.event_id
-        )
-    else:
-        # dry_run and failed both land here. Neither may claim CREATED: the
-        # ledger's CHECK constraint requires an event id for that status, and
-        # inventing one would corrupt the audit trail.
-        deps.ledger.mark(
-            state["message_id"],
-            MessageStatus.SKIPPED if result.status == "dry_run" else MessageStatus.FAILED,
-            error=result.error or result.status,
-        )
-    return {"action": result}
+    The registry checks the approval again, then writes, or finishes a write
+    an earlier attempt began. A refusal is final: the message is FAILED with
+    the registry's reason, and nothing is retried.
+    """
+    message_id = state["message_id"]
+    args = event_args(state["extraction"], message_id)
+    outcome = deps.registry.execute(
+        tool_for(args.attendees),
+        args,
+        approval=Approval.parse(state.get("approval")),
+        message_id=message_id,
+    )
+
+    if outcome.status == "created":
+        assert outcome.event_id is not None
+        deps.ledger.mark(message_id, MessageStatus.CREATED, calendar_event_id=outcome.event_id)
+        return {"action": ActionResult(status="created", event_id=outcome.event_id)}
+    # Neither of the others may claim CREATED: the ledger's CHECK constraint
+    # requires an event id for that status, and inventing one would corrupt
+    # the audit trail.
+    if outcome.status == "dry_run":
+        deps.ledger.mark(message_id, MessageStatus.SKIPPED, error="dry_run")
+        return {"action": ActionResult(status="dry_run")}
+    deps.ledger.mark(message_id, MessageStatus.FAILED, error=outcome.reason)
+    return {"action": ActionResult(status="failed", error=outcome.reason)}
 
 
 def skip(deps: Deps, state: GraphState) -> GraphState:

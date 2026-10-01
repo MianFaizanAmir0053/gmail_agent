@@ -116,11 +116,14 @@ def open_decisions(settings: Settings) -> tuple[datetime | None, bool]:
 
 
 def decisions_status(conn: psycopg.Connection) -> tuple[datetime | None, bool]:
+    """The oldest open decision, and whether any is due. None is due while the
+    owner has paused the agent (M17, D6): no session is opened for them."""
     row = conn.execute(
         """
         SELECT min(decided_at),
                coalesce(bool_or(next_attempt_at <= now()
                                 AND (lease_until IS NULL OR lease_until < now())), false)
+               AND NOT coalesce((SELECT paused FROM control WHERE id = 1), false)
           FROM decisions
          WHERE outcome IS NULL
         """

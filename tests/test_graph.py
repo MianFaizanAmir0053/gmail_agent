@@ -17,6 +17,7 @@ from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.payloads import ClassifyPayload
 from app.graph.build import build_graph
 from app.graph.nodes import Deps
+from app.policy.registry import Approval, Outcome
 from app.store.ledger import MessageStatus
 
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -76,16 +77,33 @@ class FakeCalendar:
     dry_run: bool = False
     calendar_id: str = "test-calendar"
     busy: list[Any] = field(default_factory=list)
-    created: list[Any] = field(default_factory=list)
 
     def freebusy(self, start: datetime, end: datetime) -> list[Any]:
         return self.busy
 
-    def create_event(self, **kwargs: Any) -> str | None:
+
+@dataclass
+class FakeRegistry:
+    """Stands in for the registry (M17): records what `act` asked it to run,
+    and answers as the registry would."""
+
+    dry_run: bool = False
+    refuse: str | None = None
+    executed: list[tuple[str, Any, Approval | None]] = field(default_factory=list)
+
+    def execute(
+        self, tool: str, args: Any, *, approval: Approval | None, message_id: str
+    ) -> Outcome:
+        self.executed.append((tool, args, approval))
+        if self.refuse is not None:
+            return Outcome("refused", reason=self.refuse)
         if self.dry_run:
-            return None
-        self.created.append(kwargs)
-        return "evt_123"
+            return Outcome("dry_run")
+        return Outcome("created", event_id="evt_123")
+
+    @property
+    def titles(self) -> list[str]:
+        return [args.title for _, args, _ in self.executed]
 
 
 @dataclass
@@ -114,6 +132,7 @@ def _deps(**overrides: Any) -> Deps:
         "calendar": FakeCalendar(),
         "ledger": FakeLedger(),
         "user_timezone": "Asia/Karachi",
+        "registry": FakeRegistry(),
     }
     return Deps(**(defaults | overrides))
 
@@ -159,14 +178,14 @@ class FakeReviewer:
 
 def test_meeting_parks_at_approval_without_writing_anything() -> None:
     """Nothing irreversible happens before a human decides. That is the guardrail."""
-    calendar = FakeCalendar()
-    deps = _deps(calendar=calendar)
+    registry = FakeRegistry()
+    deps = _deps(registry=registry)
     graph, config, _ = _run(deps)
 
     payload = _interrupt_payload(graph, config)
     assert payload is not None
     assert payload["proposed"]["title"] == "Design review"
-    assert calendar.created == []
+    assert registry.executed == []
 
 
 def test_non_meeting_skips_extraction_and_ends() -> None:
@@ -179,35 +198,95 @@ def test_non_meeting_skips_extraction_and_ends() -> None:
 
 
 def test_confirm_creates_the_event_and_records_the_id() -> None:
-    calendar = FakeCalendar()
+    registry = FakeRegistry()
     ledger = FakeLedger()
-    graph, config, _ = _run(_deps(calendar=calendar, ledger=ledger))
+    graph, config, _ = _run(_deps(registry=registry, ledger=ledger))
 
     from langgraph.types import Command
 
     graph.invoke(Command(resume={"action": "confirm"}), config)
 
-    assert len(calendar.created) == 1
+    assert len(registry.executed) == 1
     assert ledger.marks[-1] == ("m1", MessageStatus.CREATED, "evt_123")
 
 
-def test_cancel_creates_nothing() -> None:
-    calendar = FakeCalendar()
+def test_a_confirm_carries_its_approval_to_the_registry() -> None:
+    """The action `decide()` recorded, and its nonce (M17, D2). An invite,
+    because the extraction has a guest."""
+    registry = FakeRegistry()
+    graph, config, _ = _run(_deps(registry=registry))
+
+    from langgraph.types import Command
+
+    graph.invoke(
+        Command(resume={"action": "confirm", "approval": {"action_id": 7, "nonce": "ab" * 16}}),
+        config,
+    )
+
+    [(tool, args, approval)] = registry.executed
+    assert tool == "calendar.create_invite"
+    assert args.description == "Created by mailagent from message m1."
+    assert approval == Approval(action_id=7, nonce="ab" * 16)
+
+
+def test_a_refusal_fails_the_message_with_the_registrys_reason() -> None:
+    """Final: a refused approval is never retried."""
     ledger = FakeLedger()
-    graph, config, _ = _run(_deps(calendar=calendar, ledger=ledger))
+    graph, config, _ = _run(
+        _deps(registry=FakeRegistry(refuse="arguments differ from the approval"), ledger=ledger)
+    )
+
+    from langgraph.types import Command
+
+    state = graph.invoke(Command(resume={"action": "confirm"}), config)
+
+    assert ledger.statuses == [MessageStatus.FAILED]
+    assert state["action"].error == "arguments differ from the approval"
+    assert _interrupt_payload(graph, config) is None
+
+
+@dataclass
+class CountingGmail(FakeGmail):
+    reads: int = 0
+
+    def get_message(self, message_id: str) -> EmailMessage:
+        self.reads += 1
+        return super().get_message(message_id)
+
+
+def test_await_approval_calls_neither_gmail_nor_the_database() -> None:
+    """`interrupt` runs the node again on resume (M17, D2). Anything it
+    called would run, and could fail, at every resume."""
+    from langgraph.types import Command
+
+    gmail = CountingGmail()
+    ledger = FakeLedger()
+    graph, config, _ = _run(_deps(gmail=gmail, ledger=ledger))
+    assert (gmail.reads, ledger.marks) == (1, [])  # `fetch` read the email
+
+    graph.invoke(Command(resume={"action": "confirm"}), config)
+
+    assert gmail.reads == 1
+    assert ledger.statuses == [MessageStatus.CREATED]  # `act`'s mark, and no other
+
+
+def test_cancel_creates_nothing() -> None:
+    registry = FakeRegistry()
+    ledger = FakeLedger()
+    graph, config, _ = _run(_deps(registry=registry, ledger=ledger))
 
     from langgraph.types import Command
 
     graph.invoke(Command(resume={"action": "cancel"}), config)
 
-    assert calendar.created == []
+    assert registry.executed == []
     assert ledger.statuses == [MessageStatus.REJECTED]
 
 
 def test_dry_run_never_records_created() -> None:
     """CREATED without an event id violates the ledger's CHECK constraint."""
     ledger = FakeLedger()
-    graph, config, _ = _run(_deps(calendar=FakeCalendar(dry_run=True), ledger=ledger))
+    graph, config, _ = _run(_deps(registry=FakeRegistry(dry_run=True), ledger=ledger))
 
     from langgraph.types import Command
 
@@ -246,10 +325,10 @@ def test_cancel_after_an_edit_ends_the_proposal() -> None:
     """
     from langgraph.types import Command
 
-    calendar = FakeCalendar()
+    registry = FakeRegistry()
     ledger = FakeLedger()
     pipeline = FakePipeline(extractions=[_meeting(), _meeting("Corrected review")])
-    graph, config, _ = _run(_deps(calendar=calendar, ledger=ledger, pipeline=pipeline))
+    graph, config, _ = _run(_deps(registry=registry, ledger=ledger, pipeline=pipeline))
 
     graph.invoke(Command(resume={"action": "edit", "correction": "4pm not 3pm"}), config)
     graph.invoke(Command(resume={"action": "cancel"}), config)
@@ -257,23 +336,23 @@ def test_cancel_after_an_edit_ends_the_proposal() -> None:
     assert _interrupt_payload(graph, config) is None
     assert len(pipeline.corrections) == 2  # the edit's re-extraction, and no third
     assert ledger.statuses == [MessageStatus.REJECTED]
-    assert calendar.created == []
+    assert registry.executed == []
 
 
 def test_confirm_after_an_edit_creates_the_corrected_event_once() -> None:
     from langgraph.types import Command
 
-    calendar = FakeCalendar()
+    registry = FakeRegistry()
     ledger = FakeLedger()
     pipeline = FakePipeline(extractions=[_meeting(), _meeting("Corrected review")])
-    graph, config, _ = _run(_deps(calendar=calendar, ledger=ledger, pipeline=pipeline))
+    graph, config, _ = _run(_deps(registry=registry, ledger=ledger, pipeline=pipeline))
 
     graph.invoke(Command(resume={"action": "edit", "correction": "4pm not 3pm"}), config)
     graph.invoke(Command(resume={"action": "confirm"}), config)
 
     assert _interrupt_payload(graph, config) is None
     assert len(pipeline.corrections) == 2
-    assert [event["title"] for event in calendar.created] == ["Corrected review"]
+    assert registry.titles == ["Corrected review"]
     assert ledger.marks[-1] == ("m1", MessageStatus.CREATED, "evt_123")
 
 
@@ -290,13 +369,13 @@ def test_a_sweep_is_not_recorded_as_a_human_decline() -> None:
     """M24 counts a human's cancellations against the agent; a sweep is not one."""
     from langgraph.types import Command
 
-    calendar = FakeCalendar()
+    registry = FakeRegistry()
     ledger = FakeLedger()
-    graph, config, _ = _run(_deps(calendar=calendar, ledger=ledger))
+    graph, config, _ = _run(_deps(registry=registry, ledger=ledger))
 
     state = graph.invoke(Command(resume={"action": "sweep"}), config)
 
-    assert calendar.created == []
+    assert registry.executed == []
     assert ledger.statuses == [MessageStatus.REJECTED]
     assert state["action"].error == "swept: observe mode ended"
 
@@ -571,9 +650,9 @@ def test_approval_survives_losing_the_process(
 
     from app.graph.checkpointer import postgres_checkpointer
 
-    calendar = FakeCalendar()
+    registry = FakeRegistry()
     ledger = FakeLedger()
-    deps = _deps(calendar=calendar, ledger=ledger)
+    deps = _deps(registry=registry, ledger=ledger)
     config = {"configurable": {"thread_id": "durable-m1"}}
 
     with postgres_checkpointer(migrated_database) as saver:
@@ -581,15 +660,19 @@ def test_approval_survives_losing_the_process(
             {"message_id": "durable-m1", "thread_id": "durable-m1"}, config
         )
 
-    assert calendar.created == []  # parked, nothing written
+    assert registry.executed == []  # parked, nothing written
 
     # Everything above is now out of scope: connection closed, graph discarded.
     with postgres_checkpointer(migrated_database) as saver:
         resumed = build_graph(deps, saver)
         assert _interrupt_payload(resumed, config) is not None
-        resumed.invoke(Command(resume={"action": "confirm"}), config)
+        resumed.invoke(
+            Command(resume={"action": "confirm", "approval": {"action_id": 7, "nonce": "c" * 32}}),
+            config,
+        )
 
-    assert len(calendar.created) == 1
+    # The approval went through the checkpoint, under the strict serializer.
+    assert [approval for _, _, approval in registry.executed] == [Approval(7, "c" * 32)]
     assert ledger.marks[-1] == ("durable-m1", MessageStatus.CREATED, "evt_123")
 
 

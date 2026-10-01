@@ -34,9 +34,10 @@ NETWORK_RETRY = RetryPolicy(max_attempts=3, initial_interval=1.0, backoff_factor
 """For nodes that cross the network. Gmail and Gemini both rate-limit, and a
 429 that clears in twenty seconds should not dead-letter a message.
 
-Deliberately not applied to `act`: creating a calendar event is not idempotent,
-and a retry after an ambiguous timeout would risk double-booking. That path is
-guarded by the ledger instead.
+Deliberately not applied to `act`. A write interrupted halfway is finished by
+the worker's next attempt, from what the registry stored (M17, D3), and that
+attempt is counted and spaced out like any other. A retry inside the node
+would spend those attempts in seconds.
 """
 
 

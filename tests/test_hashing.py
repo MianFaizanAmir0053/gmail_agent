@@ -144,3 +144,17 @@ def test_the_arguments_come_from_the_extraction_and_the_message() -> None:
     assert args.timezone == "UTC"
     assert args.description == "Created by mailagent from message m7."
     assert args.attendees == ["sara@example.com"]
+
+
+def test_an_event_id_is_one_google_accepts_and_the_same_every_time() -> None:
+    """Base32hex, 5-1024 characters: a later attempt asks for this id rather
+    than booking again (M17, D3)."""
+    from app.policy.hashing import event_id_for
+
+    first = event_id_for(KEY, "m1", "a" * 64)
+    assert first == event_id_for(KEY, "m1", "a" * 64)
+    assert first.startswith("ma") and len(first) == 32
+    assert set(first) <= set("0123456789abcdefghijklmnopqrstuv")
+    assert event_id_for(KEY, "m2", "a" * 64) != first
+    assert event_id_for(KEY, "m1", "b" * 64) != first
+    assert event_id_for(args_key("another-key"), "m1", "a" * 64) != first

@@ -8,7 +8,6 @@ from app.tools.calendar_tool import (
     CALENDAR_TOOL,
     CreateEventInput,
     check_conflicts,
-    execute_create_event,
     overlaps,
 )
 
@@ -131,39 +130,3 @@ def test_conflict_check_runs_even_in_dry_run() -> None:
     """Availability is read-only, and the approval card needs it before any write."""
     calendar = CalendarClient(FakeService(), "cal_test", dry_run=True)
     assert check_conflicts(calendar, _args()).describe() == "No conflicts."
-
-
-# --- execution -------------------------------------------------------------
-
-
-def test_dry_run_has_its_own_status_and_no_event_id() -> None:
-    """ "created" without an event id would violate the ledger's CHECK constraint,
-    and folding this into skipped_duplicate would hide a deployment writing nothing."""
-    calendar = CalendarClient(FakeService(), "cal_test", dry_run=True)
-
-    result = execute_create_event(calendar, _args())
-
-    assert result.status == "dry_run"
-    assert result.event_id is None
-
-
-def test_real_run_returns_the_event_id() -> None:
-    service = FakeService()
-    calendar = CalendarClient(service, "cal_test", dry_run=False)
-
-    result = execute_create_event(calendar, _args())
-
-    assert result.status == "created"
-    assert result.event_id == "evt_123"
-    assert service.events_resource.inserted[0]["summary"] == "Design review"
-
-
-def test_naive_datetime_fails_the_action_rather_than_raising() -> None:
-    naive = datetime(2026, 8, 19, 11, 0)  # naive on purpose -- the bug under test
-    args = _args().model_copy(update={"start_utc": naive})
-    calendar = CalendarClient(FakeService(), "cal_test", dry_run=False)
-
-    result = execute_create_event(calendar, args)
-
-    assert result.status == "failed"
-    assert result.error is not None and "naive" in result.error

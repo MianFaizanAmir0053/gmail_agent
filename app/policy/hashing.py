@@ -21,6 +21,7 @@ match a new form by accident.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -110,6 +111,18 @@ def args_key(fernet_key: str) -> bytes:
     return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=_KEY_INFO).derive(
         fernet_key.encode()
     )
+
+
+def event_id_for(key: bytes, message_id: str, args_hash: str) -> str:
+    """The calendar event's own id, the same on every attempt (M17, D3).
+
+    Google accepts client-chosen ids of 5 to 1024 characters from base32hex
+    (`0`-`9`, `a`-`v`). A later attempt asks for this id before inserting, and
+    an insert that finds it taken gets a `409` rather than a second event.
+    Keyed, like the hash, so the id says nothing about the event.
+    """
+    digest = hmac.new(key, f"{message_id}:{args_hash}".encode(), hashlib.sha256).digest()
+    return "ma" + base64.b32hexencode(digest).decode().rstrip("=").lower()[:30]
 
 
 def args_hash(key: bytes, *, tool: str, calendar_id: str, args: CreateEventInput) -> str:

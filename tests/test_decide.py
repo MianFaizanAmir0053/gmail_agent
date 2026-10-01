@@ -409,22 +409,20 @@ def committed_proposal(migrated_database: str) -> Iterator[str]:
         cleanup.execute("DELETE FROM processed_messages WHERE gmail_message_id = %s", (message_id,))
 
 
-@pytest.mark.integration
-def test_two_concurrent_decisions_on_one_revision_one_wins(
-    migrated_database: str, committed_proposal: str
-) -> None:
+def _race(migrated_database: str, message_id: str, actions: tuple[str, str]) -> list[Any]:
+    """Two taps on one card, each on its own connection, released together."""
     barrier = threading.Barrier(2)
     results: list[DecisionResult] = []
     lock = threading.Lock()
     with psycopg.connect(migrated_database) as read:
-        token = _token(read, committed_proposal)
+        token = _token(read, message_id)
 
     def tap(action: Any) -> None:
         with psycopg.connect(migrated_database, autocommit=True) as own:
             barrier.wait()
             result = decide(
                 own,
-                committed_proposal,
+                message_id,
                 action=action,
                 revision=1,
                 via="web",
@@ -434,11 +432,33 @@ def test_two_concurrent_decisions_on_one_revision_one_wins(
         with lock:
             results.append(result)
 
-    threads = [threading.Thread(target=tap, args=(a,)) for a in ("confirm", "cancel")]
+    threads = [threading.Thread(target=tap, args=(a,)) for a in actions]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=60)
+    return results
+
+
+@pytest.mark.integration
+def test_two_concurrent_confirms_record_one_decision_and_one_approval(
+    migrated_database: str, committed_proposal: str
+) -> None:
+    """The second is answered as a retry of the first (M17, D2)."""
+    results = _race(migrated_database, committed_proposal, ("confirm", "confirm"))
+
+    assert [r.status for r in results] == ["queued", "queued"]
+    assert len({r.decision_id for r in results}) == 1
+    with psycopg.connect(migrated_database) as check:
+        assert len(_decisions(check, committed_proposal)) == 1
+        assert len(_actions(check, committed_proposal)) == 1
+
+
+@pytest.mark.integration
+def test_two_concurrent_decisions_on_one_revision_one_wins(
+    migrated_database: str, committed_proposal: str
+) -> None:
+    results = _race(migrated_database, committed_proposal, ("confirm", "cancel"))
 
     assert sorted(r.status for r in results) == ["queued", "stale"]
     with psycopg.connect(migrated_database) as check:

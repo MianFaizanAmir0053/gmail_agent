@@ -27,7 +27,7 @@ import psycopg
 
 from app.graph.nodes import MAX_REVISIONS
 from app.policy import audit
-from app.policy.hashing import INVITE
+from app.policy.registry import TOOLS
 
 Action = Literal["confirm", "edit", "cancel", "sweep"]
 Via = Literal["web", "cli", "telegram", "sweep"]
@@ -218,7 +218,7 @@ def _confirm(
         ).fetchone()
         assert inserted is not None
         decision_id = int(inserted[0])
-        tier = 2 if tool == INVITE else 1
+        tier = int(TOOLS[tool])
         conn.execute(
             """
             INSERT INTO outbound_actions

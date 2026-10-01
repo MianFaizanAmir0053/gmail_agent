@@ -29,8 +29,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.contracts import ActionResult
-from app.google.calendar import BusyInterval, CalendarClient, NotUtcError
+from app.google.calendar import BusyInterval, CalendarClient
 
 
 class CreateEventInput(BaseModel):
@@ -169,32 +168,9 @@ class ConflictCheck:
 def check_conflicts(calendar: CalendarClient, args: CreateEventInput) -> ConflictCheck:
     """Read-only availability check, run before a human is asked to approve.
 
-    Deliberately separate from `execute_create_event`: the approval card needs
-    to show the conflict *before* anything is written.
+    Deliberately separate from the write, which only the registry runs
+    (`app/policy/registry.py`): the approval card needs to show the conflict
+    *before* anything is written.
     """
     busy = calendar.freebusy(args.start_utc, args.end_utc)
     return ConflictCheck(conflicts=overlaps(args.start_utc, args.end_utc, busy))
-
-
-def execute_create_event(calendar: CalendarClient, args: CreateEventInput) -> ActionResult:
-    """Run the tool call. Never raises for expected failures."""
-    try:
-        event_id = calendar.create_event(
-            title=args.title,
-            start_utc=args.start_utc,
-            end_utc=args.end_utc,
-            timezone=args.timezone,
-            attendees=args.attendees,
-            location=args.location,
-            description=args.description,
-        )
-    except NotUtcError as exc:
-        return ActionResult(status="failed", error=str(exc))
-
-    if event_id is None:
-        # Dry run. Not a failure, and deliberately not "created" either -- the
-        # ledger's CHECK constraint forbids a created row without an event id,
-        # and inventing one would corrupt the audit trail.
-        return ActionResult(status="dry_run")
-
-    return ActionResult(status="created", event_id=event_id)

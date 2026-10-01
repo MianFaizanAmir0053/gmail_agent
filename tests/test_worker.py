@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 
 import psycopg
@@ -22,6 +23,7 @@ from app.channel.park import ProposalRecord, record_park
 from app.channel.worker import (
     ACT_INTERRUPTED,
     ATTEMPTS_EXHAUSTED,
+    NO_OUTCOME,
     UNEXPECTED_REVISION,
     OpenDecision,
     Step,
@@ -34,15 +36,29 @@ from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.payloads import ClassifyPayload
 from app.graph.nodes import Deps
 from app.graph.runner import GraphSession, ThreadView
+from app.policy import audit
+from app.policy.hashing import args_key
+from app.policy.registry import Registry
 from app.store.ledger import MessageLedger, MessageStatus
 
 NOW = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
 START = datetime(2026, 10, 2, 11, 0, tzinfo=UTC)
+KEY = args_key("test-key")
 
 
-def _decision(action: str = "confirm", revision: int = 1) -> OpenDecision:
+def _decision(
+    action: str = "confirm", revision: int = 1, *, action_status: str | None = None
+) -> OpenDecision:
     return OpenDecision(
-        id=1, message_id="m1", revision=revision, action=action, correction=None, attempts=0
+        id=1,
+        message_id="m1",
+        revision=revision,
+        action=action,
+        correction=None,
+        attempts=0,
+        action_id=None if action_status is None else 1,
+        nonce=None if action_status is None else "0" * 32,
+        action_status=action_status,
     )
 
 
@@ -88,15 +104,43 @@ def test_a_thread_stopped_mid_graph_is_re_driven(next_: tuple[str, ...]) -> None
     assert step.kind == "redrive"
 
 
-def test_a_thread_stopped_before_act_is_never_re_driven() -> None:
-    """Creating an event is not idempotent: a second run could book twice."""
+def test_a_thread_stopped_before_act_with_nothing_to_finish_from_is_never_re_driven() -> None:
+    """A Confirm from before M17 has no approval: its write could not be
+    found again, so a second run could book twice."""
     step = step_for(_view(next_=("act",)), MessageStatus.AWAITING_APPROVAL, _decision())
     assert (step.kind, step.outcome, step.reason) == ("settle", "failed", ACT_INTERRUPTED)
+
+
+@pytest.mark.parametrize(
+    "status", ["approved", "executing", "done", "dry_run", "refused", "failed"]
+)
+def test_a_thread_stopped_before_act_with_an_approval_is_re_driven(status: str) -> None:
+    """The registry checks a new action, finishes a begun one from what it
+    stored, and returns a settled one's outcome with its reason (M17, D3)."""
+    step = step_for(
+        _view(next_=("act",)), MessageStatus.AWAITING_APPROVAL, _decision(action_status=status)
+    )
+    assert step.kind == "redrive"
 
 
 def test_a_thread_that_ended_without_an_outcome_fails() -> None:
     step = step_for(_view(), MessageStatus.AWAITING_APPROVAL, _decision())
     assert (step.kind, step.outcome) == ("settle", "failed")
+
+
+def test_a_refusal_settles_with_the_registrys_reason() -> None:
+    """`act` marked the message FAILED with a fixed phrase; the decision says
+    the same, not "no outcome recorded"."""
+    step = step_for(
+        _view(), MessageStatus.FAILED, _decision(), ledger_error="made under another mode"
+    )
+    assert (step.kind, step.outcome, step.reason) == ("settle", "failed", "made under another mode")
+
+
+def test_a_failure_in_words_of_its_own_is_not_copied_into_the_decision() -> None:
+    """Only the registry's fixed phrases: anything else may quote a model."""
+    step = step_for(_view(), MessageStatus.FAILED, _decision(), ledger_error="ValueError: Sara's")
+    assert step.reason == NO_OUTCOME
 
 
 # --- through a real graph and Postgres ----------------------------------------
@@ -148,43 +192,92 @@ class FakePipeline:
 
 @dataclass
 class FakeCalendar:
+    """The calendar the registry writes to, keeping events by calendar and id.
+    Each `fail_*` count fails that many calls: before Google makes the event,
+    after it does, or when asked for one."""
+
     dry_run: bool = True
     calendar_id: str = "test-calendar"
-    created: list[Any] = field(default_factory=list)
+    events: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    calls: int = 0
+    """Every insert asked for, made or not: a blind second insert shows here."""
+    inserts: int = 0
+    fail_before: int = 0
+    fail_after: int = 0
+    fail_find: int = 0
 
     def freebusy(self, start: datetime, end: datetime) -> list[Any]:
         return []
 
-    def create_event(self, **kwargs: Any) -> str | None:
+    def insert(self, calendar_id: str, body: dict[str, Any], *, event_id: str) -> str | None:
+        self.calls += 1
         if self.dry_run:
             return None
-        self.created.append(kwargs)
-        return "evt_1"
+        if self.fail_before:
+            self.fail_before -= 1
+            raise ConnectionError("network down before the insert")
+        if (calendar_id, event_id) not in self.events:
+            self.inserts += 1
+            self.events[(calendar_id, event_id)] = body
+        if self.fail_after:
+            self.fail_after -= 1
+            raise ConnectionError("network down after Google made the event")
+        return event_id
+
+    def find(self, calendar_id: str, event_id: str) -> str | None:
+        if self.fail_find:
+            self.fail_find -= 1
+            raise ConnectionError("Google unavailable")
+        return event_id if (calendar_id, event_id) in self.events else None
 
 
 @dataclass
 class BrokenLedger:
-    """The graph's ledger, failing its final mark: the thread stops at `act`."""
+    """The graph's ledger, failing its marks: the thread stops at `act`.
+    `failures` fails only the first that many; None fails every one."""
 
     real: MessageLedger
+    failures: int | None = None
     marks: int = 0
 
     def mark(self, *args: Any, **kwargs: Any) -> None:
         self.marks += 1
-        raise RuntimeError("database went away")
+        if self.failures is None:
+            raise RuntimeError("database went away")
+        if self.failures > 0:
+            self.failures -= 1
+            raise RuntimeError("database went away")
+        self.real.mark(*args, **kwargs)
+
+
+def _deps(
+    conn: psycopg.Connection,
+    *,
+    pipeline: FakePipeline | None = None,
+    ledger: Any = None,
+    calendar: FakeCalendar | None = None,
+) -> Deps:
+    calendar = calendar or FakeCalendar()
+    return Deps(
+        gmail=cast(Any, FakeGmail()),
+        pipeline=cast(Any, pipeline or FakePipeline()),
+        calendar=cast(Any, calendar),
+        ledger=ledger or MessageLedger(conn),
+        user_timezone="Asia/Karachi",
+        registry=Registry(conn, calendar, key=KEY),
+        pipeline_version="0123456789ab",
+        args_key=KEY,
+    )
 
 
 def _world(
-    conn: psycopg.Connection, *, pipeline: FakePipeline | None = None, ledger: Any = None
+    conn: psycopg.Connection,
+    *,
+    pipeline: FakePipeline | None = None,
+    ledger: Any = None,
+    calendar: FakeCalendar | None = None,
 ) -> tuple[GraphSession, list[str]]:
-    deps = Deps(
-        gmail=cast(Any, FakeGmail()),
-        pipeline=cast(Any, pipeline or FakePipeline()),
-        calendar=cast(Any, FakeCalendar()),
-        ledger=ledger or MessageLedger(conn),
-        user_timezone="Asia/Karachi",
-        pipeline_version="0123456789ab",
-    )
+    deps = _deps(conn, pipeline=pipeline, ledger=ledger, calendar=calendar)
     session = GraphSession(deps=deps, conn=conn, checkpointer=InMemorySaver(), trace=False)
     announced: list[str] = []
     return session, announced
@@ -299,9 +392,10 @@ def test_a_thread_stopped_mid_graph_is_re_driven_to_a_repark(conn: psycopg.Conne
 
 
 @pytest.mark.integration
-def test_a_thread_stopped_before_act_fails_and_is_never_re_driven(
+def test_a_confirm_from_before_m17_stopped_at_act_fails_and_is_never_re_driven(
     conn: psycopg.Connection,
 ) -> None:
+    """It has no approval, so nothing could find its write again."""
     broken = BrokenLedger(MessageLedger(conn))
     session, _ = _world(conn, ledger=broken)
     MessageLedger(conn).claim("m1", "m1")
@@ -310,6 +404,7 @@ def test_a_thread_stopped_before_act_fails_and_is_never_re_driven(
     assert pending is not None
     record_park(session, "m1", pending)
     _confirm(conn, "m1", revision=1)
+    conn.execute("DELETE FROM outbound_actions WHERE message_id = 'm1'")  # as M16 left it
     with pytest.raises(RuntimeError):
         session.resume("m1", {"action": "confirm"})
     marks_before = broken.marks
@@ -386,18 +481,15 @@ class CountingSession(GraphSession):
 
 
 def _counting(
-    conn: psycopg.Connection, *, pipeline: FakePipeline | None = None, fail_resumes: int = 0
+    conn: psycopg.Connection,
+    *,
+    pipeline: FakePipeline | None = None,
+    fail_resumes: int = 0,
+    calendar: FakeCalendar | None = None,
+    ledger: Any = None,
 ) -> CountingSession:
-    deps = Deps(
-        gmail=cast(Any, FakeGmail()),
-        pipeline=cast(Any, pipeline or FakePipeline()),
-        calendar=cast(Any, FakeCalendar()),
-        ledger=MessageLedger(conn),
-        user_timezone="Asia/Karachi",
-        pipeline_version="0123456789ab",
-    )
     return CountingSession(
-        deps=deps,
+        deps=_deps(conn, pipeline=pipeline, calendar=calendar, ledger=ledger),
         conn=conn,
         checkpointer=InMemorySaver(),
         trace=False,
@@ -731,5 +823,255 @@ def test_the_job_sees_the_oldest_open_decision_and_whether_it_is_due(
     assert decisions_status(conn) == (decided_at[0], False)  # another worker has it
 
     conn.execute("UPDATE decisions SET lease_until = NULL")
+    conn.execute("UPDATE control SET paused = true")
+    assert decisions_status(conn) == (decided_at[0], False)  # paused: no session (M17, D6)
+
+    conn.execute("UPDATE control SET paused = false")
     apply_open(session)
     assert decisions_status(conn) == (None, False)
+
+
+# --- writes that can be finished (M17, 17.5-17.6) -------------------------------
+
+
+def _action(conn: psycopg.Connection) -> tuple[Any, ...]:
+    row = conn.execute(
+        "SELECT status, reason, request IS NOT NULL FROM outbound_actions WHERE message_id = 'm1'"
+    ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("fail_before", "fail_after", "ledger_failures", "calls"),
+    [
+        (1, 0, 0, 2),  # before Google made the event: sent again, once
+        (0, 1, 0, 1),  # after Google made it: found, never sent again
+        (0, 0, 1, 1),  # after the action was done: its outcome stands
+    ],
+    ids=["before-insert", "after-insert", "after-done"],
+)
+def test_a_live_write_cut_off_anywhere_ends_with_exactly_one_event(
+    conn: psycopg.Connection, fail_before: int, fail_after: int, ledger_failures: int, calls: int
+) -> None:
+    """The 17.6 exit: one event, the ledger CREATED, no action left executing."""
+    calendar = FakeCalendar(dry_run=False, fail_before=fail_before, fail_after=fail_after)
+    ledger = BrokenLedger(MessageLedger(conn), failures=ledger_failures)
+    session = _counting(conn, calendar=calendar, ledger=ledger)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+
+    assert apply_open(session) == [("m1", "retrying")]
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "created")]
+
+    [(calendar_id, event_id)] = calendar.events
+    assert calendar_id == "test-calendar" and calendar.calls == calls
+    entry = MessageLedger(conn).get("m1")
+    assert entry is not None
+    assert (entry.status, entry.calendar_event_id) == (MessageStatus.CREATED, event_id)
+    assert _proposal(conn) == ("decided", 1, "created")
+    assert _action(conn) == ("done", None, False)
+    # The decision was applied once; the retry only re-drove `act`.
+    assert (session.resumes, session.redrives) == (1, 1)
+
+
+@pytest.mark.integration
+def test_a_dry_run_cut_off_at_the_ledger_settles_from_what_was_stored(
+    conn: psycopg.Connection,
+) -> None:
+    calendar = FakeCalendar()
+    session = _counting(conn, calendar=calendar, ledger=BrokenLedger(MessageLedger(conn), 1))
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+
+    assert apply_open(session) == [("m1", "retrying")]
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "skipped")]
+
+    assert calendar.events == {}
+    assert _action(conn) == ("dry_run", None, False)
+    assert _ledger(conn) is MessageStatus.SKIPPED
+
+
+def _cut_off_and_exhausted(conn: psycopg.Connection, calendar: FakeCalendar) -> CountingSession:
+    """A live Confirm whose write was cut off, with its attempts spent."""
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    assert apply_open(session) == [("m1", "retrying")]
+    assert _action(conn)[0] == "executing"
+    conn.execute("UPDATE decisions SET attempts = 3, next_attempt_at = now()")
+    return session
+
+
+@pytest.mark.integration
+def test_giving_up_on_a_write_google_made_settles_it_as_created(
+    conn: psycopg.Connection,
+) -> None:
+    calendar = FakeCalendar(dry_run=False, fail_after=1)
+    session = _cut_off_and_exhausted(conn, calendar)
+
+    assert apply_open(session) == [("m1", "created")]
+
+    [(_, event_id)] = calendar.events
+    entry = MessageLedger(conn).get("m1")
+    assert entry is not None
+    assert (entry.status, entry.calendar_event_id) == (MessageStatus.CREATED, event_id)
+    assert _outcomes(conn) == [("created", None, True)]
+    assert _proposal(conn) == ("decided", 1, "created")
+    assert _action(conn) == ("done", None, False)
+    assert calendar.inserts == 1
+
+
+@pytest.mark.integration
+def test_giving_up_on_a_write_google_never_made_fails_it(conn: psycopg.Connection) -> None:
+    calendar = FakeCalendar(dry_run=False, fail_before=1)
+    session = _cut_off_and_exhausted(conn, calendar)
+
+    assert apply_open(session) == [("m1", "failed")]
+
+    assert calendar.events == {}
+    assert _outcomes(conn) == [("failed", ATTEMPTS_EXHAUSTED, True)]
+    assert _ledger(conn) is MessageStatus.FAILED
+    assert _action(conn) == ("failed", audit.REASONS["exhausted"], False)
+
+
+@pytest.mark.integration
+def test_giving_up_when_google_cannot_be_asked_settles_nothing(conn: psycopg.Connection) -> None:
+    """Usually why the attempts ran out. It asks again in an hour."""
+    calendar = FakeCalendar(dry_run=False, fail_before=1, fail_find=2)
+    session = _cut_off_and_exhausted(conn, calendar)
+
+    assert apply_open(session) == [("m1", "unconfirmed")]
+    attempts, wait, leased = cast(tuple[int, float, bool], _open(conn))
+    assert (attempts, leased) == (3, False) and 3590 < wait <= 3600
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "unconfirmed")]
+
+    assert _action(conn)[0] == "executing"
+    assert _ledger(conn) is MessageStatus.AWAITING_APPROVAL
+    unconfirmed = conn.execute(
+        "SELECT count(*) FROM audit_log WHERE kind = 'write_unconfirmed' AND message_id = 'm1'"
+    ).fetchone()
+    assert unconfirmed == (1,)  # audited once, not every hour
+
+
+@pytest.mark.integration
+def test_while_paused_nothing_is_applied(conn: psycopg.Connection) -> None:
+    """The Confirm stays parked, so a Withdraw could still reach it (D6). It
+    applies as soon as the owner resumes."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    conn.execute("UPDATE control SET paused = true")
+
+    assert apply_open(session) == []
+    assert session.resumes == 0
+    assert _proposal(conn) == ("deciding", 1, None)
+
+    conn.execute("UPDATE control SET paused = false")
+    assert apply_open(session) == [("m1", "skipped")]
+    assert (session.resumes, session.redrives) == (1, 0)
+
+
+@pytest.mark.integration
+def test_a_pause_that_lands_mid_apply_holds_the_write_without_spending_attempts(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paused after the worker looked: the registry stops the action itself,
+    and the worker releases it as due, costing no attempt."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    conn.execute("UPDATE control SET paused = true")
+    monkeypatch.setattr(worker, "control", SimpleNamespace(is_paused=lambda conn: False))
+
+    assert apply_open(session) == [("m1", "paused")]
+    attempts, wait, leased = cast(tuple[int, float, bool], _open(conn))
+    assert (attempts, leased) == (0, False) and wait <= 0
+    assert _action(conn)[0] == "approved"
+
+    conn.execute("UPDATE control SET paused = false")
+    assert apply_open(session) == [("m1", "skipped")]
+    assert (session.resumes, session.redrives) == (1, 1)
+
+
+@pytest.mark.integration
+def test_a_last_write_that_failed_is_looked_up_later_not_at_once(
+    conn: psycopg.Connection,
+) -> None:
+    """Google can finish an insert after the call timed out on this side."""
+    calendar = FakeCalendar(dry_run=False, fail_before=2)
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    assert apply_open(session) == [("m1", "retrying")]
+    conn.execute("UPDATE decisions SET attempts = 2, next_attempt_at = now()")
+
+    assert apply_open(session) == [("m1", "retrying")]  # the third write failed
+
+    attempts, wait, leased = cast(tuple[int, float, bool], _open(conn))
+    assert (attempts, leased) == (3, False) and 590 < wait <= 600
+    assert _action(conn)[0] == "executing"
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "failed")]  # looked up: never made
+
+
+@pytest.mark.integration
+def test_giving_up_never_fails_a_write_that_may_exist(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even when the clean settle cannot run, a begun write is not failed on
+    a guess (D3): the decision stays open and is asked about again."""
+    session = _cut_off_and_exhausted(conn, FakeCalendar(dry_run=False, fail_before=1))
+
+    def unreadable(*args: Any, **kwargs: Any) -> Step:
+        raise RuntimeError("the checkpoint cannot be read")
+
+    monkeypatch.setattr(worker, "step_for", unreadable)
+
+    assert apply_open(session) == [("m1", "unconfirmed")]
+    assert _action(conn)[0] == "executing"
+    assert _ledger(conn) is MessageStatus.AWAITING_APPROVAL
+    assert _open(conn) is not None
+
+
+@pytest.mark.integration
+def test_giving_up_on_a_dry_run_settles_it_as_skipped(conn: psycopg.Connection) -> None:
+    """The registry ran it; only the ledger's mark kept failing."""
+    session = _counting(conn, ledger=BrokenLedger(MessageLedger(conn)))
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    assert apply_open(session) == [("m1", "retrying")]
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "retrying")]
+    _make_due(conn)
+
+    assert apply_open(session) == [("m1", "skipped")]
+
+    entry = MessageLedger(conn).get("m1")
+    assert entry is not None
+    assert (entry.status, entry.error) == (MessageStatus.SKIPPED, "dry_run")
+    assert _outcomes(conn) == [("skipped", None, True)]
+    assert _proposal(conn) == ("decided", 1, "skipped")
+
+
+@pytest.mark.integration
+def test_a_refusal_cut_off_at_the_ledger_keeps_its_reason(conn: psycopg.Connection) -> None:
+    """Approved under dry run, then run live: the registry refuses it. The
+    re-drive returns the stored refusal, and the decision gives its reason."""
+    calendar = FakeCalendar()  # parked and approved under dry run
+    session = _counting(conn, calendar=calendar, ledger=BrokenLedger(MessageLedger(conn), 1))
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    calendar.dry_run = False  # a restart with DRY_RUN off
+
+    assert apply_open(session) == [("m1", "retrying")]
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "failed")]
+
+    assert calendar.calls == 0
+    assert _outcomes(conn) == [("failed", audit.REASONS["mode"], True)]
+    assert _action(conn) == ("refused", audit.REASONS["mode"], False)

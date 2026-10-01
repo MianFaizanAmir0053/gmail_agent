@@ -13,7 +13,7 @@ to draw a message.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from app.contracts import ActionResult, EmailMessage, ExtractionResult
 
@@ -35,6 +35,11 @@ class GraphState(TypedDict, total=False):
     """Human-readable clashes found by the free/busy check, for the approval card."""
 
     approved: bool
+    approval: dict[str, Any] | None
+    """The approval a Confirm carries to `act` (M17, D2): the action `decide()`
+    recorded and its nonce. Kept in the checkpoint, so a re-drive after a
+    crash finishes the same action rather than needing a new one."""
+
     correction: str
     """Free-text correction from a human choosing Edit; fed back into extraction."""
 

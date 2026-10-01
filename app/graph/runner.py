@@ -24,6 +24,7 @@ from app.graph.nodes import Deps
 from app.graph.versioning import pipeline_version
 from app.obs.trace import Tracer
 from app.policy.hashing import Binding, args_key
+from app.policy.registry import Registry
 from app.store.ledger import MessageLedger
 
 
@@ -91,8 +92,9 @@ class GraphSession:
 
         For a thread that consumed a decision and then failed mid-graph: its
         checkpoint still names the node that failed, and this runs it again.
-        Callers must not re-drive a thread whose next node is `act` -- creating
-        an event is not idempotent (`app/graph/build.py`).
+        A thread whose next node is `act` is re-driven only with an approval
+        in its state: the registry then finishes the write from what it
+        stored, rather than writing again (M17, D3).
         """
         return self._run(message_id, None)
 
@@ -170,6 +172,7 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
             settings.test_calendar_id,
             dry_run=settings.dry_run,
         )
+        key = args_key(settings.fernet_key.get_secret_value())
 
         deps = Deps(
             gmail=GmailClient(build_service("gmail", "v1", credentials)),
@@ -181,6 +184,7 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
             calendar=calendar,
             ledger=MessageLedger(conn),
             user_timezone=settings.user_timezone,
+            registry=Registry(conn, calendar, key=key),
             # The reviewer gets the calendar even when DRY_RUN is set: freebusy
             # is a read, and a reviewer that cannot see the calendar loses the
             # one check the extractor genuinely could not make.
@@ -190,6 +194,6 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
                 else None
             ),
             pipeline_version=pipeline_version(settings),
-            args_key=args_key(settings.fernet_key.get_secret_value()),
+            args_key=key,
         )
         yield GraphSession(deps=deps, conn=conn, checkpointer=checkpointer)
