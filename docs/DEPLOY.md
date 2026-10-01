@@ -424,6 +424,141 @@ code's five tries, so leave it on only for the minutes it takes.
 
 ---
 
+## 10. M20: mail sync
+
+The agent now reads Gmail's history instead of the newest page of unread
+mail: every Primary, Updates, Forums and sent message is stored as metadata
+(no subject, snippet or body), and the meeting pipeline reads new Primary
+mail from that record, read or not. Spec:
+[`docs/plans/M20-mail-sync.md`](plans/M20-mail-sync.md).
+
+### 10.1 Before the deploy
+
+- Migration `011_mail_sync.sql` applies at boot with `MIGRATE_ON_BOOT=true`,
+  or by hand with `python -m app.store.db`. It is additive and can be re-run.
+- No new secret or setting. `OWNER_EMAIL` and `OWNER_ALIASES` matter more
+  than before: mail from any of them to any of them is the owner's own
+  (`to_self`) and is never fed to the pipeline.
+- Feeding read mail as well as unread means one-time-code and password-reset
+  mail in Primary now reaches the classifier. The ledger records "not a
+  meeting" for it, never the model's reasoning; M18 strips codes before
+  anything stores them.
+
+### 10.2 The first runs
+
+The sync runs every two minutes, each run at most a minute.
+
+1. **The cursor.** The first run starts where the old poller stopped: its
+   last stored history id (`sync_state`), and `feed_from` is that pass's
+   time. On a fresh database it starts at the mailbox's present, and
+   `feed_from` is now. From this run on, poll reads the feed instead of the
+   unread page, and stops writing `sync_state`.
+2. **The replay.** The first pass replays everything since the old poller's
+   last pass. The feed takes mail from `feed_from` less an hour; nothing
+   older ever reaches the pipeline.
+3. **The switch-over listing,** once: unread mail outside the four other tabs
+   from the last seven days is stored.
+4. **The backfill** works back 90 days from `feed_from`, one day at a time,
+   in whatever quota is left. A busy mailbox takes hours. Nothing waits for
+   it, and nothing it stores is fed.
+5. If the old poller's history id has expired (about a week), the first run
+   is a catch-up instead (10.6).
+
+At every boot, claims a previous process left mid-message are settled: a
+parked one is left to reconciliation, one the feed would offer again is
+released, and the rest are marked FAILED ("stranded by shutdown").
+
+### 10.3 The quota
+
+Gmail allows 6,000 units per user per minute for everything. The sync,
+its queue, its catch-up and its backfill spend at most 2,000; the rest is
+the pipeline's and M17's. A fetch costs 20 units, a listing 5, a history page
+2. The pipeline's fetch retries a 429 or a 5xx for at most 30 seconds in all.
+
+The pacer counts per process. M15's `measure` runs in its own process, so
+do not run it while a backfill or a catch-up is in progress (`--status`
+says).
+
+### 10.4 Watching it
+
+- **`/health`** returns 503 ("no mail sync pass reached the end of history
+  in three intervals") when no pass has caught up for six minutes, after a
+  two-minute boot grace. A sync stuck behind a backlog counts as down.
+- **With the bearer secret** (`Authorization: Bearer $WEB_API_SECRET`),
+  `/health` shows `mail_sync`: the cursor's age, `feed_from`, the
+  backfill's reach, the fetch queue (queued, unreadable), any catch-up, the
+  too-old count, the row count, and the last recall.
+- **`job_runs`:** `mail_sync` (at most every ten minutes per outcome, and
+  every catch-up), and three rows a day from the recall at 05:15 UTC:
+  `mail_recall_sync`, `mail_recall_feed`, `mail_recall_categories`.
+- **Alerts,** once a day each: "Mail sync missed messages" (Gmail listed mail
+  the sync did not have -- it is stored and fed as it is found -- or a
+  category disagreed), and "The mail feed has stalled" (mail met the feed's
+  rule for over an hour without being processed, outside a pause or a
+  stopped cap, or the age rule skipped mail under a day old).
+- **Too old:** mail first reached more than seven days after it arrived --
+  after a long outage, restored from the trash, held by a pause -- is
+  recorded SKIPPED ("too old when reached"), never processed.
+
+### 10.5 The command line
+
+On the instance, through `fly ssh console`. Every command waits for a
+scheduled run to finish first, and the scheduled run skips its turn while a
+command holds the lock.
+
+```bash
+fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --status'"
+fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --show <message id>'"
+fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --once'"
+fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --catch-up'"
+fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --check-feed'"
+```
+
+| Option | What it does |
+|---|---|
+| `--status` | The cursor, `feed_from`, the backfill, queue and catch-up, counts by direction, category and how rows arrived, the latest too-old records, the last recalls |
+| `--show <id>` | One row's metadata, its ledger status and any queue entry. No content: none is stored |
+| `--once` | One run, as the scheduler does |
+| `--catch-up` | Records a gap from an hour before the last caught-up pass to now, as if the cursor had expired. The scheduled runs work it off |
+| `--check-feed` | The exit criterion's checks; exits 1 if either fails |
+
+Locally, against the dev mailbox: `uv run python -m app.mail.sync --once`.
+
+### 10.6 Catch-ups
+
+Gmail keeps history for about a week. If the sync has been down longer, the
+next run records the gap -- from an hour before its last caught-up pass to
+now -- moves the cursor to the present, and queues every stored message
+from the last seven days to be fetched again. The gap is listed a day at a
+time into the fetch queue, and worked off at the quota's pace; the feed
+holds back a message until its re-fetch answers, so mail trashed during the
+outage is never fed. Nothing is marked gone for not being listed. Progress
+shows in `--status` and `/health`.
+
+A message that fails to fetch on its own five times is marked unreadable
+and passed over; `/health` counts them. An outage (5xx, 429, the network)
+stops a run without counting against any message.
+
+### 10.7 Retention
+
+The hourly purge deletes mail metadata older than 180 days, and rows a week
+after their message left the mailbox. Ledger rows are kept. The row count is
+in `/health`.
+
+### 10.8 The owner's end tests (exit criterion)
+
+1. Send a message; within one sync interval `--show <id>` shows it as `out`.
+2. Open a new Primary message on the phone before the next tick: it is still
+   processed (`approve --list`, or its ledger row). A Promotions message is
+   not stored (`--show` says "not stored").
+3. Trash a recent Primary message, then run `--catch-up`: the gap is worked
+   off (`--status`), the message's labels show TRASH, and it is never fed.
+4. `--check-feed` passes once the backfill has reached its first day.
+5. `mail_recall_sync`, `mail_recall_feed` and `mail_recall_categories` are
+   `ok` in `job_runs` for seven days running.
+
+---
+
 ## Checklist
 
 - [ ] Billing enabled and budget alert set **before** the first deploy
@@ -446,3 +581,11 @@ code's five tries, so leave it on only for the minutes it takes.
 - [ ] `web_reader` password set, and its SQL editor query deleted
 - [ ] Vercel deploy-day variables set, Supabase's CA certificate included, then redeployed
 - [ ] Both phones signed in with notifications on; `/health` with the bearer shows at least 2 subscriptions
+
+**M20**
+
+- [ ] Migration 011 applied; `OWNER_EMAIL` and `OWNER_ALIASES` complete
+- [ ] First run: `--status` shows the cursor, `feed_from` at the old poller's last pass, the switch-over listed
+- [ ] `/health` 200, and with the bearer `mail_sync.cursor_age_seconds` under two minutes
+- [ ] No `measure` run while the backfill or a catch-up is in progress
+- [ ] The exit criterion (10.8), then seven clean days of recall

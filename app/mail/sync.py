@@ -1,5 +1,11 @@
 """Mail sync (M20, D3): every relevant message, from Gmail's history.
 
+    python -m app.mail.sync --once            # one run, as the scheduler does
+    python -m app.mail.sync --status          # the records, as counts and times
+    python -m app.mail.sync --show <id>       # one row's metadata, no content
+    python -m app.mail.sync --catch-up        # as if the cursor had expired
+    python -m app.mail.sync --check-feed      # the exit criterion's feed checks
+
 Run by the scheduler every two minutes, one run at a time, each bounded to
 60 seconds; whatever is left waits for the next tick. A run:
 
@@ -25,6 +31,7 @@ taken skips its turn, and a CLI run waits for it.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import threading
 import time
@@ -36,7 +43,7 @@ from typing import Any, Literal, NamedTuple
 
 import psycopg
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.google.auth import build_service, load_credentials
 from app.google.gmail import (
     CursorExpiredError,
@@ -917,3 +924,213 @@ def sync_lock(conn: psycopg.Connection, *, wait: bool) -> Iterator[bool]:
             except psycopg.Error:
                 # Closing the connection releases it all the same.
                 log.warning("could not release the mail sync's lock; the connection will")
+
+
+# --- the command line (D8) --------------------------------------------------------
+
+Out = Callable[[str], None]
+
+
+def print_status(conn: psycopg.Connection, out: Out = print) -> None:
+    """`--status`: each mailbox's cursor, `feed_from`, the backfill's, queue's
+    and any catch-up's progress, counts by direction, category and how rows
+    arrived, then the latest too-old records and the last recalls."""
+    accounts = [row[0] for row in conn.execute("SELECT account FROM gmail_cursors ORDER BY 1")]
+    if not accounts:
+        out("No sync has run yet: poll still reads the newest unread page.")
+    for account in accounts:
+        found = status(conn, account)
+        assert found is not None
+        backfill, queue, gap = found["backfill"], found["queue"], found["catch_up"]
+        out(account)
+        out(f"  last reached the end of history: {found['caught_up_at']}")
+        out(f"  feed from: {found['feed_from']}; switch-over listed: {found['switch_over_at']}")
+        out(f"  backfill back to {backfill['until']}{' (done)' if backfill['done'] else ''}")
+        if gap is None:
+            out(f"  catch-up: none ({found['catch_ups']} so far)")
+        else:
+            out(f"  catch-up: {gap['from']} to {gap['until']}, listed to {gap['listed_back_to']}")
+        out(f"  fetch queue: {queue['queued']} queued, {queue['unreadable']} unreadable")
+        out(f"  rows: {found['rows']}")
+        for column in ("direction", "category", "arrived_via"):
+            counts = conn.execute(
+                f"SELECT {column}, count(*) FROM gmail_messages WHERE account = %s"
+                " GROUP BY 1 ORDER BY 1",
+                (account,),
+            ).fetchall()
+            out(f"  by {column}: " + (", ".join(f"{name} {n}" for name, n in counts) or "none"))
+    too_old = conn.execute(
+        """
+        SELECT gmail_message_id, created_at FROM processed_messages
+         WHERE status = 'skipped' AND error = %s
+         ORDER BY created_at DESC LIMIT 10
+        """,
+        (feed.TOO_OLD,),
+    ).fetchall()
+    out(f"Latest too-old records: {len(too_old) or 'none'}")
+    for message_id, at in too_old:
+        out(f"  {at:%Y-%m-%d %H:%M}  {message_id}")
+    recalls = conn.execute(
+        """
+        SELECT job, finished_at, ok, seen, failed FROM job_runs
+         WHERE job LIKE 'mail_recall%%'
+         ORDER BY finished_at DESC LIMIT 6
+        """
+    ).fetchall()
+    out(f"Last recalls: {len(recalls) or 'none'}")
+    for job, at, ok, seen, failed in recalls:
+        verdict = "ok" if ok else "SHORT"
+        out(f"  {at:%Y-%m-%d %H:%M}  {job}  {verdict}  {seen} checked, {failed} short")
+
+
+def print_message(conn: psycopg.Connection, message_id: str, out: Out = print) -> bool:
+    """`--show`: one row's metadata. There is no content to show: none is
+    stored. The ledger's status is shown without its reason, which can be
+    the model's words."""
+    cursor = conn.execute("SELECT * FROM gmail_messages WHERE message_id = %s", (message_id,))
+    rows = cursor.fetchall()
+    if not rows:
+        out(f"{message_id}: not stored")
+        return False
+    assert cursor.description is not None
+    names = [column.name for column in cursor.description]
+    for row in rows:
+        for name, value in zip(names, row, strict=True):
+            out(f"  {name}: {value}")
+    ledger = conn.execute(
+        "SELECT status FROM processed_messages WHERE gmail_message_id = %s", (message_id,)
+    ).fetchone()
+    out(f"  ledger: {ledger[0] if ledger else 'none'}")
+    queued = conn.execute(
+        "SELECT reason, strikes, status FROM gmail_fetch_queue WHERE message_id = %s",
+        (message_id,),
+    ).fetchone()
+    if queued is not None:
+        out(f"  fetch queue: {queued[0]}, {queued[1]} strike(s), {queued[2]}")
+    return True
+
+
+def force_catch_up(
+    conn: psycopg.Connection, gmail: GmailClient, *, now: datetime | None = None
+) -> Gap:
+    """`--catch-up`: as if the cursor had expired. The scheduled sync works
+    the gap off; `--status` shows how far it has got."""
+    profile = gmail.profile()
+    cursor = load_cursor(conn, profile.address)
+    if cursor is None:
+        raise SystemExit("No sync has run for this mailbox yet: run --once first.")
+    return record_gap(
+        conn,
+        profile.address,
+        old_history_id=cursor.history_id,
+        new_history_id=profile.history_id,
+        since=(cursor.caught_up_at or cursor.feed_from) - MARGIN,
+        until=now or datetime.now(UTC),
+    )
+
+
+def check_feed(conn: psycopg.Connection, out: Out = print) -> bool:
+    """`--check-feed`: the exit criterion's checks of the switch-over (D8).
+
+    1. No message older than `feed_from` less an hour has a ledger row made
+       after the switch-over: the backfill never reached the pipeline.
+    2. Every Primary message from the switch-over hour -- an hour either side
+       of `feed_from` -- was processed, or recorded with a reason.
+    """
+    early = conn.execute(
+        """
+        SELECT m.message_id
+          FROM gmail_messages m
+          JOIN gmail_cursors c ON c.account = m.account
+          JOIN processed_messages p ON p.gmail_message_id = m.message_id
+         WHERE m.internal_at < c.feed_from - %(margin)s AND p.created_at >= c.created_at
+         ORDER BY m.internal_at
+        """,
+        {"margin": feed.MARGIN},
+    ).fetchall()
+    waiting = conn.execute(
+        f"""
+        SELECT m.message_id
+          FROM gmail_messages m
+          JOIN gmail_cursors c ON c.account = m.account
+         WHERE {feed.RULE}
+           AND m.internal_at >= c.feed_from - %(margin)s
+           AND m.internal_at < c.feed_from + %(margin)s
+         ORDER BY m.internal_at
+        """,
+        {"margin": feed.MARGIN},
+    ).fetchall()
+    out(
+        "Older mail processed after the switch-over: "
+        + (", ".join(row[0] for row in early) if early else "none (good)")
+    )
+    out(
+        "Switch-over hour mail neither processed nor recorded: "
+        + (", ".join(row[0] for row in waiting) if waiting else "none (good)")
+    )
+    return not early and not waiting
+
+
+@contextmanager
+def _cli_lock(conn: psycopg.Connection) -> Iterator[None]:
+    """The CLI waits for a scheduled run to finish, and says so."""
+    with sync_lock(conn, wait=False) as held:
+        if held:
+            yield
+            return
+    print("Waiting for the scheduled run to finish...")
+    with sync_lock(conn, wait=True):
+        yield
+
+
+def _connect(database_url: str) -> psycopg.Connection:
+    return psycopg.connect(database_url, autocommit=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m app.mail.sync",
+        description="The mail sync (M20). Every command waits for a scheduled run to finish.",
+    )
+    commands = parser.add_mutually_exclusive_group(required=True)
+    commands.add_argument("--once", action="store_true", help="Run one pass.")
+    commands.add_argument(
+        "--status", action="store_true", help="The records, as counts and times only."
+    )
+    commands.add_argument("--show", metavar="MESSAGE_ID", help="One row's metadata.")
+    commands.add_argument(
+        "--catch-up", action="store_true", help="Force a catch-up, as if the cursor had expired."
+    )
+    commands.add_argument(
+        "--check-feed", action="store_true", help="The exit criterion's switch-over checks."
+    )
+    args = parser.parse_args(argv)
+    settings = get_settings()
+
+    with _connect(settings.database_url) as conn, _cli_lock(conn):
+        if args.once:
+            report = sync_once(conn, sync_client(settings), owners=owners_of(settings))
+            print(
+                f"{report.records} record(s): {report.stored} stored, {report.updated} updated, "
+                f"{report.gone} gone, {report.queued} queued; "
+                f"{'reached the end of history' if report.reached_end else 'not at the end'}"
+                f"{f' (stopped: {report.stopped})' if report.stopped else ''}."
+            )
+            return 0 if report.ok else 1
+        if args.status:
+            print_status(conn)
+            return 0
+        if args.show:
+            return 0 if print_message(conn, args.show) else 1
+        if args.catch_up:
+            gap = force_catch_up(conn, sync_client(settings))
+            print(
+                f"Recorded a gap from {gap.since:%Y-%m-%d %H:%M} to {gap.until:%Y-%m-%d %H:%M} "
+                "UTC. The scheduled sync works it off; --status shows how far it has got."
+            )
+            return 0
+        return 0 if check_feed(conn) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

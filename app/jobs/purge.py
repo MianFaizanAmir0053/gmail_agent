@@ -74,6 +74,9 @@ class PurgeResult:
     pairing_codes_deleted: int
     """Expired pairing codes."""
 
+    mail_messages_deleted: int = 0
+    """Mail sync rows past their 180 days, or a week gone (M20, D7)."""
+
 
 def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
     # Opened first: its setup() creates the checkpoint tables on a fresh
@@ -110,7 +113,26 @@ def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
         proposals_cleared=proposals_cleared,
         corrections_cleared=corrections_cleared,
         pairing_codes_deleted=pairing_codes_deleted,
+        mail_messages_deleted=_purge_mail(conn),
     )
+
+
+MAIL_KEPT_FOR = timedelta(days=180)
+"""The owner's decision (M20, D7): mail metadata older than this is deleted."""
+
+GONE_KEPT_FOR = timedelta(days=7)
+"""A row whose message left the mailbox is kept this long after it went."""
+
+
+def _purge_mail(conn: psycopg.Connection) -> int:
+    """Delete mail sync rows past their 180 days, and rows a week gone.
+
+    The ledger is untouched: it records what was done, and quotes nothing.
+    """
+    return conn.execute(
+        "DELETE FROM gmail_messages WHERE internal_at < now() - %s OR gone_at < now() - %s",
+        (MAIL_KEPT_FOR, GONE_KEPT_FOR),
+    ).rowcount
 
 
 def _clear_reasons(conn: psycopg.Connection) -> int:

@@ -157,6 +157,53 @@ def test_the_mail_feeds_fixed_reasons_survive(
         assert entry is not None and entry.error == reason
 
 
+# --- the mail sync's records (M20, D7) -----------------------------------------
+
+
+def _mail_row(conn: psycopg.Connection, message_id: str, *, days_old: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO gmail_messages (account, message_id, thread_id, internal_at, direction,
+                                    to_self, category, has_list_unsubscribe, arrived_via)
+        VALUES ('me@example.com', %s, 't', now() - make_interval(days => %s), 'in', false,
+                'primary', false, 'history')
+        """,
+        (message_id, days_old),
+    )
+
+
+def _mail_ids(conn: psycopg.Connection) -> set[str]:
+    return {row[0] for row in conn.execute("SELECT message_id FROM gmail_messages").fetchall()}
+
+
+def test_mail_metadata_is_kept_180_days_and_gone_rows_a_week(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    conn.execute("DELETE FROM gmail_messages")
+    _mail_row(conn, "day-179", days_old=179)
+    _mail_row(conn, "day-181", days_old=181)
+    _mail_row(conn, "gone-6-days", days_old=10)
+    _mail_row(conn, "gone-8-days", days_old=10)
+    conn.execute(
+        """
+        UPDATE gmail_messages SET gone_at = now() - CASE message_id
+            WHEN 'gone-6-days' THEN interval '6 days' ELSE interval '8 days' END
+         WHERE message_id LIKE 'gone-%%'
+        """
+    )
+    # Ledger rows are untouched: they are the record of what was done.
+    ledger = MessageLedger(conn)
+    ledger.claim("day-181", "day-181")
+    ledger.mark("day-181", MessageStatus.SKIPPED, error=TOO_OLD)
+
+    result = purge(conn, migrated_database)
+
+    assert _mail_ids(conn) == {"day-179", "gone-6-days"}
+    assert result.mail_messages_deleted == 2
+    entry = ledger.get("day-181")
+    assert entry is not None and entry.error == TOO_OLD
+
+
 # --- the web channel's records (M16, D8) -------------------------------------
 
 CARD: dict[str, Any] = {

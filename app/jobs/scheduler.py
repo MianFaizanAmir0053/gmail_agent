@@ -245,6 +245,8 @@ def run_purge(settings: Settings) -> None:
             result.corrections_cleared,
             result.pairing_codes_deleted,
         )
+        if result.mail_messages_deleted:
+            log.info("purge: %d mail sync row(s) deleted", result.mail_messages_deleted)
     record_tick(settings, "purge", started_at, ok=True)
 
 
