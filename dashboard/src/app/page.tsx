@@ -1,3 +1,4 @@
+import { DecisionButtons } from "@/components/DecisionButtons";
 import { ProposalCard } from "@/components/ProposalCard";
 import { Refresher } from "@/components/Refresher";
 import { ago } from "@/lib/format";
@@ -26,9 +27,20 @@ export default async function TimelinePage() {
         <div className="empty">Nothing is waiting for a decision.</div>
       ) : (
         <div className="proposals">
-          {open.map((row) => (
-            <ProposalCard key={row.message_id} view={cardView(row, zone)} />
-          ))}
+          {open.map((row) => {
+            const view = cardView(row, zone);
+            return (
+              <ProposalCard key={row.message_id} view={view}>
+                {view.canDecide && (
+                  <DecisionButtons
+                    messageId={view.messageId}
+                    revision={view.revision}
+                    canEdit={view.canEdit}
+                  />
+                )}
+              </ProposalCard>
+            );
+          })}
         </div>
       )}
 

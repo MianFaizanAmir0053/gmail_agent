@@ -874,9 +874,16 @@ A settle is one transaction of conditional writes.
 - A stale answer shows the latest version.
 
 **Acceptance criteria:**
-- [ ] Every action checks the owner first. The check lives in `access.ts` and is tested.
-- [ ] `WEB_API_SECRET` never appears in the browser bundle: a search of the build output finds nothing.
-- [ ] Against a local API on Neon, confirm, edit and cancel each end with records that agree, and a stale card is refused.
+- [x] Every action checks the owner first (`isOwnerSession`, tested in `access.ts`). The form rules and the owner-facing messages live in `decisionForm.ts` and are tested too. No raw server error ever reaches the page.
+- [x] `WEB_API_SECRET` never appears in the browser bundle. A build with a canary secret and a canary API host found neither in `.next/static`, nor in the server build, since both are read at runtime. `fly.ts` imports `server-only`, so a client component that pulls it in fails the build.
+- [x] Against a local API on Neon, in the browser:
+  - Confirm queued a `confirm` (via web, revision 1), and the card showed "Applying…";
+  - Edit queued an `edit` with its correction;
+  - after a worker-style settle, the edit came back at revision 2;
+  - a Cancel on a card whose proposal had moved to revision 2 was refused with "This proposal changed. The latest version is shown.", and recorded nothing.
+
+  The worker itself did not run: this machine has no Google token. The decisions were settled by hand, as the worker's tests show it does.
+- Found in the browser: the card order was not total, so the 3-second re-read could move cards under the owner's thumb, and a tap landed on another card's button. The order now breaks ties by message id.
 
 **Verification:** the web checks; the local run.
 

@@ -19,14 +19,21 @@ export type DecisionRow = {
   title: string | null;
 };
 
-/** Proposals waiting for the owner, or being applied: newest first. */
+/**
+ * Proposals waiting for the owner, or being applied: newest first.
+ *
+ * The order is total -- ties broken by message id -- because the page
+ * re-reads every few seconds while a decision is applied. An order that
+ * shuffled tied cards on each read would move them under the owner's thumb,
+ * and a tap meant for one card could land on another's button.
+ */
 export async function openProposals(): Promise<ProposalRow[]> {
   return query<ProposalRow>(`
     SELECT message_id, revision, status, final_status, action_type, dry_run,
            payload, parked_at
       FROM proposals
      WHERE status IN ('pending', 'deciding')
-     ORDER BY parked_at DESC
+     ORDER BY parked_at DESC, message_id
      LIMIT 50
   `);
 }

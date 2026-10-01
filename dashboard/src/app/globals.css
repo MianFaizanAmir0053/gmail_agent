@@ -297,3 +297,54 @@ h1.section {
     font-size: 12px;
   }
 }
+
+/* --- deciding from a card (M16) ----------------------------------------- */
+
+.decide {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+.decide button {
+  font: inherit;
+  color: var(--text);
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+  min-height: 36px;
+}
+.decide button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+.decide button.primary {
+  background: #238636;
+  border-color: #2ea043;
+}
+.decide button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.decide textarea {
+  flex: 1 1 100%;
+  font: inherit;
+  color: var(--text);
+  background: #0b0f14;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+.decide .note {
+  flex: 1 1 100%;
+  margin: 4px 0 0;
+}
+.note.ok {
+  color: var(--ok);
+}
+.note.error {
+  color: var(--err);
+}
