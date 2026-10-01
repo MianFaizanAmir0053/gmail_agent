@@ -36,9 +36,13 @@ HIDDEN = (
     "job_runs",
     "outbound_actions",
     "model_spend",
+    "gmail_messages",
+    "gmail_cursors",
+    "gmail_fetch_queue",
 )
 """Everything else: the mailbox side, the graph's state, the secrets of push,
-the approvals' nonces, and the spend record."""
+the approvals' nonces, and the spend record. The mail sync's records (M20)
+are the mailbox side too: the web app shows none of them."""
 
 
 def _as_web_reader(conn: psycopg.Connection) -> None:
