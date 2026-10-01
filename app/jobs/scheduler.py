@@ -29,9 +29,11 @@ from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
 from app.jobs.poll import STOPPING, poll_once
 from app.jobs.purge import PurgeResult, purge
+from app.mail.recall import ALERTS as MAIL_ALERTS
+from app.mail.recall import run_daily as run_recall
 from app.mail.sync import SYNC_EVERY as MAIL_SYNC_EVERY
 from app.mail.sync import run_scheduled as run_sync
-from app.obs.liveness import LIVENESS, TOKEN_EVIDENCE
+from app.obs.liveness import LIVENESS, MAIL_SYNC, TOKEN_EVIDENCE
 from app.obs.token_report import standby_state, token_report
 from app.store.db import connect
 from app.store.job_runs import JobRuns
@@ -314,6 +316,10 @@ def run_mail_sync(settings: Settings) -> None:
         return
     if report is None:
         return
+    if report.reached_end and report.caught_up_at is not None:
+        MAIL_SYNC.reached_end(report.caught_up_at)
+    if report.status is not None:
+        MAIL_SYNC.status = report.status
     log.info(
         "mail sync: %d record(s), %d stored, %d updated, %d gone, %d queued%s",
         report.records,
@@ -344,7 +350,68 @@ def _record_mail_sync(
     record_tick(settings, "mail_sync", started_at, ok=ok, **fields)
 
 
+MAIL_RECALL_AT = {"hour": 5, "minute": 15}
+"""UTC: mid-morning in the owner's zone, so an alert is seen the same day."""
+
+
+def run_mail_recall(settings: Settings) -> None:
+    """Daily: the sync's and the feed's recall (M20, D5). Never raises.
+
+    Each of the three checks is its own `job_runs` row, so the exit
+    criterion's seven clean days can be counted for each.
+    """
+    started_at = datetime.now(UTC)
+    try:
+        result = run_recall(settings)
+    except Exception as exc:
+        log.exception("mail recall failed")
+        record_tick(settings, "mail_recall", started_at, ok=False, error=type(exc).__name__)
+        return
+    if result is None:  # no sync run yet: nothing to check
+        return
+    MAIL_SYNC.recall = result.summary()
+    record_tick(
+        settings,
+        "mail_recall_sync",
+        started_at,
+        ok=result.sync_ok,
+        seen=result.listed,
+        started=result.repaired,
+        failed=result.missed,
+        error=None if result.sync_ok else MAIL_ALERTS["mail_sync_missed"],
+    )
+    record_tick(
+        settings,
+        "mail_recall_feed",
+        started_at,
+        ok=result.feed_ok,
+        seen=result.eligible,
+        failed=result.stalled + result.too_old_young,
+        error=None if result.feed_ok else MAIL_ALERTS["mail_feed_stalled"],
+    )
+    record_tick(
+        settings,
+        "mail_recall_categories",
+        started_at,
+        ok=result.categories_ok,
+        seen=result.categories_checked,
+        failed=result.categories_mismatched,
+        error=None if result.categories_ok else "categories disagree",
+    )
+
+
 def _add_mail_jobs(scheduler: BackgroundScheduler, settings: Settings) -> None:
+    scheduler.add_job(
+        run_mail_recall,
+        "cron",
+        **MAIL_RECALL_AT,
+        args=[settings],
+        id="mail_recall",
+        max_instances=1,
+        coalesce=True,
+        # A restart that missed the hour still checks that day.
+        misfire_grace_time=12 * 3600,
+    )
     every = int(MAIL_SYNC_EVERY.total_seconds())
     # One run at a time: the advisory lock already keeps two runs apart, and
     # a run that overran would only find the lock taken.

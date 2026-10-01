@@ -715,6 +715,28 @@ def test_a_queued_message_older_than_ninety_days_is_dropped(mail: psycopg.Connec
     assert _queue(mail) == {}
 
 
+# --- what /health shows (20.7) ------------------------------------------------------
+
+
+def test_the_status_is_counts_and_times_only(mail: psycopg.Connection) -> None:
+    box = FakeMailbox()
+    _started(mail, box)
+    box.deliver("m", labels=PRIMARY, at=NOW)
+    box.deliver("bad", labels=PRIMARY, at=NOW)
+    box.fail("messages.get:bad", http_error(400))
+    _sync(mail, box)
+
+    found = sync.status(mail, ME)
+
+    assert found is not None
+    assert found["rows"] == 1
+    assert found["queue"] == {"queued": 1, "unreadable": 0}
+    assert found["caught_up_at"] == NOW.isoformat()
+    assert found["backfill"]["done"] is True
+    assert found["catch_up"] is None
+    assert sync.status(mail, "nobody@example.com") is None
+
+
 # --- the lock -------------------------------------------------------------------
 
 

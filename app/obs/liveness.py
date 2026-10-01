@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from app.google.tokens import RefreshOutcome
 
@@ -104,6 +105,45 @@ class TokenEvidence:
 
 
 TOKEN_EVIDENCE = TokenEvidence()
+
+
+@dataclass
+class MailSyncLiveness:
+    """What `/health` knows about the mail sync (M20, D6), without asking
+    the database. Written by the sync and recall jobs.
+
+    Judged by the last pass that reached the end of history. A run that only
+    made headway through a backlog does not count: a sync that is alive but
+    hours behind is as blind as a dead one.
+    """
+
+    booted_at: datetime
+    caught_up_at: datetime | None = None
+    status: dict[str, Any] | None = None
+    """The records as the last run left them: counts and times only."""
+
+    recall: dict[str, Any] | None = None
+    """The last daily recall, as counts."""
+
+    def reached_end(self, at: datetime) -> None:
+        self.caught_up_at = at
+
+    def overdue(self, now: datetime, interval: timedelta) -> bool:
+        """True once no pass has reached the end for `STALL_INTERVALS`
+        intervals. Before the first, the clock starts one interval after
+        boot, when the first tick fires, as poll's does."""
+        reference = self.caught_up_at or (self.booted_at + interval)
+        return now - reference > STALL_INTERVALS * interval
+
+    def report(self, now: datetime) -> dict[str, Any]:
+        """The owner's view: the cursor's age, the backfill's, the queue's and
+        any catch-up's progress, the unreadable and too-old counts, the
+        table's size, and the last recall."""
+        age = round((now - self.caught_up_at).total_seconds()) if self.caught_up_at else None
+        return {"cursor_age_seconds": age, **(self.status or {}), "last_recall": self.recall}
+
+
+MAIL_SYNC = MailSyncLiveness(booted_at=LIVENESS.booted_at)
 
 _HANDLER_MARK = "_mailagent_handler"
 

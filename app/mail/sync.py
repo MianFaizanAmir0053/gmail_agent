@@ -32,7 +32,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import psycopg
 
@@ -46,7 +46,7 @@ from app.google.gmail import (
     MessageGoneError,
     is_outage,
 )
-from app.mail import quota
+from app.mail import feed, quota
 from app.mail.messages import (
     D1_QUERY,
     ArrivedVia,
@@ -176,6 +176,9 @@ class SyncReport:
     error: str | None = None
     """The exception type that stopped it, for an outage or an error."""
 
+    status: dict[str, Any] | None = None
+    """The records as the run left them, for `/health` (`status`)."""
+
     @property
     def ok(self) -> bool:
         return self.error is None
@@ -241,7 +244,53 @@ def run_scheduled(settings: Settings, *, stop: threading.Event | None = None) ->
         if not held:
             log.info("mail sync: another run holds the lock; skipping this turn")
             return None
-        return sync_once(conn, sync_client(settings), owners=owners_of(settings), stop=stop)
+        report = sync_once(conn, sync_client(settings), owners=owners_of(settings), stop=stop)
+        report.status = status(conn, report.account)
+        return report
+
+
+def status(conn: psycopg.Connection, account: str) -> dict[str, Any] | None:
+    """The sync's records, as counts and times only: what `/health` shows the
+    owner (D6), and where `--status` starts. None before the first run."""
+    cursor = load_cursor(conn, account)
+    if cursor is None:
+        return None
+    counts = conn.execute(
+        """
+        SELECT (SELECT count(*) FROM gmail_messages WHERE account = %(account)s),
+               (SELECT count(*) FROM gmail_fetch_queue WHERE status = 'queued'),
+               (SELECT count(*) FROM gmail_fetch_queue WHERE status = 'unreadable'),
+               (SELECT count(*) FROM processed_messages
+                 WHERE status = 'skipped' AND error = %(old)s)
+        """,
+        {"account": account, "old": feed.TOO_OLD},
+    ).fetchone()
+    assert counts is not None
+    rows, queued, unreadable, too_old = (int(count) for count in counts)
+
+    def when(at: datetime | None) -> str | None:
+        return at.isoformat() if at is not None else None
+
+    return {
+        "caught_up_at": when(cursor.caught_up_at),
+        "feed_from": when(cursor.feed_from),
+        "switch_over_at": when(cursor.switch_over_at),
+        "backfill": {
+            "until": when(cursor.backfill_until),
+            "done": cursor.backfill_until <= cursor.feed_from - BACKFILL_FOR,
+        },
+        "catch_up": None
+        if cursor.gap_from is None
+        else {
+            "from": when(cursor.gap_from),
+            "until": when(cursor.gap_until),
+            "listed_back_to": when(cursor.gap_progress),
+        },
+        "catch_ups": cursor.catch_ups,
+        "queue": {"queued": queued, "unreadable": unreadable},
+        "too_old": too_old,
+        "rows": rows,
+    }
 
 
 def sync_once(
