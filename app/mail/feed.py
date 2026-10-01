@@ -164,6 +164,12 @@ def record_too_old(conn: psycopg.Connection, *, now: datetime | None = None) -> 
 
 # --- claims stranded by a restart ---------------------------------------------
 
+STRANDED_AFTER = timedelta(minutes=10)
+"""A claim younger than this is not settled. A poller in another process --
+a CLI pass over `fly ssh console` -- may hold it mid-message, and the poller
+has no lock to ask. A message's run stays well inside the kill timeout
+(120 s), so ten minutes leave room to spare."""
+
 
 @dataclass(frozen=True, slots=True)
 class StrandedClaims:
@@ -176,23 +182,35 @@ class StrandedClaims:
     failed: int
     """Marked FAILED, as before M20: the feed would not offer them again."""
 
+    errors: int = 0
+    """Claims that could not be settled -- an unreadable checkpoint, say --
+    left `claimed`, for the next pass or the next boot."""
+
 
 def recover_stranded(
     conn: psycopg.Connection,
     *,
     parked: Callable[[str], bool],
     forget: Callable[[str], None],
+    claimed_before: datetime,
     now: datetime | None = None,
 ) -> StrandedClaims:
-    """Settle every `claimed` row. Call at boot, when no run is in flight.
+    """Settle every `claimed` row made before `claimed_before`, when this
+    process has no run in flight: at boot, for claims older than
+    `STRANDED_AFTER`, and again once that has passed, for the rest made
+    before boot. A claim this process made is never touched.
 
     A claim is taken before its graph runs and replaced by the graph's own
-    outcome, so one still `claimed` at boot was left by a process that died
+    outcome, so one still `claimed` then was left by a process that died
     mid-message. A thread that parked is left to reconciliation. One that did
     not is released -- its checkpoint (`forget`) and then its ledger row are
     deleted -- when the feed would offer it again: stored, meeting the rule,
     and under seven days old. Anything else is marked FAILED, so nothing is
     dropped without a trace.
+
+    Each claim is settled in a savepoint of its own. One that cannot be -- a
+    checkpoint that will not read -- is logged and left, and the rest are
+    settled all the same.
     """
     rows = conn.execute(
         f"""
@@ -204,26 +222,33 @@ def recover_stranded(
                           AND {OFFERED}
                           AND m.internal_at >= %(fresh)s)
           FROM processed_messages p
-         WHERE p.status = %(claimed)s
+         WHERE p.status = %(claimed)s AND p.created_at < %(claimed_before)s
          ORDER BY p.created_at
         """,
         {
             "margin": MARGIN,
             "fresh": (now or datetime.now(UTC)) - AGE_LIMIT,
             "claimed": MessageStatus.CLAIMED.value,
+            "claimed_before": claimed_before,
         },
     ).fetchall()
     ledger = MessageLedger(conn)
-    left = released = failed = 0
+    left = released = failed = errors = 0
     for message_id, offered in rows:
-        if parked(message_id):
-            left += 1
-        elif offered:
-            # The checkpoint first: a crash between the two leaves a claim with
-            # no thread, which the next boot releases again.
-            forget(message_id)
-            released += ledger.release(message_id)
-        else:
-            ledger.mark(message_id, MessageStatus.FAILED, error=STRANDED_REASON)
-            failed += 1
-    return StrandedClaims(left=left, released=released, failed=failed)
+        try:
+            with conn.transaction():
+                if parked(message_id):
+                    left += 1
+                elif offered:
+                    # The checkpoint first: a crash between the two leaves a
+                    # claim with no thread, which the next pass releases again.
+                    forget(message_id)
+                    released += ledger.release(message_id)
+                else:
+                    ledger.mark(message_id, MessageStatus.FAILED, error=STRANDED_REASON)
+                    failed += 1
+        except Exception as exc:
+            # The type only: exception text can carry message content.
+            log.warning("stranded claim %s left as it is (%s)", message_id, type(exc).__name__)
+            errors += 1
+    return StrandedClaims(left=left, released=released, failed=failed, errors=errors)

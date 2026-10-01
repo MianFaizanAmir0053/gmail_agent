@@ -466,7 +466,10 @@ The sync runs every two minutes, each run at most a minute.
 
 At every boot, claims a previous process left mid-message are settled: a
 parked one is left to reconciliation, one the feed would offer again is
-released, and the rest are marked FAILED ("stranded by shutdown").
+released, and the rest are marked FAILED ("stranded by shutdown"). A claim
+under ten minutes old waits for a second pass ten minutes after boot, in
+case a poller in another process (a CLI pass) still holds it. A claim that
+cannot be settled is logged and left; boot completes regardless.
 
 ### 10.3 The quota
 

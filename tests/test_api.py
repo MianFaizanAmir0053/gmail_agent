@@ -7,7 +7,9 @@ a calendar write. Its authentication is worth more tests than its happy path.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+import threading
+from contextlib import nullcontext
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -324,6 +326,84 @@ def test_a_stranger_sees_the_status_but_not_the_details(
         body = client.get("/health", headers=headers).json()
         assert "push_subscriptions" not in body
         assert "oldest_open_decision_seconds" not in body
+
+
+@dataclass
+class _Scheduler:
+    """Stands in for APScheduler: records what boot asks of it."""
+
+    jobs: list[dict[str, Any]] = field(default_factory=list)
+
+    def add_job(self, func: Any, trigger: str, **kwargs: Any) -> None:
+        self.jobs.append({"func": func, "trigger": trigger, **kwargs})
+
+    def shutdown(self, wait: bool = True) -> None:
+        pass
+
+
+def _boot(monkeypatch: pytest.MonkeyPatch, settle: Any) -> tuple[list[str], _Scheduler]:
+    """Boot the app with the scheduler on and its parts stood in for. Returns
+    what happened, in order, and the scheduler."""
+    happened: list[str] = []
+    scheduler = _Scheduler()
+    monkeypatch.setattr(
+        "app.api.get_settings", lambda: _settings(run_scheduler=True, migrate_on_boot=False)
+    )
+    monkeypatch.setattr("app.api.materialise_secrets", list)
+    monkeypatch.setattr("app.api._seed_token_evidence", lambda settings: None)
+    monkeypatch.setattr("app.api.observe_refreshes", lambda record: None)
+    monkeypatch.setattr("app.api._settle_stranded_claims", settle)
+    monkeypatch.setattr("app.jobs.scheduler.build_scheduler", lambda settings: scheduler)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.activate", lambda scheduler: happened.append("scheduler started")
+    )
+    monkeypatch.setattr("app.jobs.poll.STOPPING", threading.Event())
+    return happened, scheduler
+
+
+def test_boot_settles_old_claims_first_and_the_rest_once_the_guard_has_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claim younger than the guard might belong to a poller still running
+    in another process, so boot leaves it to a second pass, which settles
+    every claim made before boot -- never one this process made."""
+    from app.api import create_app
+    from app.mail.feed import STRANDED_AFTER
+
+    passes: list[datetime] = []
+
+    def settle(settings: Settings, *, claimed_before: datetime) -> None:
+        passes.append(claimed_before)
+        happened.append("claims settled")
+
+    happened, scheduler = _boot(monkeypatch, settle)
+    with TestClient(create_app()):
+        pass
+
+    assert happened == ["claims settled", "scheduler started"]
+    (second,) = [job for job in scheduler.jobs if job["func"] is settle]
+    booted_at = second["kwargs"]["claimed_before"]
+    assert passes == [booted_at - STRANDED_AFTER]
+    assert (second["trigger"], second["run_date"]) == ("date", booted_at + STRANDED_AFTER)
+
+
+def test_boot_completes_when_stranded_claims_cannot_be_settled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable database, or an unreadable checkpoint, used to abort
+    boot -- on every restart."""
+    from app.api import _settle_stranded_claims
+
+    def unsettled(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("the checkpoint will not deserialise")
+
+    monkeypatch.setattr("app.store.db.connect", lambda url: nullcontext(None))
+    monkeypatch.setattr(
+        "app.graph.checkpointer.postgres_checkpointer", lambda url: nullcontext(None)
+    )
+    monkeypatch.setattr("app.mail.feed.recover_stranded", unsettled)
+
+    _settle_stranded_claims(_settings(), claimed_before=datetime.now(UTC))  # must not raise
 
 
 def test_the_api_documents_nothing_to_strangers() -> None:

@@ -216,6 +216,31 @@ def test_mail_older_than_seven_days_is_recorded_as_skipped_without_a_model_call(
 
 # --- claims stranded by a restart -------------------------------------------------
 
+BOOT = NOW
+"""When the process booted. Claims made before it, and not younger than the
+guard, are stranded."""
+
+
+def _claim(
+    conn: psycopg.Connection, message_id: str, *, ago: timedelta = timedelta(hours=1)
+) -> None:
+    MessageLedger(conn).claim(message_id, message_id)
+    conn.execute(
+        "UPDATE processed_messages SET created_at = %s WHERE gmail_message_id = %s",
+        (BOOT - ago, message_id),
+    )
+
+
+def _recover(
+    conn: psycopg.Connection,
+    *,
+    parked: Any = lambda message_id: False,
+    forget: Any = lambda message_id: None,
+) -> feed.StrandedClaims:
+    return feed.recover_stranded(
+        conn, parked=parked, forget=forget, claimed_before=BOOT - feed.STRANDED_AFTER, now=NOW
+    )
+
 
 def test_stranded_claims_are_left_released_or_failed(mail: psycopg.Connection) -> None:
     ledger = MessageLedger(mail)
@@ -224,16 +249,16 @@ def test_stranded_claims_are_left_released_or_failed(mail: psycopg.Connection) -
     _message(mail, "too-old", at=NOW - timedelta(days=8))
     _message(mail, "bulk", precedence="bulk")
     for message_id in ("parked", "offered", "too-old", "bulk", "unknown"):
-        ledger.claim(message_id, message_id)
+        _claim(mail, message_id)
     ledger.claim("settled", "settled")
     ledger.mark("settled", MessageStatus.SKIPPED, error="not a meeting")
     forgotten: list[str] = []
 
-    result = feed.recover_stranded(
-        mail, parked=lambda message_id: message_id == "parked", forget=forgotten.append, now=NOW
+    result = _recover(
+        mail, parked=lambda message_id: message_id == "parked", forget=forgotten.append
     )
 
-    assert (result.left, result.released, result.failed) == (1, 1, 3)
+    assert (result.left, result.released, result.failed, result.errors) == (1, 1, 3, 0)
     assert forgotten == ["offered"]
     assert ledger.get("offered") is None  # the feed offers it again
     assert feed.candidates(mail, 10, now=NOW) == ["offered"]
@@ -252,8 +277,49 @@ def test_a_claim_younger_than_an_hour_is_no_longer_left_claimed_for_ever(
 ) -> None:
     """Before M20, boot failed only claims over an hour old."""
     _message(mail, "fresh")
-    MessageLedger(mail).claim("fresh", "fresh")
+    _claim(mail, "fresh", ago=timedelta(minutes=11))
 
-    result = feed.recover_stranded(mail, parked=lambda _: False, forget=lambda _: None, now=NOW)
+    assert _recover(mail).released == 1
 
-    assert result.released == 1
+
+def test_a_claim_a_live_poller_could_hold_is_left_for_the_second_pass(
+    mail: psycopg.Connection,
+) -> None:
+    """A poller in another process -- a CLI pass over `fly ssh console` --
+    may be mid-message. There is no poller lock to ask, so a claim younger
+    than the guard is left alone; the second pass, once the guard has
+    passed, settles the claims made before boot."""
+    _message(mail, "young")
+    _claim(mail, "young", ago=timedelta(minutes=2))
+
+    assert _recover(mail).released == 0
+    entry = MessageLedger(mail).get("young")
+    assert entry is not None and entry.status is MessageStatus.CLAIMED
+
+    second = feed.recover_stranded(
+        mail,
+        parked=lambda message_id: False,
+        forget=lambda message_id: None,
+        claimed_before=BOOT,
+        now=NOW + feed.STRANDED_AFTER,
+    )
+    assert second.released == 1
+
+
+def test_a_claim_that_cannot_be_settled_is_left_and_the_rest_are_settled(
+    mail: psycopg.Connection,
+) -> None:
+    """One unreadable checkpoint used to abort boot on every restart."""
+    for message_id in ("unreadable", "unknown"):
+        _claim(mail, message_id)
+
+    def parked(message_id: str) -> bool:
+        if message_id == "unreadable":
+            raise ValueError("the checkpoint will not deserialise")
+        return False
+
+    result = _recover(mail, parked=parked)
+
+    assert (result.errors, result.failed) == (1, 1)
+    entry = MessageLedger(mail).get("unreadable")
+    assert entry is not None and entry.status is MessageStatus.CLAIMED

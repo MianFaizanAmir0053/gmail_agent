@@ -517,7 +517,9 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
 
     # At start, then hourly. A parked thread without a row is invisible to the
     # owner, so the first pass after a deploy should not wait an hour. By the
-    # time this runs, boot has already failed stranded claims.
+    # time this runs, boot has settled the stranded claims old enough to
+    # settle (`app.api`), leaving the parked ones to this job; the rest wait
+    # for boot's second pass, ten minutes on.
     scheduler.add_job(
         run_reconcile,
         "interval",

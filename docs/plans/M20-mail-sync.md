@@ -267,13 +267,21 @@ now that read mail is fed too.
 
 **Until the first sync run,** poll keeps calling `list_unread`, as now.
 
-**Claims stranded by a restart.** At boot, no run is in flight. For every
-`claimed` row:
+**Claims stranded by a restart.** At boot, no run is in flight in this
+process. For every `claimed` row made before boot:
 - a thread that parked is left to reconciliation, which records it (M16 D3);
 - a thread that did not park, and is younger than the 7 days, is released: its ledger row and checkpoint are deleted, so the feed offers it again;
 - an older one is marked FAILED, as now.
 
 Before M20, a claim younger than an hour was left `claimed` for ever.
+
+A poller in another process -- a CLI pass over `fly ssh console` -- may still
+hold a recent claim, and the poller has no lock to ask. So boot settles only
+claims over ten minutes old, and a second pass ten minutes after boot settles
+the rest made before boot; neither touches a claim this process made. A
+message's run stays well inside the kill timeout (120 s), so ten minutes
+leave room to spare. Each claim is settled on its own: one that cannot be --
+a checkpoint that will not read -- is logged and left, and boot completes.
 
 The sync and the poll stay separate jobs: a slow model call never delays
 seeing mail, and a failing sync shows as its own failing job.
