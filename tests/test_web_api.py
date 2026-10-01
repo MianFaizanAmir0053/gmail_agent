@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
@@ -19,6 +20,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from app.channel.decide import DecisionResult
+from app.channel.pairing import IssuedCode
 from app.config import Settings
 from app.web_api import router
 
@@ -338,3 +340,196 @@ def test_subscriptions_are_capped_but_a_known_one_is_always_refreshed(
         client.post("/api/push-subscriptions", json=one_more, headers=_bearer()).status_code == 409
     )
     assert client.post("/api/push-subscriptions", json=known, headers=_bearer()).status_code == 204
+
+
+# --- pairing, the iPhone fallback --------------------------------------------------
+
+
+ISSUED = IssuedCode(code="012345", expires_at=datetime(2026, 10, 1, 12, 5, tzinfo=UTC))
+
+PAIRING = [
+    ("/api/pairing/codes", {"issued_to": "web"}),
+    ("/api/pairing/redeem", {"code": "123456"}),
+]
+
+
+@dataclass
+class Pairing:
+    issued_to: list[str] = field(default_factory=list)
+    tried: list[str] = field(default_factory=list)
+    accepts: bool = True
+
+
+@pytest.fixture
+def pairing(monkeypatch: pytest.MonkeyPatch) -> Pairing:
+    """Stands in for the database work, which `tests/test_pairing.py` covers."""
+    fake = Pairing()
+
+    def _issue_pairing_code(settings: Settings, issued_to: str) -> IssuedCode:
+        fake.issued_to.append(issued_to)
+        return ISSUED
+
+    def _redeem_pairing_code(settings: Settings, code: str) -> bool:
+        fake.tried.append(code)
+        return fake.accepts
+
+    monkeypatch.setattr("app.web_api._issue_pairing_code", _issue_pairing_code)
+    monkeypatch.setattr("app.web_api._redeem_pairing_code", _redeem_pairing_code)
+    return fake
+
+
+@pytest.fixture
+def paired(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """A client for an API with pairing switched on."""
+    return _client(monkeypatch, pairing_enabled=True)
+
+
+@pytest.mark.parametrize(("path", "body"), PAIRING)
+def test_pairing_is_not_found_while_switched_off(
+    client: TestClient, pairing: Pairing, path: str, body: dict[str, Any]
+) -> None:
+    """Off by default: the fallback is built, but answers as if it were not."""
+    assert client.post(path, json=body, headers=_bearer()).status_code == 404
+    assert pairing.issued_to == pairing.tried == []
+
+
+@pytest.mark.parametrize(("path", "body"), PAIRING)
+@pytest.mark.parametrize("enabled", [False, True])
+def test_pairing_checks_the_secret_before_the_switch(
+    monkeypatch: pytest.MonkeyPatch,
+    pairing: Pairing,
+    path: str,
+    body: dict[str, Any],
+    enabled: bool,
+) -> None:
+    """A caller without the secret cannot even tell whether pairing is on."""
+    client = _client(monkeypatch, pairing_enabled=enabled)
+    assert client.post(path, json=body).status_code == 401
+    assert client.post(path, json=body, headers=_bearer("not-the-secret")).status_code == 401
+
+    unset = _client(monkeypatch, pairing_enabled=enabled, web_api_secret="  ")
+    assert unset.post(path, json=body, headers=_bearer()).status_code == 503
+
+    assert pairing.issued_to == pairing.tried == []
+
+
+@pytest.mark.parametrize("path", [path for path, _ in PAIRING])
+def test_pairing_reads_no_body_before_the_secret_and_the_switch(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    junk = b"{not json"
+    as_json = {"Content-Type": "application/json"}
+
+    on = _client(monkeypatch, pairing_enabled=True)
+    assert on.post(path, content=junk, headers=as_json).status_code == 401
+
+    off = _client(monkeypatch)
+    assert off.post(path, content=junk, headers=as_json | _bearer()).status_code == 404
+
+
+def test_a_pairing_code_is_issued_with_a_201(paired: TestClient, pairing: Pairing) -> None:
+    response = paired.post("/api/pairing/codes", json={"issued_to": "web"}, headers=_bearer())
+
+    assert response.status_code == 201
+    assert response.json() == {"code": "012345", "expires_at": "2026-10-01T12:05:00+00:00"}
+    assert response.headers["cache-control"] == "no-store"
+    assert pairing.issued_to == ["web"]
+
+
+def test_a_redeemed_code_is_a_204(paired: TestClient, pairing: Pairing) -> None:
+    response = paired.post("/api/pairing/redeem", json={"code": "123456"}, headers=_bearer())
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert pairing.tried == ["123456"]
+
+
+@pytest.mark.parametrize("code", ["123456", "12345", "not a code"])
+def test_a_refused_code_is_a_403_that_never_says_why(
+    paired: TestClient, pairing: Pairing, code: str
+) -> None:
+    """Wrong, expired, spent, absent or malformed: one answer for all."""
+    pairing.accepts = False
+
+    response = paired.post("/api/pairing/redeem", json={"code": code}, headers=_bearer())
+
+    assert response.status_code == 403
+    assert response.json() == {"status": "refused"}
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/pairing/codes", {}),
+        ("/api/pairing/codes", {"issued_to": ""}),
+        ("/api/pairing/codes", {"issued_to": "x" * 65}),
+        ("/api/pairing/codes", {"issued_to": "web\x00"}),
+        ("/api/pairing/codes", {"issued_to": "web\nforged log line"}),
+        ("/api/pairing/codes", {"issued_to": "web", "surprise": True}),
+        ("/api/pairing/redeem", {}),
+        ("/api/pairing/redeem", {"code": 123456}),
+        ("/api/pairing/redeem", {"code": "1" * 65}),
+        ("/api/pairing/redeem", {"code": "123456", "surprise": True}),
+        ("/api/pairing/redeem", ["123456"]),
+    ],
+)
+def test_a_malformed_pairing_request_is_a_422(
+    paired: TestClient, pairing: Pairing, path: str, body: Any
+) -> None:
+    assert paired.post(path, json=body, headers=_bearer()).status_code == 422
+    assert pairing.issued_to == pairing.tried == []
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/pairing/codes", {"issued_to": "private-label-" + "x" * 64}),
+        ("/api/pairing/redeem", {"code": "private-code-" + "1" * 64}),
+    ],
+)
+def test_a_pairing_422_never_echoes_the_input(
+    paired: TestClient, pairing: Pairing, path: str, body: dict[str, Any]
+) -> None:
+    response = paired.post(path, json=body, headers=_bearer())
+
+    assert response.status_code == 422
+    assert "private-" not in response.text
+
+
+@pytest.mark.integration
+def test_a_code_from_the_api_redeems_once_through_the_api(
+    paired: TestClient, conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    @contextmanager
+    def _same(url: str) -> Iterator[psycopg.Connection]:
+        yield conn
+
+    monkeypatch.setattr("app.web_api.connect_autocommit", _same)
+    conn.execute("DELETE FROM pairing_codes")  # rolled back with the test
+
+    issued = paired.post("/api/pairing/codes", json={"issued_to": "web"}, headers=_bearer())
+    assert issued.status_code == 201
+    code = issued.json()["code"]
+    expires_at = datetime.fromisoformat(issued.json()["expires_at"])
+    assert expires_at.tzinfo is not None
+
+    for expected in (204, 403):  # once, and never again
+        redeemed = paired.post("/api/pairing/redeem", json={"code": code}, headers=_bearer())
+        assert redeemed.status_code == expected
+
+
+def test_the_pairing_database_work_runs_off_the_event_loop(
+    paired: TestClient, pairing: Pairing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offloaded: list[str] = []
+
+    async def _in_threadpool(fn: Any, *args: Any) -> Any:
+        offloaded.append(fn.__name__)
+        return fn(*args)
+
+    monkeypatch.setattr("app.web_api.run_in_threadpool", _in_threadpool)
+
+    paired.post("/api/pairing/codes", json={"issued_to": "web"}, headers=_bearer())
+    paired.post("/api/pairing/redeem", json={"code": "123456"}, headers=_bearer())
+
+    assert offloaded == ["_issue_pairing_code", "_redeem_pairing_code"]

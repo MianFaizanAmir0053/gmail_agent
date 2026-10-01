@@ -13,6 +13,11 @@ header.
                                      404 no proposal, 422 invalid)
     POST   /api/push-subscriptions   store or refresh a browser's subscription
     DELETE /api/push-subscriptions   remove one
+    POST   /api/pairing/codes        a pairing code for the iPhone fallback (201)
+    POST   /api/pairing/redeem       redeem one (204, or 403 whatever the reason)
+
+The pairing routes answer 404 unless `PAIRING_ENABLED` is set, and only after
+the secret is checked, so a caller without it cannot tell whether they exist.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.channel.decide import MAX_CORRECTION_CHARS, DecisionResult, decide
+from app.channel.pairing import IssuedCode, issue_code, redeem
 from app.config import Settings, get_settings
 from app.jobs.scheduler import decision_recorded
 from app.store.db import connect_autocommit
@@ -98,6 +104,22 @@ class Subscription(BaseModel):
 
 class Unsubscribe(BaseModel):
     endpoint: str = Field(min_length=1, max_length=MAX_ENDPOINT_CHARS)
+
+
+class PairingCodeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    issued_to: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._:@-]+$")
+    """Who asked, as a short label such as `web`. It is logged, so it is kept
+    to characters that cannot forge a log line."""
+
+
+class PairingRedeemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(max_length=64)
+    """Any short string. One that is not six digits is refused like a wrong
+    code, with a 403, so the answer never says which rule a guess broke."""
 
 
 def _verify(settings: Settings, authorization: str | None) -> None:
@@ -228,3 +250,53 @@ def _store_subscription(settings: Settings, subscription: Subscription) -> bool:
 def _remove_subscription(settings: Settings, unsubscribe: Unsubscribe) -> None:
     with connect_autocommit(settings.database_url) as conn:
         conn.execute("DELETE FROM push_subscriptions WHERE endpoint = %s", (unsubscribe.endpoint,))
+
+
+def _require_pairing(settings: Settings) -> None:
+    """Switched off, the fallback answers as an unknown route does."""
+    if not settings.pairing_enabled:
+        raise HTTPException(status_code=404)
+
+
+@router.post("/pairing/codes", status_code=201)
+async def post_pairing_code(
+    request: Request, authorization: str | None = Header(default=None)
+) -> JSONResponse:
+    settings = get_settings()
+    _verify(settings, authorization)
+    _require_pairing(settings)
+    body = await _body(request, PairingCodeRequest)
+
+    issued = await run_in_threadpool(_issue_pairing_code, settings, body.issued_to)
+
+    return JSONResponse(
+        {"code": issued.code, "expires_at": issued.expires_at.isoformat(timespec="seconds")},
+        status_code=201,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/pairing/redeem", status_code=204)
+async def post_pairing_redeem(
+    request: Request, authorization: str | None = Header(default=None)
+) -> Response:
+    settings = get_settings()
+    _verify(settings, authorization)
+    _require_pairing(settings)
+    body = await _body(request, PairingRedeemRequest)
+
+    if not await run_in_threadpool(_redeem_pairing_code, settings, body.code):
+        return JSONResponse({"status": "refused"}, status_code=403)
+    return Response(status_code=204)
+
+
+def _issue_pairing_code(settings: Settings, issued_to: str) -> IssuedCode:
+    with connect_autocommit(settings.database_url) as conn, conn.transaction():
+        return issue_code(conn, issued_to=issued_to)
+
+
+def _redeem_pairing_code(settings: Settings, code: str) -> bool:
+    """The attempt is committed whatever the answer: a wrong guess that rolled
+    back would cost the guesser nothing."""
+    with connect_autocommit(settings.database_url) as conn, conn.transaction():
+        return redeem(conn, code)
