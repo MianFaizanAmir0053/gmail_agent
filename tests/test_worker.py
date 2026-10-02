@@ -1394,6 +1394,9 @@ def test_gmail_down_for_an_hour_sends_the_proposal_back_with_every_guest_outside
     _parked(conn, session)
     _confirm(conn, "m1", revision=1)
     conn.execute("UPDATE decisions SET decided_at = now() - interval '2 hours'")
+    # No Resume within the hour either: on a fresh database the switches'
+    # row was made a moment ago, which counts as the last change.
+    conn.execute("UPDATE control SET paused = false, changed_at = now() - interval '3 hours'")
     cast(FakeGmail, session.deps.gmail).down = True
 
     assert apply_open(session) == [("m1", "no_effect")]
@@ -1416,6 +1419,7 @@ def test_gmail_down_for_an_hour_still_lets_an_allowed_guest_through(
     _confirm(conn, "m1", revision=1)
     contacts.allow(conn, "sara@example.com", via="web", key=KEY)
     conn.execute("UPDATE decisions SET decided_at = now() - interval '2 hours'")
+    conn.execute("UPDATE control SET paused = false, changed_at = now() - interval '3 hours'")
     cast(FakeGmail, session.deps.gmail).down = True
 
     assert apply_open(session) == [("m1", "skipped")]
