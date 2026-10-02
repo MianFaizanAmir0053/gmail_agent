@@ -15,6 +15,10 @@ is an estimate. No content.
 This month's spend is the sum of `model_spend` over the UTC calendar month.
 The gate reads it from the database at most once a minute, and adds what it
 metered itself since. It needs a database: there is no gate without one.
+
+Where spending stands -- `ok`, `warning` from 80% of the cap, `exhausted`
+once new work has stopped -- is written to the `control` row when it changes,
+and audited (`record_state`): the web app's header reads it there.
 """
 
 from __future__ import annotations
@@ -28,12 +32,28 @@ from typing import Literal
 import psycopg
 
 from app.obs.pricing import rate_at
+from app.policy import audit
 
 READ_EVERY = timedelta(minutes=1)
 """How stale the month's total may be. Calls metered here since the read are
 added to it, so only other processes' spend can lag, by at most this long."""
 
+RESERVE_USD = Decimal("0.10")
+"""Kept back when deciding whether to start new work, so a message begun
+just under the cap can finish rather than stop half way."""
+
+WARNING_SHARE = Decimal("0.8")
+"""The share of the cap at which the owner is warned (D5)."""
+
 Refusal = Literal["unpriced", "exhausted", "too_costly"]
+
+BudgetState = Literal["ok", "warning", "exhausted"]
+
+_STATE_KINDS: dict[BudgetState, audit.Kind] = {
+    "ok": "budget_ok",
+    "warning": "budget_warning",
+    "exhausted": "budget_exhausted",
+}
 
 
 class UnpricedModelError(RuntimeError):
@@ -46,6 +66,11 @@ class BudgetExhaustedError(RuntimeError):
 
 class MessageTooCostlyError(RuntimeError):
     """The message has already spent its ceiling. Nothing was called."""
+
+
+SPENDING_STOPPED = (UnpricedModelError, BudgetExhaustedError)
+"""Refusals that stop work until spending is allowed again: what was begun
+goes back to wait, rather than failing."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +99,25 @@ class Gate:
     _month: datetime | None = field(default=None, init=False)
     _total: Decimal = field(default=Decimal(0), init=False)
     _read_at: datetime | None = field(default=None, init=False)
+
+    def allows_new_work(self) -> bool:
+        """Whether a new message, an edit or an ingestion batch may start:
+        the month's spend plus `RESERVE_USD` is under the cap (D5)."""
+        return self.month_spend() + RESERVE_USD < self.cap_usd
+
+    def state(self) -> BudgetState:
+        """Where this month's spending stands (D5): `exhausted` once new work
+        has stopped, `warning` from 80% of the cap, `ok` below that."""
+        if not self.allows_new_work():
+            return "exhausted"
+        if self.month_spend() >= self.cap_usd * WARNING_SHARE:
+            return "warning"
+        return "ok"
+
+    def alert_subject(self) -> str:
+        """What a budget alert is about: this month and the cap. A new month,
+        or a raised cap, is a new subject, and so re-arms the alerts (D5)."""
+        return f"{self.clock().astimezone(UTC):%Y-%m}:{self.cap_usd}"
 
     def check(self, model: str, message_id: str | None) -> None:
         """Raise the first refusal that applies, after recording it."""
@@ -137,6 +181,24 @@ class Gate:
             "INSERT INTO model_spend (at, model, message_id, refused) VALUES (%s, %s, %s, %s)",
             (self.clock(), model, message_id, refusal),
         )
+
+
+def record_state(conn: psycopg.Connection, state: BudgetState) -> bool:
+    """Write `state` to the `control` row, where the web app reads it, and
+    audit the change in the same transaction. Nothing is written when it is
+    unchanged. Returns whether it changed."""
+    with conn.transaction():
+        changed = conn.execute(
+            """
+            UPDATE control SET budget_state = %s
+             WHERE id = 1 AND budget_state <> %s
+            RETURNING id
+            """,
+            (state, state),
+        ).fetchone()
+        if changed is not None:
+            audit.record(conn, _STATE_KINDS[state])
+    return changed is not None
 
 
 def _next_month(month: datetime) -> datetime:

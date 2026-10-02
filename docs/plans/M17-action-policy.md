@@ -663,3 +663,19 @@ and the owner's end tests.
   - the wrapper's raw clients are private, and the call-site test now also catches other spellings of a Gemini client, the Gemini API's host, and any reach for the raw client;
   - the model probe lists models without the metered client, which offers no listing.
 - **Accepted:** if the database fails just after a billed embedding, search falls back to keyword search and that row is lost. The session's next write fails anyway, and one embedding costs a fraction of a cent. The review's finding that poll and the worker dead-lettered a refusal was 17.11's work, and is done there.
+
+### Task 17.11: where work stops, and what shows (2026-10-02)
+
+- **Poll** asks the gate before each claim. At the cap it stops claiming, and the tick still records as successful. A message stopped mid-run by the cap or by an unpriced model is released: its checkpoint is deleted and its ledger row removed, so the feed offers it again, from the start. A message over its ceiling is skipped as "too costly to read", and audited.
+- **The worker** leaves an Edit queued at the cap, costing no attempt (`waiting`); a Confirm or a Cancel still applies. A refusal in the middle of applying a decision holds it the same way. A message over its ceiling fails its Edit at once.
+- **Ingestion** asks before each batch. A refusal mid-batch ends the run quietly: the next run's dedupe skips what this one embedded.
+- **The watch** (`app/jobs/watch.py`) runs at start and every five minutes:
+  - it writes the budget's state to `control` when it changes, and audits the change;
+  - it sends `budget_warning` from 80% of the cap, and `budget_exhausted` once new work has stopped (the month's spend plus the $0.10 reserve reaches the cap), each once per month and cap value. A raised cap re-arms them. A budget that goes straight past 80% sends only the second;
+  - it sends `write_unconfirmed` once per decision whose calendar write could not be confirmed;
+  - its connection commits as it goes, so an alert's record is never rolled back into a resend. A failing watch is recorded in `job_runs` at most every half hour.
+- **One sender** for every alert sent once: `send_alerts` and `Alert` in `app/channel/alerts.py`, renamed from the token alerts' `send_token_alerts` and `TokenAlert`.
+- **`/health`**, with the bearer, shows `budget` (state, the month's spend, the cap), `unconfirmed_writes` and `unpriced_models`. A spent budget stays 200. A model in use with no price is a 503 ("a model in use has no price"): the classifier's and the extractor's always, the reviewer's with the reviewer on, the embedding model with search or ingestion on.
+- **Held decisions are not stuck:** every decision while paused, an Edit while the state is `exhausted`, and a decision whose write could not be confirmed, which is counted apart. The decisions job opens no session for an Edit the cap holds.
+- **Push tags:** the two budget alerts share `budget`, since the cap reached supersedes the warning; an unconfirmed write has `write`.
+- **Left for 17.12:** the card saying an Edit is waiting, and the header's "Spending cap reached", come with the web app's pause work.

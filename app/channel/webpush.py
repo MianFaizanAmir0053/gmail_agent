@@ -53,10 +53,17 @@ ALERT_PUSHES: dict[AlertCode, dict[str, str]] = {
     "standby_in_use": ALERT_PUSH,
     "mail_sync_missed": ALERT_PUSH | {"body": "Mail sync missed messages.", "tag": "mail-sync"},
     "mail_feed_stalled": ALERT_PUSH | {"body": "The mail feed has stalled.", "tag": "mail-feed"},
+    "budget_warning": ALERT_PUSH
+    | {"body": "Model spending is at 80% of this month's cap.", "tag": "budget"},
+    "budget_exhausted": ALERT_PUSH
+    | {"body": "Model spending cap reached: mail processing has stopped.", "tag": "budget"},
+    "write_unconfirmed": ALERT_PUSH
+    | {"body": "A calendar write could not be confirmed.", "tag": "write"},
 }
 """What each alert pushes. Every code has an entry. The mail alerts have tags
 of their own: sent once a day each, neither may replace the other, nor an
-unread sign-in alert, which is sent once. The worker knows each tag."""
+unread sign-in alert, which is sent once. The two budget alerts share one: the
+cap reached supersedes the warning. The worker knows each tag."""
 
 PUSH_TIMEOUT = 10
 """Seconds per push service."""

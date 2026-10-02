@@ -23,6 +23,7 @@ import argparse
 import logging
 
 from app.config import Settings, get_settings
+from app.policy.budget import SPENDING_STOPPED
 from app.rag.ingest import DEFAULT_QUERY, Stats, ingest
 
 log = logging.getLogger(__name__)
@@ -55,7 +56,15 @@ def run_ingest(settings: Settings, *, backfill: bool = False) -> Stats:
     try:
         client = models.client(settings, meter)
         with connect(settings.database_url) as conn:
-            return ingest(conn, mailbox, client, settings=settings, query=query, limit=limit)
+            return ingest(
+                conn,
+                mailbox,
+                client,
+                settings=settings,
+                query=query,
+                limit=limit,
+                may_continue=meter.allows_new_work,
+            )
     finally:
         meter.conn.close()
 
@@ -67,6 +76,11 @@ def scheduled_ingest(settings: Settings) -> bool:
     """
     try:
         stats = run_ingest(settings)
+    except SPENDING_STOPPED:
+        # The spend gate said no mid-batch (M17, D5): not a failure worth an
+        # alert. The next run picks up where this one stopped.
+        log.info("ingest stopped by the spending cap")
+        return True
     except Exception as exc:
         log.exception("ingest failed")
         _alert(

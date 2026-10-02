@@ -32,6 +32,7 @@ from app.channel.worker import (
     settle_decided,
     settle_failed,
     step_for,
+    unconfirmed_writes,
 )
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.payloads import ClassifyPayload
@@ -847,30 +848,55 @@ def test_the_job_sees_the_oldest_open_decision_and_whether_it_is_due(
 ) -> None:
     from app.jobs.scheduler import decisions_status
 
-    assert decisions_status(conn) == (None, False)
+    conn.execute("UPDATE control SET paused = false, budget_state = 'ok'")
+    assert decisions_status(conn) == (None, False, 0)
 
     session, _ = _world(conn)
     _parked(conn, session)
     _confirm(conn, "m1", revision=1)
     decided_at = conn.execute("SELECT decided_at FROM decisions").fetchone()
     assert decided_at is not None
-    assert decisions_status(conn) == (decided_at[0], True)
+    assert decisions_status(conn) == (decided_at[0], True, 0)
 
     conn.execute("UPDATE decisions SET next_attempt_at = now() + interval '1 minute'")
-    assert decisions_status(conn) == (decided_at[0], False)  # waiting to retry
+    assert decisions_status(conn) == (decided_at[0], False, 0)  # waiting to retry
 
     conn.execute(
         "UPDATE decisions SET next_attempt_at = now(), lease_until = now() + interval '1 minute'"
     )
-    assert decisions_status(conn) == (decided_at[0], False)  # another worker has it
+    assert decisions_status(conn) == (decided_at[0], False, 0)  # another worker has it
 
     conn.execute("UPDATE decisions SET lease_until = NULL")
     conn.execute("UPDATE control SET paused = true")
-    assert decisions_status(conn) == (decided_at[0], False)  # paused: no session (M17, D6)
+    # Paused: held, so neither due nor stuck (M17, D6).
+    assert decisions_status(conn) == (None, False, 0)
 
     conn.execute("UPDATE control SET paused = false")
+    conn.execute("UPDATE control SET budget_state = 'exhausted'")
+    # The cap holds an Edit, not a Confirm, which calls no model (D5).
+    assert decisions_status(conn) == (decided_at[0], True, 0)
+
+    conn.execute("UPDATE control SET budget_state = 'ok'")
     apply_open(session)
-    assert decisions_status(conn) == (None, False)
+    assert decisions_status(conn) == (None, False, 0)
+
+
+@pytest.mark.integration
+def test_an_edit_held_by_the_cap_is_neither_due_nor_stuck(conn: psycopg.Connection) -> None:
+    """No session is opened for it, and `/health` does not count it (D5)."""
+    from app.jobs.scheduler import decisions_status
+
+    conn.execute("UPDATE control SET paused = false, budget_state = 'ok'")
+    session, _ = _world(conn)
+    _parked(conn, session)
+    decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+    decided_at = conn.execute("SELECT decided_at FROM decisions").fetchone()
+    assert decided_at is not None
+    assert decisions_status(conn) == (decided_at[0], True, 0)
+
+    conn.execute("UPDATE control SET budget_state = 'exhausted'")
+
+    assert decisions_status(conn) == (None, False, 0)
 
 
 # --- writes that can be finished (M17, 17.5-17.6) -------------------------------
@@ -998,6 +1024,49 @@ def test_giving_up_when_google_cannot_be_asked_settles_nothing(conn: psycopg.Con
         "SELECT count(*) FROM audit_log WHERE kind = 'write_unconfirmed' AND message_id = 'm1'"
     ).fetchone()
     assert unconfirmed == (1,)  # audited once, not every hour
+
+
+@dataclass
+class AlertChannels:
+    names: frozenset[str] = frozenset({"web_push"})
+    asked: list[str] = field(default_factory=list)
+
+    def alert(self, code: str, *, skip: frozenset[str] = frozenset()) -> set[str]:
+        self.asked.append(code)
+        return set(self.names - skip)
+
+
+@pytest.mark.integration
+def test_a_write_that_could_not_be_confirmed_is_counted_apart_and_alerted_once(
+    conn: psycopg.Connection,
+) -> None:
+    """It asks Google again every hour: held, not stuck (D3). The owner hears
+    of it once (17.11)."""
+    from app.config import Settings
+    from app.jobs.scheduler import decisions_status
+    from app.jobs.watch import watch
+
+    conn.execute("UPDATE control SET paused = false, budget_state = 'ok'")
+    conn.execute("DELETE FROM model_spend")
+    conn.execute("DELETE FROM alerts_sent")
+    calendar = FakeCalendar(dry_run=False, fail_before=1, fail_find=1)
+    session = _cut_off_and_exhausted(conn, calendar)
+    assert apply_open(session) == [("m1", "unconfirmed")]
+
+    [decision_id] = unconfirmed_writes(conn)
+    status = decisions_status(conn)
+    assert (status.oldest, status.unconfirmed) == (None, 1)
+
+    settings = Settings(
+        _env_file=None, database_url="postgresql://localhost/test", gemini_api_key="k"
+    )
+    channels = AlertChannels()
+    watch(conn, settings, channels)
+    watch(conn, settings, channels)
+
+    assert channels.asked == ["write_unconfirmed"]
+    sent = conn.execute("SELECT subject FROM alerts_sent WHERE code = 'write_unconfirmed'")
+    assert sent.fetchall() == [(str(decision_id),)]
 
 
 @pytest.mark.integration
@@ -1359,3 +1428,81 @@ def test_gmail_down_at_execution_holds_without_spending_attempts(
     _make_due(conn)
     assert apply_open(session) == [("m1", "skipped")]
     assert (session.resumes, session.redrives) == (1, 1)
+
+
+# --- the spending cap (M17, 17.11) ----------------------------------------------------
+
+
+@dataclass
+class CapGate:
+    room: bool = True
+
+    def allows_new_work(self) -> bool:
+        return self.room
+
+
+@pytest.mark.integration
+def test_at_the_cap_an_edit_waits_and_costs_nothing(conn: psycopg.Connection) -> None:
+    """An edit re-extracts, which calls a model (D5)."""
+    session = _counting(conn)
+    _parked(conn, session)
+    decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+    session.gate = cast(Any, CapGate(room=False))
+
+    assert apply_open(session) == [("m1", "waiting")]
+
+    assert session.resumes == 0
+    attempts, _, leased = cast(tuple[int, float, bool], _open(conn))
+    assert (attempts, leased) == (0, False)
+
+
+@pytest.mark.integration
+def test_at_the_cap_a_cancel_still_applies(conn: psycopg.Connection) -> None:
+    """A Cancel, like a Confirm, calls no model."""
+    session = _counting(conn)
+    _parked(conn, session)
+    decide(conn, "m1", action="cancel", revision=1, via="web")
+    session.gate = cast(Any, CapGate(room=False))
+
+    assert apply_open(session) == [("m1", "rejected")]
+
+
+@dataclass
+class RefusingPipeline(FakePipeline):
+    refusal: Exception | None = None
+
+    def extract(self, email: EmailMessage, **kwargs: Any) -> ExtractionResult:
+        self.calls += 1
+        if self.calls > 1 and self.refusal is not None:
+            raise self.refusal
+        return _meeting()
+
+
+@pytest.mark.integration
+def test_a_refusal_mid_edit_waits_without_spending_attempts(conn: psycopg.Connection) -> None:
+    from app.policy.budget import BudgetExhaustedError
+
+    pipeline = RefusingPipeline(refusal=BudgetExhaustedError("cap"))
+    session = _counting(conn, pipeline=pipeline)
+    _parked(conn, session)
+    decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+
+    assert apply_open(session) == [("m1", "waiting")]
+
+    attempts, wait, leased = cast(tuple[int, float, bool], _open(conn))
+    assert (attempts, leased) == (0, False) and wait <= 0
+
+
+@pytest.mark.integration
+def test_a_message_over_its_ceiling_fails_its_edit_at_once(conn: psycopg.Connection) -> None:
+    """No retry can change what the message has already spent."""
+    from app.policy.budget import MessageTooCostlyError
+
+    pipeline = RefusingPipeline(refusal=MessageTooCostlyError("ceiling"))
+    session = _counting(conn, pipeline=pipeline)
+    _parked(conn, session)
+    decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+
+    assert apply_open(session) == [("m1", "failed")]
+
+    assert _outcomes(conn) == [("failed", "too costly to read", True)]

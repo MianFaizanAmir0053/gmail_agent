@@ -27,6 +27,7 @@ from app.jobs.scheduler import decision_recorded
 from app.mail.sync import SYNC_EVERY as MAIL_SYNC_EVERY
 from app.obs.liveness import LIVENESS, MAIL_SYNC, TOKEN_EVIDENCE, configure_logging
 from app.obs.token_report import UNUSABLE_STANDBY, standby_state, token_report
+from app.policy import models
 from app.store.db import connect_autocommit
 from app.telegram.client import TelegramClient
 from app.telegram.handler import NotAllowedError, TelegramHandler
@@ -62,6 +63,13 @@ def health(authorization: str | None = Header(default=None)) -> JSONResponse:
         if LIVENESS.decision_stuck(now):
             problems.append("a decision has been open for over an hour")
 
+        # The gate refuses every call to a model with no price, so whatever
+        # needs it has stopped (M17, D5). A spent budget is not an outage:
+        # the cap is doing its job, and the status stays 200.
+        unpriced = models.unpriced(settings, now)
+        if unpriced:
+            problems.append("a model in use has no price")
+
         # The owner's business, not the internet's: whether a proposal is
         # waiting, and whether any phone would hear a push. The platform and
         # the uptime monitor need only the status code.
@@ -73,6 +81,15 @@ def health(authorization: str | None = Header(default=None)) -> JSONResponse:
             # Zero is visible, not a failure: before the first phone subscribes
             # there is simply nobody to push to.
             body["push_subscriptions"] = LIVENESS.push_subscriptions
+            spend = LIVENESS.month_spend_usd
+            body["budget"] = {
+                "state": LIVENESS.budget_state,
+                "month_spend_usd": str(spend) if spend is not None else None,
+                "cap_usd": settings.monthly_budget_usd,
+            }
+            body["unpriced_models"] = unpriced
+            # Held, not stuck: each asks Google again every hour (M17, D3).
+            body["unconfirmed_writes"] = LIVENESS.unconfirmed_writes
 
         # The mail sync (M20, D6): judged by its last pass that reached the
         # end of history, so a sync that is alive but behind shows too.

@@ -23,6 +23,8 @@ from app.config import get_settings
 from app.google.gmail import MessageGoneError
 from app.graph.runner import GraphSession, graph_session
 from app.mail import feed
+from app.policy import audit
+from app.policy.budget import SPENDING_STOPPED, MessageTooCostlyError
 from app.store.db import connect
 from app.store.ledger import MessageLedger, MessageStatus, SyncCursor
 
@@ -79,6 +81,12 @@ def poll_once(
         if stop is not None and stop.is_set():
             stopped = True
             break
+        if session.gate is not None and not session.gate.allows_new_work():
+            # The spending cap (M17, D5): the rest wait in the feed until
+            # spending is allowed again. Not a failure: the tick succeeds.
+            print("  spending cap reached: nothing more is claimed")
+            stopped = True
+            break
         # The one place a message is claimed. The candidates are only a cheap
         # pre-filter -- another run can insert between that query and this
         # one, so `claim` remains the authority.
@@ -92,6 +100,25 @@ def poll_once(
             # Deleted before its turn (M20, D4): a fixed reason, not a failure.
             ledger.mark(message_id, MessageStatus.SKIPPED, error=feed.GONE)
             print(f"  {message_id}  SKIPPED  {feed.GONE}")
+            continue
+        except SPENDING_STOPPED:
+            # Stopped mid-run by the spend gate (M17, D5): released, so it is
+            # offered again and run from the start once spending is allowed.
+            # It never becomes FAILED.
+            session.checkpointer.delete_thread(message_id)
+            ledger.release(message_id)
+            print(f"  {message_id}  RELEASED  spending stopped")
+            stopped = True
+            break
+        except MessageTooCostlyError:
+            ledger.mark(message_id, MessageStatus.SKIPPED, error=audit.REASONS["too_costly"])
+            audit.record(
+                session.conn,
+                "message_too_costly",
+                message_id=message_id,
+                reason=audit.REASONS["too_costly"],
+            )
+            print(f"  {message_id}  SKIPPED  {audit.REASONS['too_costly']}")
             continue
         except Exception as exc:
             # Retries already happened inside the graph. Reaching here means the

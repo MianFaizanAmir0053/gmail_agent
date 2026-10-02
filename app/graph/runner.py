@@ -25,6 +25,7 @@ from app.graph.nodes import Deps
 from app.graph.versioning import pipeline_version
 from app.obs.trace import Tracer
 from app.policy import models
+from app.policy.budget import Gate
 from app.policy.contacts import unconfirmed_outsiders
 from app.policy.hashing import Binding, args_key
 from app.policy.registry import Registry
@@ -37,6 +38,9 @@ class GraphSession:
     conn: psycopg.Connection
     checkpointer: Any
     trace: bool = True
+    gate: Gate | None = None
+    """The spend gate this session's model calls go through (M17, D5): poll
+    and the worker ask it whether new work may start. None in tests."""
 
     def config(self, message_id: str) -> dict[str, Any]:
         """Thread config for one message.
@@ -219,4 +223,4 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
             pipeline_version=pipeline_version(settings),
             args_key=key,
         )
-        yield GraphSession(deps=deps, conn=conn, checkpointer=checkpointer)
+        yield GraphSession(deps=deps, conn=conn, checkpointer=checkpointer, gate=meter)

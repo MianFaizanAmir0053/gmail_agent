@@ -41,6 +41,7 @@ from app.channel.park import (
 )
 from app.graph.runner import GraphSession, ThreadView
 from app.policy import audit, contacts, control
+from app.policy.budget import SPENDING_STOPPED, MessageTooCostlyError
 from app.policy.hashing import INVITE, Binding, bound
 from app.policy.participants import guest_key
 from app.policy.registry import Approval, HeldError, PausedError, refuse_approved
@@ -180,6 +181,12 @@ def apply_open(
     for decision in _due(session.conn, limit):
         if stop is not None and stop.is_set():
             break
+        if decision.action == "edit" and not _allows_new_work(session):
+            # An edit re-extracts, which calls a model: it waits, queued and
+            # costing no attempt, while the spending cap stops new work. A
+            # Confirm or a Cancel calls none, and still applies (M17, D5).
+            applied.append((decision.message_id, "waiting"))
+            continue
         if not _take_lease(session.conn, decision.id):
             continue  # another worker has it
         try:
@@ -214,6 +221,25 @@ def apply_one(
         # was being applied. Picked up again as soon as they resume.
         _hold(session.conn, decision)
         return "paused"
+    except SPENDING_STOPPED:
+        # The spend gate stopped it mid-apply (D5): it waits like a held edit,
+        # costing no attempt, and goes on when spending is allowed again.
+        _hold(session.conn, decision)
+        return "waiting"
+    except MessageTooCostlyError:
+        # This message has spent its ceiling: no retry can change that.
+        with session.conn.transaction():
+            settle_failed(
+                session.conn, decision.id, decision.message_id, reason=audit.REASONS["too_costly"]
+            )
+        audit.record(
+            session.conn,
+            "message_too_costly",
+            decision_id=decision.id,
+            message_id=decision.message_id,
+            reason=audit.REASONS["too_costly"],
+        )
+        return "failed"
     except HeldError:
         # Gmail could not be read for the guests at execution. Nothing ran;
         # it waits like the check before the Confirm, then counts (D4).
@@ -503,6 +529,10 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
         return "failed"
 
 
+def _allows_new_work(session: GraphSession) -> bool:
+    return session.gate is None or session.gate.allows_new_work()
+
+
 def _resume_value(decision: OpenDecision) -> dict[str, Any]:
     """What a resume hands `await_approval`: the owner's answer and, for a
     Confirm, the approval `act` will be checked against."""
@@ -596,6 +626,22 @@ def _unconfirmed(conn: psycopg.Connection, decision: OpenDecision) -> None:
                 message_id=decision.message_id,
                 reason=audit.REASONS["unconfirmed"],
             )
+
+
+def unconfirmed_writes(conn: psycopg.Connection) -> list[int]:
+    """Open decisions whose calendar write could not be confirmed (D3), by
+    id: each was audited once by `_unconfirmed`, and asks Google again every
+    hour until it can be settled."""
+    rows = conn.execute(
+        """
+        SELECT d.id FROM decisions d
+         WHERE d.outcome IS NULL
+           AND EXISTS (SELECT 1 FROM audit_log a
+                        WHERE a.kind = 'write_unconfirmed' AND a.decision_id = d.id)
+         ORDER BY d.id
+        """
+    ).fetchall()
+    return [row[0] for row in rows]
 
 
 def _hold(conn: psycopg.Connection, decision: OpenDecision) -> None:

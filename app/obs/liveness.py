@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from app.google.tokens import RefreshOutcome
@@ -44,8 +45,26 @@ class Liveness:
     """Browsers subscribed to push, as the hourly token check last counted.
     None until the first count; zero means nobody would hear a push."""
 
+    unconfirmed_writes: int | None = None
+    """Open decisions whose calendar write could not be confirmed (M17, D3),
+    as the decisions job last counted. They ask Google again every hour, so
+    they are counted here rather than as stuck."""
+
+    budget_state: str | None = None
+    """Where this month's model spending stands (M17, D5), as the watch job
+    last read it. An exhausted budget is not an outage."""
+
+    month_spend_usd: Decimal | None = None
+
     def subscriptions_counted(self, count: int) -> None:
         self.push_subscriptions = count
+
+    def writes_checked(self, unconfirmed: int) -> None:
+        self.unconfirmed_writes = unconfirmed
+
+    def budget_checked(self, state: str, month_spend_usd: Decimal) -> None:
+        self.budget_state = state
+        self.month_spend_usd = month_spend_usd
 
     def decisions_checked(self, oldest_open: datetime | None) -> None:
         self.oldest_open_decision_at = oldest_open

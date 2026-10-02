@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -14,6 +15,7 @@ from app.policy.budget import (
     MessageTooCostlyError,
     Spend,
     UnpricedModelError,
+    record_state,
 )
 
 NOW = datetime.now(UTC)
@@ -103,3 +105,54 @@ def test_last_months_spend_does_not_count(conn: psycopg.Connection) -> None:
     )
 
     gate.check(PRICED, "m1")  # a new month: nothing spent yet
+
+
+# --- where spending stands (17.11) ------------------------------------------------------
+
+
+def _spent(monkeypatch: pytest.MonkeyPatch, amount: str, *, cap: str = "40") -> Gate:
+    monkeypatch.setattr(Gate, "month_spend", lambda self, now=None: Decimal(amount))
+    return Gate(cast(Any, None), Decimal(cap), Decimal("0.50"), clock=lambda: NOW)
+
+
+@pytest.mark.parametrize(
+    ("spent", "state"),
+    [
+        ("0", "ok"),
+        ("31.99", "ok"),
+        ("32", "warning"),
+        ("39.89", "warning"),
+        ("39.90", "exhausted"),  # the reserve: new work has stopped
+        ("45", "exhausted"),
+    ],
+)
+def test_where_spending_stands(monkeypatch: pytest.MonkeyPatch, spent: str, state: str) -> None:
+    assert _spent(monkeypatch, spent).state() == state
+
+
+def test_a_budget_alert_is_about_the_month_and_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once per month and cap value (D5): raising the cap re-arms the alerts."""
+    end_of_month = datetime(2026, 10, 31, 23, 59, tzinfo=UTC)
+    gate = _spent(monkeypatch, "0")
+    gate.clock = lambda: end_of_month
+
+    raised = _spent(monkeypatch, "0", cap="50")
+    raised.clock = lambda: end_of_month
+
+    assert gate.alert_subject() == "2026-10:40"
+    assert raised.alert_subject() == "2026-10:50"
+
+
+@pytest.mark.integration
+def test_a_change_of_state_is_written_and_audited_once(conn: psycopg.Connection) -> None:
+    conn.execute("UPDATE control SET budget_state = 'ok'")
+    row = conn.execute("SELECT coalesce(max(id), 0) FROM audit_log").fetchone()
+    assert row is not None
+
+    assert record_state(conn, "warning") is True
+    assert record_state(conn, "warning") is False
+    assert record_state(conn, "ok") is True
+
+    assert conn.execute("SELECT budget_state FROM control").fetchone() == ("ok",)
+    kinds = conn.execute("SELECT kind FROM audit_log WHERE id > %s ORDER BY id", (row[0],))
+    assert kinds.fetchall() == [("budget_warning",), ("budget_ok",)]

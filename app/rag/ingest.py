@@ -18,6 +18,7 @@ step of M10 cheap enough to actually do.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
@@ -174,6 +175,7 @@ def ingest(
     query: str = DEFAULT_QUERY,
     limit: int = 200,
     batch_size: int = BATCH_SIZE,
+    may_continue: Callable[[], bool] | None = None,
 ) -> Stats:
     dimensions = column_dimensions(conn)
     if dimensions != settings.embedding_dimensions:
@@ -200,6 +202,10 @@ def ingest(
         # it had already paid to embed; now the next run's dedupe skips them and
         # it resumes from where the failure was.
         for start in range(0, len(fresh), batch_size):
+            if may_continue is not None and not may_continue():
+                # The spending cap (M17, D5): the rest waits for the next run,
+                # whose dedupe skips what this one already embedded.
+                break
             group = fresh[start : start + batch_size]
             texts = [chunk.embedding_text() for chunk in group]
 

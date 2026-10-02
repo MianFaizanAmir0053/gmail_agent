@@ -35,6 +35,10 @@ class FakeLedger:
     def get(self, message_id: str) -> None:
         return None
 
+    def release(self, message_id: str) -> bool:
+        self.marks.append((message_id, MessageStatus.CLAIMED, "released"))
+        return True
+
 
 @dataclass
 class FakeFeed:
@@ -98,6 +102,9 @@ class FakeSession:
     parked: dict[str, str] = field(default_factory=dict)
     started: list[str] = field(default_factory=list)
     conn: object = field(default_factory=object)
+    gate: Any = None
+    """The spend gate (M17, D5); None, as in tests before it existed."""
+    deleted: list[str] = field(default_factory=list)
     gmail: FakeGmail = field(init=False)
 
     def __post_init__(self) -> None:
@@ -110,6 +117,16 @@ class FakeSession:
     def start(self, message_id: str, thread_id: str) -> None:
         self.started.append(message_id)
         self.on_start(message_id)
+
+    @property
+    def checkpointer(self) -> Any:
+        session = self
+
+        class Saver:
+            def delete_thread(self, thread_id: str) -> None:
+                session.deleted.append(thread_id)
+
+        return Saver()
 
     def pending(self, message_id: str) -> dict[str, Any] | None:
         if message_id not in self.parked:
@@ -325,3 +342,71 @@ def test_messages_are_claimed_in_exactly_one_place() -> None:
     import inspect
 
     assert inspect.getsource(poll).count(".claim(") == 1
+
+
+# --- the spending cap (M17, D5) -----------------------------------------------------------
+
+
+@dataclass
+class FakeGate:
+    room: bool = True
+
+    def allows_new_work(self) -> bool:
+        return self.room
+
+
+def test_at_the_cap_nothing_is_claimed_and_the_pass_is_not_a_failure(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """The mail waits in the feed; the tick still records as successful."""
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], gate=FakeGate(room=False))
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == [] and session.started == []
+    assert (result.started, result.failed) == (0, 0)
+
+
+def test_a_message_stopped_mid_run_goes_back_to_the_feed(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """Released, checkpoint and all, to run from the start once spending is
+    allowed again: never FAILED. Nothing more is claimed this pass."""
+    from app.policy.budget import BudgetExhaustedError
+
+    def spent(message_id: str) -> None:
+        raise BudgetExhaustedError("cap")
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=spent, gate=FakeGate())
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == ["m1"]
+    assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
+    assert session.deleted == ["m1"]
+    assert result.failed == 0
+
+
+def test_a_message_over_its_ceiling_is_skipped_as_too_costly(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.policy.budget import MessageTooCostlyError
+
+    audited: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "app.jobs.poll.audit.record", lambda conn, kind, **fields: audited.append((kind, fields))
+    )
+
+    def costly(message_id: str) -> None:
+        raise MessageTooCostlyError("ceiling")
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=costly, gate=FakeGate())
+
+    poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.marks[0] == ("m1", MessageStatus.SKIPPED, "too costly to read")
+    assert ledger.claimed == ["m1", "m2"]  # the next message is not held back
+    assert audited[0][0] == "message_too_costly"

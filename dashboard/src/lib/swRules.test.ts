@@ -66,13 +66,14 @@ describe("the service worker's notifications", () => {
     assert.equal(alert.options.body, "Google sign-in needs attention.");
   });
 
-  it("gives each mail alert a tag of its own, apart from the sign-in alert", () => {
+  it("gives each kind of alert a tag of its own, apart from the sign-in alert", () => {
     // Each mail alert is sent once a day: one must not replace the other, nor
-    // an unread sign-in alert, nor be replaced by the next proposal.
-    const tags = ["alert", "mail-sync", "mail-feed", "proposal"].map(
+    // an unread sign-in alert, nor be replaced by the next proposal. The same
+    // goes for the spending alerts and an unconfirmed calendar write.
+    const tags = ["alert", "mail-sync", "mail-feed", "budget", "write", "proposal"].map(
       (tag) => notificationFor({ title: "mailagent", body: "x", tag }).options.tag,
     );
-    assert.equal(new Set(tags).size, 4);
+    assert.equal(new Set(tags).size, 6);
   });
 
   it("takes no tag from a push beyond the ones it knows", () => {

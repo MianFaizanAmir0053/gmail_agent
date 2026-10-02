@@ -1170,9 +1170,9 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** Poll's `allows_new_work()` and the reserve; the worker holding edits; ingestion stopping; `control.budget_state`; alerts at 80% and 100%, once per month and cap; `/health` fields, 503 for an unpriced configured model, and held decisions not counted as stuck. From 17.6: one alert when a calendar write cannot be confirmed ("A calendar write could not be confirmed"), and `/health` counting those decisions apart from stuck ones.
 
 **Acceptance criteria:**
-- [ ] At the cap, poll claims nothing and the tick is still recorded as successful; Edit is held while Confirm and Cancel apply.
-- [ ] Each alert is sent once per month and cap; raising the cap re-arms it.
-- [ ] `/health` stays 200 at the cap.
+- [x] At the cap, poll claims nothing and the tick is still recorded as successful; Edit is held while Confirm and Cancel apply.
+- [x] Each alert is sent once per month and cap; raising the cap re-arms it.
+- [x] `/health` stays 200 at the cap.
 
 **Verification:** `uv run pytest tests/test_budget.py tests/test_poll.py tests/test_worker.py tests/test_api.py tests/test_scheduler.py`.
 

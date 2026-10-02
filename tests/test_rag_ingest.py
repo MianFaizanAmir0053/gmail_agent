@@ -242,3 +242,22 @@ def test_messages_with_nothing_original_are_counted_not_hidden() -> None:
     assert stats.messages_seen == 2
     assert stats.messages_empty == 1
     assert len(chunks) == 1
+
+
+def test_at_the_spending_cap_ingestion_stops_between_batches(
+    rag_conn: psycopg.Connection, settings: Settings
+) -> None:
+    """The rest waits for the next run, whose dedupe skips what this one
+    embedded (M17, D5)."""
+    body = "Paragraph {i}. " + "word " * 400
+    mailbox = FakeMailbox([email(f"m{i}", body.replace("{i}", str(i))) for i in range(4)])
+    client = CountingClient(settings.embedding_dimensions)
+    room = iter([True, False])
+
+    ingest(
+        rag_conn, mailbox, client, settings=settings, batch_size=2, may_continue=lambda: next(room)
+    )
+
+    row = rag_conn.execute("SELECT count(*) FROM chunks WHERE thread_id = %s", (THREAD,)).fetchone()
+    assert row is not None and row[0] == 2
+    assert client.models.calls == 1

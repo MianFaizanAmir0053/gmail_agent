@@ -42,7 +42,7 @@ from app.config import Settings
 from app.extraction.evaluation import GatewayError
 from app.extraction.llm import LlmError, Usage
 from app.extraction.prompts import CUT_NOTE
-from app.obs.pricing import cost_usd
+from app.obs.pricing import cost_usd, rate_at
 from app.policy.budget import Gate, Spend
 
 EVALUATE_URL = "https://ai-gateway.vercel.sh/v1/evaluate"
@@ -76,7 +76,9 @@ __all__ = [
     "client",
     "evaluator",
     "gate",
+    "in_use",
     "local_gate",
+    "unpriced",
 ]
 
 
@@ -118,6 +120,24 @@ def advertised(settings: Settings) -> list[Any]:
     from google import genai
 
     return list(genai.Client(api_key=settings.gemini_api_key.get_secret_value()).models.list())
+
+
+def in_use(settings: Settings) -> list[str]:
+    """The models the running app calls. A feature that is off calls none:
+    the reviewer's model only with the reviewer on, the embedding model only
+    with search or ingestion on (D5)."""
+    used = [settings.classify_model, settings.extraction_model]
+    if settings.reviewer_enabled:
+        used.append(settings.reviewer_model)
+    if settings.search_context_enabled or settings.ingest_enabled:
+        used.append(settings.embedding_model)
+    return used
+
+
+def unpriced(settings: Settings, at: datetime) -> list[str]:
+    """The models in use with no rate at `at`. The gate refuses every call
+    to one, so whatever needs it has stopped: `/health` says so with a 503."""
+    return sorted({model for model in in_use(settings) if rate_at(model, at) is None})
 
 
 def evaluator(settings: Settings, meter: Gate) -> MeteredEvaluator | None:

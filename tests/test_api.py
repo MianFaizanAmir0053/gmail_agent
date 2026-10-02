@@ -11,6 +11,7 @@ import threading
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -308,6 +309,65 @@ def test_health_shows_how_many_browsers_would_hear_a_push(
     assert response.json()["push_subscriptions"] == 0
 
 
+def test_a_spent_budget_is_not_an_outage(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap doing its job (M17, D5): 200, and with the bearer, the state
+    and the month's spend."""
+    live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    live.budget_checked("exhausted", Decimal("39.95"))
+    live.writes_checked(1)
+
+    response = client.get("/health", headers=_owner())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["budget"] == {"state": "exhausted", "month_spend_usd": "39.95", "cap_usd": 40.0}
+    assert (body["unconfirmed_writes"], body["unpriced_models"]) == (1, [])
+
+
+def _with(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> None:
+    monkeypatch.setattr(
+        "app.api.get_settings",
+        lambda: _settings(
+            run_scheduler=True,
+            poll_interval_minutes=10,
+            web_api_secret=SecretStr(OWNER),
+            **overrides,
+        ),
+    )
+
+
+def test_a_model_in_use_with_no_price_is_a_503(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate refuses every call to it, so mail processing has stopped."""
+    _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    _with(monkeypatch, extraction_model="gemini-0-unpriced")
+
+    response = client.get("/health", headers=_owner())
+
+    assert response.status_code == 503
+    assert response.json()["problems"] == ["a model in use has no price"]
+    assert response.json()["unpriced_models"] == ["gemini-0-unpriced"]
+
+
+def test_the_embedding_model_counts_only_with_search_or_ingestion_on(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
+    unpriced = {"embedding_model": "embedding-0-unpriced"}
+
+    _with(monkeypatch, search_context_enabled=False, ingest_enabled=False, **unpriced)
+    assert client.get("/health").status_code == 200
+
+    _with(monkeypatch, search_context_enabled=False, ingest_enabled=True, **unpriced)
+    assert client.get("/health").status_code == 503
+
+    _with(monkeypatch, search_context_enabled=True, ingest_enabled=False, **unpriced)
+    assert client.get("/health").status_code == 503
+
+
 def test_a_stranger_sees_the_status_but_not_the_details(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -326,6 +386,7 @@ def test_a_stranger_sees_the_status_but_not_the_details(
         body = client.get("/health", headers=headers).json()
         assert "push_subscriptions" not in body
         assert "oldest_open_decision_seconds" not in body
+        assert "budget" not in body and "unconfirmed_writes" not in body
 
 
 @dataclass

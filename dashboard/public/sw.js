@@ -37,13 +37,16 @@ self.isCacheable = function isCacheable(url, origin) {
  * notification is replaced only by the next of its own kind, so a proposal
  * or a mail alert never replaces an unread sign-in alert, which Fly does not
  * send twice, and the two mail alerts, each sent once a day, never replace
- * each other. A tag not listed here is shown as a proposal.
+ * each other. The spending cap reached replaces the warning before it. A tag
+ * not listed here is shown as a proposal.
  */
 const TAGS = new Map([
   ["proposal", "mailagent-proposal"],
   ["alert", "mailagent-alert"],
   ["mail-sync", "mailagent-mail-sync"],
   ["mail-feed", "mailagent-mail-feed"],
+  ["budget", "mailagent-budget"],
+  ["write", "mailagent-write"],
 ]);
 
 /*

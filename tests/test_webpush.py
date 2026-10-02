@@ -18,7 +18,7 @@ from pydantic import SecretStr
 from pywebpush import WebPushException
 
 from app.channel import webpush as channel
-from app.channel.channels import configured_channels
+from app.channel.channels import AlertCode, configured_channels
 from app.channel.park import proposal_from
 from app.channel.webpush import (
     ALERT_PUSH,
@@ -148,12 +148,21 @@ def test_each_alert_kind_has_a_tag_of_its_own() -> None:
     mail alert must not replace an unread sign-in alert, which is sent once,
     and the two mail alerts, each sent once a day, must not replace each
     other."""
-    tags = [
-        ALERT_PUSHES[code]["tag"]
-        for code in ("token_expired", "mail_sync_missed", "mail_feed_stalled")
-    ]
+    codes: tuple[AlertCode, ...] = (
+        "token_expired",
+        "mail_sync_missed",
+        "mail_feed_stalled",
+        "budget_warning",
+        "write_unconfirmed",
+    )
+    tags = [ALERT_PUSHES[code]["tag"] for code in codes]
 
-    assert len({*tags, PROPOSAL_PUSH["tag"]}) == 4
+    assert len({*tags, PROPOSAL_PUSH["tag"]}) == 6
+
+
+def test_the_cap_reached_replaces_the_warning_before_it() -> None:
+    """It supersedes it (M17, D5): one tag for the two budget alerts."""
+    assert ALERT_PUSHES["budget_warning"]["tag"] == ALERT_PUSHES["budget_exhausted"]["tag"]
 
 
 def test_the_service_worker_knows_every_tag_fly_sends() -> None:

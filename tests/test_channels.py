@@ -239,3 +239,12 @@ def test_telegram_tells_the_owner_where_to_look_for_a_mail_alert(code: AlertCode
 
     assert TelegramChannel(bot=bot, chat_id=4242, zone="UTC").alert(code) is True
     assert "--status" in bot.sent[-1]["text"]
+
+
+def test_the_budget_alerts_carry_no_amounts() -> None:
+    """Words only (M17, D5): `/health`, with the bearer, shows the spend."""
+    from app.channel.webpush import ALERT_PUSHES
+
+    for code in ("budget_warning", "budget_exhausted"):
+        for words in (TELEGRAM_ALERTS[code], ALERT_PUSHES[code]["body"]):
+            assert "$" not in words and not any(c.isdigit() for c in words.replace("80%", ""))

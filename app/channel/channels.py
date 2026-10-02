@@ -40,6 +40,11 @@ AlertCode = Literal[
     # The mail recall's (M20, D5), once a day each.
     "mail_sync_missed",
     "mail_feed_stalled",
+    # The spend cap's (M17, D5), once per month and cap value each.
+    "budget_warning",
+    "budget_exhausted",
+    # A calendar write that could not be confirmed (M17, D3), once per decision.
+    "write_unconfirmed",
 ]
 """Every alert a channel can be asked to deliver. A new code needs words in
 `TELEGRAM_ALERTS` and a payload in `app.channel.webpush.ALERT_PUSHES`."""
@@ -135,6 +140,16 @@ TELEGRAM_ALERTS: dict[AlertCode, str] = {
     "mail_feed_stalled": (
         "⚠️ The mail feed has stalled: mail waited over an hour without being processed. "
         "<code>python -m app.mail.sync --status</code> on the instance shows the last recalls."
+    ),
+    # No amounts (M17, D5): `/health`, with the bearer, shows the month's spend.
+    "budget_warning": "⚠️ Model spending is at 80% of this month's cap.",
+    "budget_exhausted": (
+        "⚠️ Model spending cap reached: mail processing has stopped. It starts again next "
+        "month, or once <code>MONTHLY_BUDGET_USD</code> is raised and the app restarted."
+    ),
+    "write_unconfirmed": (
+        "⚠️ A calendar write could not be confirmed. Check the calendar: "
+        "the agent asks Google again every hour, and settles it once Google answers."
     ),
 }
 

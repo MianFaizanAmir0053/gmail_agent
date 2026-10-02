@@ -6,17 +6,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 
-from app.channel.alerts import TokenAlert
+from app.channel.alerts import Alert
 from app.channel.reconcile import ReconcileResult
 from app.config import Settings
 from app.google.tokens import TokenHealth, TokenMetadata
 from app.jobs.ingest_job import incremental_query, scheduled_ingest
 from app.jobs.poll import STOPPING, PollResult
 from app.jobs.scheduler import (
+    DecisionsStatus,
     build_scheduler,
     check_token,
     record_tick,
@@ -27,8 +29,10 @@ from app.jobs.scheduler import (
     run_poll,
     run_purge,
     run_reconcile,
+    run_watch,
     wake_decisions,
 )
+from app.jobs.watch import Watched
 from app.mail.recall import RecallResult
 from app.mail.sync import Gap, SyncReport
 from app.obs.liveness import Liveness, MailSyncLiveness, TokenEvidence
@@ -53,6 +57,7 @@ def test_the_standing_jobs_are_registered() -> None:
         "decisions",
         "mail_sync",
         "mail_recall",
+        "watch",
     }
 
 
@@ -82,7 +87,9 @@ def test_an_empty_queue_costs_one_query_and_no_session(monkeypatch: pytest.Monke
     """Every fifteen seconds, the common case must stay cheap."""
     live = _liveness(monkeypatch)
     live.decisions_checked(datetime.now(UTC) - timedelta(minutes=5))
-    monkeypatch.setattr("app.jobs.scheduler.open_decisions", lambda settings: (None, False))
+    monkeypatch.setattr(
+        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(None, False, 0)
+    )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
     recorded = _capture(monkeypatch)
 
@@ -95,7 +102,9 @@ def test_an_empty_queue_costs_one_query_and_no_session(monkeypatch: pytest.Monke
 def test_an_open_decision_not_yet_due_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     live = _liveness(monkeypatch)
     opened = datetime.now(UTC) - timedelta(minutes=2)
-    monkeypatch.setattr("app.jobs.scheduler.open_decisions", lambda settings: (opened, False))
+    monkeypatch.setattr(
+        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(opened, False, 0)
+    )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
 
     run_decisions(_settings())
@@ -106,7 +115,9 @@ def test_an_open_decision_not_yet_due_waits(monkeypatch: pytest.MonkeyPatch) -> 
 def test_a_due_decision_is_applied_and_the_tick_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
     live = _liveness(monkeypatch)
     opened = datetime.now(UTC) - timedelta(seconds=30)
-    monkeypatch.setattr("app.jobs.scheduler.open_decisions", lambda settings: (opened, True))
+    monkeypatch.setattr(
+        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(opened, True, 0)
+    )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
     calls: list[dict[str, Any]] = []
 
@@ -130,7 +141,8 @@ def test_a_decision_that_could_not_be_applied_marks_the_tick(
 ) -> None:
     _liveness(monkeypatch)
     monkeypatch.setattr(
-        "app.jobs.scheduler.open_decisions", lambda settings: (datetime.now(UTC), True)
+        "app.jobs.scheduler.open_decisions",
+        lambda settings: DecisionsStatus(datetime.now(UTC), True, 0),
     )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
     monkeypatch.setattr(
@@ -169,6 +181,21 @@ def test_a_failing_decisions_job_is_recorded_at_most_every_five_minutes(
     run_decisions(_settings())
 
     assert recorded == [{"job": "decisions", "ok": False, "error": "RuntimeError"}]
+
+
+def test_the_decisions_job_counts_the_writes_it_could_not_confirm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Held, not stuck: `/health` shows them apart (M17, D3)."""
+    live = _liveness(monkeypatch)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(None, False, 2)
+    )
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
+
+    run_decisions(_settings())
+
+    assert (live.oldest_open_decision_at, live.unconfirmed_writes) == (None, 2)
 
 
 def test_waking_runs_the_decisions_job_now(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -356,19 +383,19 @@ class _Store:
         return TokenMetadata(issued_at=self.issued_at, minted_under=self.minted_under)  # type: ignore[arg-type]
 
 
-def _token_check(monkeypatch: pytest.MonkeyPatch, store: _Store) -> list[list[TokenAlert]]:
-    sent: list[list[TokenAlert]] = []
+def _token_check(monkeypatch: pytest.MonkeyPatch, store: _Store) -> list[list[Alert]]:
+    sent: list[list[Alert]] = []
     monkeypatch.setattr("app.jobs.scheduler._count_subscriptions", lambda settings: None)
     monkeypatch.setattr("app.jobs.scheduler.token_store", lambda settings: store)
     monkeypatch.setattr("app.jobs.scheduler.standby_token_store", lambda settings: None)
     monkeypatch.setattr("app.jobs.scheduler.TOKEN_EVIDENCE", TokenEvidence())
     monkeypatch.setattr("app.jobs.scheduler.connect", lambda url, **kw: nullcontext(object()))
 
-    def _send(conn: Any, channels: Any, alerts: list[TokenAlert]) -> list[str]:
+    def _send(conn: Any, channels: Any, alerts: list[Alert]) -> list[str]:
         sent.append(alerts)
         return []
 
-    monkeypatch.setattr("app.jobs.scheduler.send_token_alerts", _send)
+    monkeypatch.setattr("app.jobs.scheduler.send_alerts", _send)
     return sent
 
 
@@ -380,7 +407,7 @@ def test_a_testing_token_near_expiry_is_alerted_through_the_channels(
 
     check_token(_settings())
 
-    assert sent == [[TokenAlert("token_expiring", issued.isoformat())]]
+    assert sent == [[Alert("token_expiring", issued.isoformat())]]
 
 
 def test_a_production_token_is_not_counted_down(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -760,3 +787,54 @@ def test_before_the_first_sync_run_the_recall_records_nothing(
     run_mail_recall(_settings(), now=DAY + timedelta(hours=6))
 
     assert recorded == []
+
+
+# --- the watch (M17, 17.11) ---------------------------------------------------------------
+
+
+def test_the_watch_runs_at_start_and_every_five_minutes() -> None:
+    """At start, so a restart with a raised cap shows at once."""
+    job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "watch")
+
+    assert "0:05:00" in str(job.trigger)
+    assert job.next_run_time is not None
+    assert job.max_instances == 1
+
+
+def _watching(monkeypatch: pytest.MonkeyPatch, watched: Any) -> None:
+    monkeypatch.setattr(
+        "app.jobs.scheduler.psycopg.connect", lambda *args, **kwargs: nullcontext(object())
+    )
+    monkeypatch.setattr("app.jobs.scheduler.configured_channels", lambda settings: object())
+
+    def _watch(conn: Any, settings: Settings, channels: Any) -> Watched:
+        if isinstance(watched, Exception):
+            raise watched
+        return cast(Watched, watched)
+
+    monkeypatch.setattr("app.jobs.scheduler.watch", _watch)
+
+
+def test_the_watch_leaves_what_it_saw_for_health(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = _liveness(monkeypatch)
+    _watching(monkeypatch, Watched("exhausted", Decimal("39.95"), ["budget_exhausted"]))
+    recorded = _capture(monkeypatch)
+
+    run_watch(_settings())
+
+    assert (live.budget_state, live.month_spend_usd) == ("exhausted", Decimal("39.95"))
+    assert recorded == []  # a clean watch is not worth a row every five minutes
+
+
+def test_a_failing_watch_is_recorded_at_most_every_half_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _liveness(monkeypatch)
+    _watching(monkeypatch, RuntimeError("database unreachable"))
+    monkeypatch.setattr("app.jobs.scheduler._watch_failure_recorded_at", None)
+    recorded = _capture(monkeypatch)
+
+    run_watch(_settings())  # must not raise
+    run_watch(_settings())
+
+    assert recorded == [{"job": "watch", "ok": False, "error": "RuntimeError"}]

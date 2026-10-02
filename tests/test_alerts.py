@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 import pytest
 
-from app.channel.alerts import TokenAlert, send_token_alerts, token_alerts
+from app.channel.alerts import Alert, send_alerts, token_alerts
 from app.google.tokens import TokenHealth
 
 ISSUED = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
@@ -36,7 +36,7 @@ def test_a_production_token_never_gets_the_countdown_alert(state: str) -> None:
 
 def test_a_testing_token_within_two_days_of_expiry_gets_one_alert() -> None:
     assert token_alerts(ISSUED, "testing", _health(1.5), standby=None) == [
-        TokenAlert("token_expiring", SUBJECT)
+        Alert("token_expiring", SUBJECT)
     ]
     assert token_alerts(ISSUED, "testing", _health(3.0), standby=None) == []
 
@@ -46,14 +46,14 @@ def test_an_expired_token_with_no_usable_standby_alerts_that_mail_has_stopped(
     standby: str | None,
 ) -> None:
     assert token_alerts(ISSUED, "expired", _health(-1.0), standby=standby) == [
-        TokenAlert("token_expired", SUBJECT)
+        Alert("token_expired", SUBJECT)
     ]
 
 
 def test_failover_to_the_standby_is_its_own_alert() -> None:
     """Mail still flows, but the primary needs replacing."""
     assert token_alerts(ISSUED, "expired", _health(-1.0), standby="production-unconfirmed") == [
-        TokenAlert("standby_in_use", SUBJECT)
+        Alert("standby_in_use", SUBJECT)
     ]
 
 
@@ -90,12 +90,12 @@ def _recorded(conn: psycopg.Connection) -> list[tuple[str, str, str]]:
 def test_an_alert_is_recorded_only_where_a_channel_delivered_it(conn: psycopg.Connection) -> None:
     """With no subscriptions, or a failed send, it is retried at the next check."""
     conn.execute("DELETE FROM alerts_sent")
-    alert = TokenAlert("token_expired", SUBJECT)
+    alert = Alert("token_expired", SUBJECT)
 
-    assert send_token_alerts(conn, FakeChannels(delivering=set()), [alert]) == []
+    assert send_alerts(conn, FakeChannels(delivering=set()), [alert]) == []
     assert _recorded(conn) == []
 
-    assert send_token_alerts(conn, FakeChannels(), [alert]) == ["token_expired"]
+    assert send_alerts(conn, FakeChannels(), [alert]) == ["token_expired"]
     assert sorted(_recorded(conn)) == [
         ("token_expired", SUBJECT, "telegram"),
         ("token_expired", SUBJECT, "web_push"),
@@ -109,11 +109,11 @@ def test_telegram_accepting_an_alert_does_not_stop_web_push_retrying(
     """Telegram's API accepting a message says nothing about the phones only
     web push reaches -- and Telegram is blocked on the owner's network."""
     conn.execute("DELETE FROM alerts_sent")
-    alert = TokenAlert("token_expired", SUBJECT)
-    send_token_alerts(conn, FakeChannels(delivering={"telegram"}), [alert])
+    alert = Alert("token_expired", SUBJECT)
+    send_alerts(conn, FakeChannels(delivering={"telegram"}), [alert])
 
     retry = FakeChannels()
-    assert send_token_alerts(conn, retry, [alert]) == ["token_expired"]
+    assert send_alerts(conn, retry, [alert]) == ["token_expired"]
 
     assert retry.asked == [("token_expired", frozenset({"telegram"}))]
     assert sorted(_recorded(conn)) == [
@@ -127,12 +127,12 @@ def test_an_alert_goes_out_once_per_state_change_even_across_a_restart(
     conn: psycopg.Connection,
 ) -> None:
     conn.execute("DELETE FROM alerts_sent")
-    alert = TokenAlert("token_expiring", SUBJECT)
-    send_token_alerts(conn, FakeChannels(), [alert])
+    alert = Alert("token_expiring", SUBJECT)
+    send_alerts(conn, FakeChannels(), [alert])
 
     after_restart = FakeChannels()  # a new process, the same database
-    assert send_token_alerts(conn, after_restart, [alert]) == []
+    assert send_alerts(conn, after_restart, [alert]) == []
     assert after_restart.asked == []  # every channel had it; nobody is asked
 
-    next_token = TokenAlert("token_expiring", (ISSUED + timedelta(days=7)).isoformat())
-    assert send_token_alerts(conn, after_restart, [next_token]) == ["token_expiring"]
+    next_token = Alert("token_expiring", (ISSUED + timedelta(days=7)).isoformat())
+    assert send_alerts(conn, after_restart, [next_token]) == ["token_expiring"]

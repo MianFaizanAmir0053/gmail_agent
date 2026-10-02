@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, time, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 import psycopg
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.channel.alerts import send_token_alerts, token_alerts
+from app.channel.alerts import send_alerts, token_alerts
 from app.channel.channels import configured_channels
 from app.channel.reconcile import reconcile
 from app.channel.worker import apply_open
@@ -29,6 +29,7 @@ from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
 from app.jobs.poll import STOPPING, poll_once
 from app.jobs.purge import PurgeResult, purge
+from app.jobs.watch import watch
 from app.mail.recall import ALERTS as MAIL_ALERTS
 from app.mail.recall import run_daily as run_recall
 from app.mail.sync import SYNC_EVERY as MAIL_SYNC_EVERY
@@ -52,6 +53,16 @@ DECISION_FAILURES_RECORDED_EVERY = timedelta(minutes=5)
 in `job_runs` at most this often. `/health` reports a stuck queue itself."""
 
 _decisions_failure_recorded_at: datetime | None = None
+
+WATCH_EVERY = timedelta(minutes=5)
+"""How often the watch job looks at the budget and at writes that could not
+be confirmed (M17). The web app's banner and `/health` lag spending by at
+most this, plus the gate's minute."""
+
+WATCH_FAILURES_RECORDED_EVERY = timedelta(minutes=30)
+"""A failing watch job is recorded in `job_runs` at most this often."""
+
+_watch_failure_recorded_at: datetime | None = None
 
 _active: BackgroundScheduler | None = None
 """The scheduler this process runs, for `wake_decisions`."""
@@ -113,27 +124,56 @@ def run_ingest(settings: Settings) -> None:
     record_tick(settings, "ingest", started_at, ok=scheduled_ingest(settings))
 
 
-def open_decisions(settings: Settings) -> tuple[datetime | None, bool]:
-    """When the oldest open decision was made, and whether any is due now."""
+class DecisionsStatus(NamedTuple):
+    oldest: datetime | None
+    """When the oldest open decision not held was made: `/health`'s clock."""
+    due: bool
+    """Whether any is due now, so worth a graph session."""
+    unconfirmed: int
+    """Open decisions whose calendar write could not be confirmed."""
+
+
+def open_decisions(settings: Settings) -> DecisionsStatus:
     with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
         return decisions_status(conn)
 
 
-def decisions_status(conn: psycopg.Connection) -> tuple[datetime | None, bool]:
-    """The oldest open decision, and whether any is due. None is due while the
-    owner has paused the agent (M17, D6): no session is opened for them."""
+def decisions_status(conn: psycopg.Connection) -> DecisionsStatus:
+    """The open decisions, as the decisions job and `/health` see them.
+
+    A held decision does not count toward the one-hour clock for stuck ones:
+    every decision while the owner has paused the agent (M17, D6), an Edit
+    while the spending cap stops new work (D5), and a decision whose
+    calendar write could not be confirmed, which asks Google again every
+    hour and is counted apart (D3). Nothing is due while paused, and no Edit
+    while the cap stops new work: no session is opened for them.
+    """
     row = conn.execute(
         """
-        SELECT min(decided_at),
-               coalesce(bool_or(next_attempt_at <= now()
-                                AND (lease_until IS NULL OR lease_until < now())), false)
-               AND NOT coalesce((SELECT paused FROM control WHERE id = 1), false)
-          FROM decisions
-         WHERE outcome IS NULL
+        WITH c AS (
+            SELECT coalesce(bool_or(paused), false) AS paused,
+                   coalesce(bool_or(budget_state = 'exhausted'), false) AS spent
+              FROM control WHERE id = 1
+        ), open AS (
+            SELECT d.decided_at,
+                   d.next_attempt_at <= now()
+                       AND (d.lease_until IS NULL OR d.lease_until < now())
+                       AND NOT (d.action = 'edit' AND c.spent) AS due,
+                   c.paused OR (d.action = 'edit' AND c.spent) AS held,
+                   EXISTS (SELECT 1 FROM audit_log a
+                            WHERE a.kind = 'write_unconfirmed' AND a.decision_id = d.id)
+                       AS unconfirmed
+              FROM decisions d CROSS JOIN c
+             WHERE d.outcome IS NULL
+        )
+        SELECT min(decided_at) FILTER (WHERE NOT held AND NOT unconfirmed),
+               coalesce(bool_or(due), false) AND NOT (SELECT paused FROM c),
+               count(*) FILTER (WHERE unconfirmed)
+          FROM open
         """
     ).fetchone()
     assert row is not None
-    return row[0], bool(row[1])
+    return DecisionsStatus(row[0], bool(row[1]), int(row[2]))
 
 
 def run_decisions(settings: Settings) -> None:
@@ -141,11 +181,12 @@ def run_decisions(settings: Settings) -> None:
     global _decisions_failure_recorded_at
     started_at = datetime.now(UTC)
     try:
-        oldest, due = open_decisions(settings)
-        LIVENESS.decisions_checked(oldest)
+        status = open_decisions(settings)
+        LIVENESS.decisions_checked(status.oldest)
+        LIVENESS.writes_checked(status.unconfirmed)
         # Only a due decision is worth a graph session, which loads
         # credentials and builds clients; most ticks find nothing.
-        if not due or STOPPING.is_set():
+        if not status.due or STOPPING.is_set():
             return
         with graph_session(settings) as session:
             applied = apply_open(
@@ -229,6 +270,34 @@ def run_reconcile(settings: Settings) -> None:
     )
 
 
+def run_watch(settings: Settings) -> None:
+    """The budget's state and the writes that could not be confirmed (M17,
+    D5 and D3): written where the web app and `/health` read them, and each
+    alert sent once. Never raises.
+
+    On a connection that commits as it goes: an alert's record is written
+    only once a channel delivered it, and must not be rolled back by a later
+    failure, or the alert would be sent again.
+    """
+    global _watch_failure_recorded_at
+    started_at = datetime.now(UTC)
+    try:
+        with psycopg.connect(
+            settings.database_url, autocommit=True, connect_timeout=RECORD_CONNECT_TIMEOUT
+        ) as conn:
+            watched = watch(conn, settings, configured_channels(settings))
+    except Exception as exc:
+        log.exception("watch failed")
+        last = _watch_failure_recorded_at
+        if last is None or started_at - last >= WATCH_FAILURES_RECORDED_EVERY:
+            _watch_failure_recorded_at = started_at
+            record_tick(settings, "watch", started_at, ok=False, error=type(exc).__name__)
+        return
+    LIVENESS.budget_checked(watched.state, watched.month_spend_usd)
+    if watched.sent:
+        log.info("watch: sent %s", ", ".join(watched.sent))
+
+
 def purge_once(settings: Settings) -> PurgeResult:
     with connect(settings.database_url) as conn:
         return purge(conn, settings.database_url)
@@ -283,7 +352,7 @@ def check_token(settings: Settings) -> None:
         return
     try:
         with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
-            send_token_alerts(conn, configured_channels(settings), alerts)
+            send_alerts(conn, configured_channels(settings), alerts)
     except Exception:
         log.exception("could not send token alerts")
 
@@ -517,6 +586,20 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=int(DECISIONS_EVERY.total_seconds()),
+    )
+
+    # At start, so a restart with a raised cap shows at once, then every few
+    # minutes (M17, D5).
+    scheduler.add_job(
+        run_watch,
+        "interval",
+        seconds=int(WATCH_EVERY.total_seconds()),
+        args=[settings],
+        id="watch",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=int(WATCH_EVERY.total_seconds()),
+        next_run_time=datetime.now(UTC),
     )
 
     # At start, then hourly. A parked thread without a row is invisible to the
