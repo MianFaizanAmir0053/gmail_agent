@@ -19,7 +19,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.channel import worker
-from app.channel.decide import card_token, decide
+from app.channel.decide import card_token, decide, request_withdraw
 from app.channel.park import ProposalRecord, record_park
 from app.channel.worker import (
     ACT_INTERRUPTED,
@@ -38,7 +38,7 @@ from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.payloads import ClassifyPayload
 from app.graph.nodes import Deps
 from app.graph.runner import GraphSession, ThreadView
-from app.policy import audit
+from app.policy import audit, control
 from app.policy.contacts import unconfirmed_outsiders
 from app.policy.hashing import args_key
 from app.policy.registry import Registry
@@ -849,36 +849,36 @@ def test_the_job_sees_the_oldest_open_decision_and_whether_it_is_due(
     from app.jobs.scheduler import decisions_status
 
     conn.execute("UPDATE control SET paused = false, budget_state = 'ok'")
-    assert decisions_status(conn) == (None, False, 0)
+    assert decisions_status(conn) == (None, False, 0, False)
 
     session, _ = _world(conn)
     _parked(conn, session)
     _confirm(conn, "m1", revision=1)
     decided_at = conn.execute("SELECT decided_at FROM decisions").fetchone()
     assert decided_at is not None
-    assert decisions_status(conn) == (decided_at[0], True, 0)
+    assert decisions_status(conn) == (decided_at[0], True, 0, False)
 
     conn.execute("UPDATE decisions SET next_attempt_at = now() + interval '1 minute'")
-    assert decisions_status(conn) == (decided_at[0], False, 0)  # waiting to retry
+    assert decisions_status(conn) == (decided_at[0], False, 0, False)  # waiting to retry
 
     conn.execute(
         "UPDATE decisions SET next_attempt_at = now(), lease_until = now() + interval '1 minute'"
     )
-    assert decisions_status(conn) == (decided_at[0], False, 0)  # another worker has it
+    assert decisions_status(conn) == (decided_at[0], False, 0, False)  # another worker has it
 
     conn.execute("UPDATE decisions SET lease_until = NULL")
     conn.execute("UPDATE control SET paused = true")
     # Paused: held, so neither due nor stuck (M17, D6).
-    assert decisions_status(conn) == (None, False, 0)
+    assert decisions_status(conn) == (None, False, 0, True)
 
     conn.execute("UPDATE control SET paused = false")
     conn.execute("UPDATE control SET budget_state = 'exhausted'")
     # The cap holds an Edit, not a Confirm, which calls no model (D5).
-    assert decisions_status(conn) == (decided_at[0], True, 0)
+    assert decisions_status(conn) == (decided_at[0], True, 0, False)
 
     conn.execute("UPDATE control SET budget_state = 'ok'")
     apply_open(session)
-    assert decisions_status(conn) == (None, False, 0)
+    assert decisions_status(conn) == (None, False, 0, False)
 
 
 @pytest.mark.integration
@@ -892,11 +892,11 @@ def test_an_edit_held_by_the_cap_is_neither_due_nor_stuck(conn: psycopg.Connecti
     decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
     decided_at = conn.execute("SELECT decided_at FROM decisions").fetchone()
     assert decided_at is not None
-    assert decisions_status(conn) == (decided_at[0], True, 0)
+    assert decisions_status(conn) == (decided_at[0], True, 0, False)
 
     conn.execute("UPDATE control SET budget_state = 'exhausted'")
 
-    assert decisions_status(conn) == (None, False, 0)
+    assert decisions_status(conn) == (None, False, 0, False)
 
 
 # --- writes that can be finished (M17, 17.5-17.6) -------------------------------
@@ -1506,3 +1506,142 @@ def test_a_message_over_its_ceiling_fails_its_edit_at_once(conn: psycopg.Connect
     assert apply_open(session) == [("m1", "failed")]
 
     assert _outcomes(conn) == [("failed", "too costly to read", True)]
+
+
+# --- withdraw (M17, 17.12) ------------------------------------------------------------
+
+
+def _withdrawals(conn: psycopg.Connection, decision_id: int) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT kind FROM audit_log
+         WHERE decision_id = %s AND kind IN ('decision_withdrawn', 'withdraw_declined')
+         ORDER BY id
+        """,
+        (decision_id,),
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+@pytest.mark.integration
+def test_a_withdraw_request_is_recorded_only_on_an_open_decision(
+    conn: psycopg.Connection,
+) -> None:
+    session, _ = _world(conn)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+
+    assert request_withdraw(conn, decision.decision_id) == "requested"
+    assert request_withdraw(conn, decision.decision_id) == "requested"  # asking twice
+    assert request_withdraw(conn, 2**62) == "not_found"
+
+    conn.execute("UPDATE decisions SET withdraw_requested_at = NULL")
+    apply_open(session)
+    assert request_withdraw(conn, decision.decision_id) == "settled"
+
+
+@pytest.mark.integration
+def test_an_operators_sweep_cannot_be_withdrawn(conn: psycopg.Connection) -> None:
+    """A sweep is never the owner's tap."""
+    session, _ = _world(conn)
+    _parked(conn, session)
+    sweep = decide(conn, "m1", action="sweep", revision=1, via="sweep")
+    assert sweep.decision_id is not None
+
+    assert request_withdraw(conn, sweep.decision_id) == "not_found"
+    row = conn.execute("SELECT withdraw_requested_at FROM decisions").fetchone()
+    assert row == (None,)
+
+
+@pytest.mark.integration
+def test_a_withdrawn_confirm_books_nothing_and_its_old_card_is_stale(
+    conn: psycopg.Connection,
+) -> None:
+    """Seen before anything is applied (D6). The proposal comes back at the
+    next generation, so the old card's Confirm dies on it."""
+    calendar = FakeCalendar(dry_run=False)
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    old = conn.execute("SELECT args_hash, dry_run, generation FROM proposals").fetchone()
+    assert old is not None
+    decision = _confirm(conn, "m1", revision=1)
+    request_withdraw(conn, decision.decision_id)
+
+    assert apply_open(session) == [("m1", "withdrawn")]
+
+    assert (session.resumes, calendar.calls) == (0, 0)
+    assert _outcomes(conn) == [("no_effect", audit.REASONS["withdrawn"], True)]
+    assert _proposal(conn) == ("pending", 1, None)
+    assert _action(conn)[:2] == ("refused", audit.REASONS["withdrawn"])
+    assert _withdrawals(conn, decision.decision_id) == ["decision_withdrawn"]
+    replay = decide(
+        conn,
+        "m1",
+        action="confirm",
+        revision=1,
+        via="web",
+        token=card_token(old[0], old[1], old[2]),
+        dry_run=old[1],
+    )
+    assert replay.status == "stale"
+
+
+@pytest.mark.integration
+def test_a_withdraw_is_carried_out_while_paused_and_nothing_else_is(
+    conn: psycopg.Connection,
+) -> None:
+    from app.jobs.scheduler import decisions_status
+
+    session = _counting(conn)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    control.switch(conn, paused=True, via="web")
+
+    assert apply_open(session) == []  # paused: the Confirm waits
+    assert decisions_status(conn).due is False
+
+    request_withdraw(conn, decision.decision_id)
+    assert decisions_status(conn).due is True  # worth a session, even paused
+
+    assert apply_open(session) == [("m1", "withdrawn")]
+    assert session.resumes == 0
+
+
+@pytest.mark.integration
+def test_a_withdraw_is_declined_once_the_write_has_begun(conn: psycopg.Connection) -> None:
+    """Even with the lease cleared by a failed attempt: the action is under
+    way, so the decision goes on, and the owner is told it could not be
+    withdrawn."""
+    calendar = FakeCalendar(dry_run=False, fail_after=1)
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    assert apply_open(session) == [("m1", "retrying")]
+    assert _action(conn)[0] == "executing"
+    request_withdraw(conn, decision.decision_id)
+
+    assert apply_open(session) == [("m1", "declined")]
+
+    row = conn.execute(
+        "SELECT outcome, withdraw_requested_at, lease_until, attempts FROM decisions"
+    ).fetchone()
+    assert row == (None, None, None, 1)  # still open; the request cleared; no attempt spent
+    assert _withdrawals(conn, decision.decision_id) == ["withdraw_declined"]
+
+    _make_due(conn)
+    assert apply_open(session) == [("m1", "created")]  # and it goes on as it was
+    assert calendar.inserts == 1
+
+
+@pytest.mark.integration
+def test_a_withdrawn_cancel_returns_the_proposal(conn: psycopg.Connection) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    queued = decide(conn, "m1", action="cancel", revision=1, via="web")
+    assert queued.decision_id is not None
+    request_withdraw(conn, queued.decision_id)
+
+    assert apply_open(session) == [("m1", "withdrawn")]
+
+    assert _proposal(conn) == ("pending", 1, None)
+    assert session.resumes == 0

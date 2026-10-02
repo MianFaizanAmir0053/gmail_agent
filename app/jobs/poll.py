@@ -23,7 +23,7 @@ from app.config import get_settings
 from app.google.gmail import MessageGoneError
 from app.graph.runner import GraphSession, graph_session
 from app.mail import feed
-from app.policy import audit
+from app.policy import audit, control
 from app.policy.budget import SPENDING_STOPPED, MessageTooCostlyError
 from app.store.db import connect
 from app.store.ledger import MessageLedger, MessageStatus, SyncCursor
@@ -71,6 +71,11 @@ def poll_once(
     are enough to trace a run, and an extracted title is mail content.
     """
     ledger = MessageLedger(session.conn)
+    if control.is_paused(session.conn):
+        # The owner paused the agent (M17, D6): nothing is claimed, and mail
+        # waits in the feed. Not a failure: the tick records as successful.
+        print("  paused: nothing is claimed")
+        return PollResult(seen=0, started=0, failed=0)
 
     candidates, seen, from_feed = _candidates(session, ledger, limit)
     started = 0
@@ -79,6 +84,10 @@ def poll_once(
 
     for message_id in candidates:
         if stop is not None and stop.is_set():
+            stopped = True
+            break
+        if control.is_paused(session.conn):
+            # Paused during the pass: the rest wait (M17, D6).
             stopped = True
             break
         if session.gate is not None and not session.gate.allows_new_work():

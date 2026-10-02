@@ -7,11 +7,15 @@ import { isOwnerSession } from "@/lib/access";
 import {
   describeAllow,
   describeAnswer,
+  describeSwitch,
+  describeWithdraw,
   parseAllowForm,
   parseDecisionForm,
+  parseSwitchForm,
+  parseWithdrawForm,
   type Notice,
 } from "@/lib/decisionForm";
-import { postContact, postDecision } from "@/lib/fly";
+import { postContact, postDecision, postSwitch, postWithdraw } from "@/lib/fly";
 
 /**
  * A tap on a card: Confirm, Edit or Cancel.
@@ -58,5 +62,46 @@ export async function allowFromCard(_previous: Notice | null, data: FormData): P
 
   const notice = describeAllow(await postContact(parsed.value), parsed.value.address);
   revalidatePath("/");
+  return notice;
+}
+
+/**
+ * Withdraw on a queued card (M17, D6). Fly records the request; the worker
+ * carries it out, even while paused, or declines it if the decision is
+ * already being applied. The card re-reads, and says which.
+ */
+export async function withdrawFromCard(_previous: Notice | null, data: FormData): Promise<Notice> {
+  const session = await auth();
+  if (!isOwnerSession(session?.user?.email, process.env.OWNER_EMAIL)) {
+    return { tone: "error", message: "Sign in as the owner first." };
+  }
+
+  const parsed = parseWithdrawForm(data);
+  if (!parsed.ok) {
+    return { tone: "warn", message: parsed.error };
+  }
+
+  const notice = describeWithdraw(await postWithdraw(parsed.value.decision_id));
+  revalidatePath("/");
+  return notice;
+}
+
+/**
+ * Pause or Resume, from the header (M17, D6). Every page shows the banner,
+ * so every page re-reads.
+ */
+export async function switchFromHeader(_previous: Notice | null, data: FormData): Promise<Notice> {
+  const session = await auth();
+  if (!isOwnerSession(session?.user?.email, process.env.OWNER_EMAIL)) {
+    return { tone: "error", message: "Sign in as the owner first." };
+  }
+
+  const parsed = parseSwitchForm(data);
+  if (!parsed.ok) {
+    return { tone: "warn", message: parsed.error };
+  }
+
+  const notice = describeSwitch(parsed.value, await postSwitch(parsed.value));
+  revalidatePath("/", "layout");
   return notice;
 }

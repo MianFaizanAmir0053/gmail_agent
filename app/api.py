@@ -90,6 +90,7 @@ def health(authorization: str | None = Header(default=None)) -> JSONResponse:
             body["unpriced_models"] = unpriced
             # Held, not stuck: each asks Google again every hour (M17, D3).
             body["unconfirmed_writes"] = LIVENESS.unconfirmed_writes
+            body["paused"] = LIVENESS.paused
 
         # The mail sync (M20, D6): judged by its last pass that reached the
         # end of history, so a sync that is alive but behind shows too.

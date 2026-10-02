@@ -62,6 +62,22 @@ class FakeFeed:
         return self.too_old
 
 
+@dataclass
+class FakeSwitches:
+    paused: bool = False
+
+    def is_paused(self, conn: object) -> bool:
+        return self.paused
+
+
+@pytest.fixture(autouse=True)
+def switches(monkeypatch: pytest.MonkeyPatch) -> FakeSwitches:
+    """The owner's pause (M17, D6); off unless a test turns it on."""
+    fake = FakeSwitches()
+    monkeypatch.setattr(poll, "control", fake)
+    return fake
+
+
 @pytest.fixture(autouse=True)
 def feed(monkeypatch: pytest.MonkeyPatch) -> FakeFeed:
     fake = FakeFeed()
@@ -410,3 +426,34 @@ def test_a_message_over_its_ceiling_is_skipped_as_too_costly(
     assert ledger.marks[0] == ("m1", MessageStatus.SKIPPED, "too costly to read")
     assert ledger.claimed == ["m1", "m2"]  # the next message is not held back
     assert audited[0][0] == "message_too_costly"
+
+
+# --- the owner's pause (M17, D6) ---------------------------------------------------------------
+
+
+def test_while_paused_nothing_is_claimed_and_the_tick_is_not_a_failure(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed, switches: FakeSwitches
+) -> None:
+    feed.on, feed.waiting = True, ["m1"]
+    switches.paused = True
+    session = FakeSession(unread=["m9"])
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == [] and session.started == []
+    assert (result.started, result.failed) == (0, 0)
+    assert cursor.values == []  # nothing moves while paused
+
+
+def test_a_pause_during_the_pass_stops_the_rest(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed, switches: FakeSwitches
+) -> None:
+    def pause(message_id: str) -> None:
+        switches.paused = True
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=pause)
+
+    poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == ["m1"]

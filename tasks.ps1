@@ -9,7 +9,7 @@ param(
     [ValidateSet('setup', 'lint', 'fmt', 'typecheck', 'test', 'check', 'run', 'up', 'down',
         'eval', 'reauth', 'smoke', 'fernet', 'migrate', 'models',
         'poll', 'approve', 'telegram', 'serve', 'report', 'measure', 'reprice', 'vapid',
-        'ingest', 'search', 'retrieval-eval', 'publish')]
+        'ingest', 'search', 'retrieval-eval', 'publish', 'pause', 'resume')]
     [string]$Task = 'check',
 
     # Extra args forwarded to the underlying command, e.g.
@@ -50,6 +50,10 @@ switch ($Task) {
     # --- M06 -------------------------------------------------------------
     'poll'     { uv run python -m app.jobs.poll @Rest }
     'approve'  { uv run python -m app.jobs.approve @Rest }
+    # The owner's switches (M17, D6), against the database `.env` names. On Fly:
+    # fly ssh console -C "sh -c 'cd /app && python -m app.jobs.control pause'"
+    'pause'    { uv run python -m app.jobs.control pause }
+    'resume'   { uv run python -m app.jobs.control resume }
     'telegram' { uv run python -m app.jobs.telegram_bot @Rest }
     'report'   { uv run python -m app.jobs.report @Rest }
     'measure'  { uv run python -m app.jobs.measure @Rest }

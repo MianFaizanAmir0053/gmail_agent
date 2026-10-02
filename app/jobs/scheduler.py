@@ -131,6 +131,8 @@ class DecisionsStatus(NamedTuple):
     """Whether any is due now, so worth a graph session."""
     unconfirmed: int
     """Open decisions whose calendar write could not be confirmed."""
+    paused: bool
+    """Whether the owner has paused the agent (M17, D6)."""
 
 
 def open_decisions(settings: Settings) -> DecisionsStatus:
@@ -145,7 +147,8 @@ def decisions_status(conn: psycopg.Connection) -> DecisionsStatus:
     every decision while the owner has paused the agent (M17, D6), an Edit
     while the spending cap stops new work (D5), and a decision whose
     calendar write could not be confirmed, which asks Google again every
-    hour and is counted apart (D3). Nothing is due while paused, and no Edit
+    hour and is counted apart (D3). Nothing is due while paused but a
+    withdraw request, which the worker carries out even then, and no Edit
     while the cap stops new work: no session is opened for them.
     """
     row = conn.execute(
@@ -156,9 +159,11 @@ def decisions_status(conn: psycopg.Connection) -> DecisionsStatus:
               FROM control WHERE id = 1
         ), open AS (
             SELECT d.decided_at,
-                   d.next_attempt_at <= now()
-                       AND (d.lease_until IS NULL OR d.lease_until < now())
-                       AND NOT (d.action = 'edit' AND c.spent) AS due,
+                   (d.lease_until IS NULL OR d.lease_until < now())
+                       AND (d.withdraw_requested_at IS NOT NULL
+                            OR (d.next_attempt_at <= now()
+                                AND NOT c.paused
+                                AND NOT (d.action = 'edit' AND c.spent))) AS due,
                    c.paused OR (d.action = 'edit' AND c.spent) AS held,
                    EXISTS (SELECT 1 FROM audit_log a
                             WHERE a.kind = 'write_unconfirmed' AND a.decision_id = d.id)
@@ -167,13 +172,14 @@ def decisions_status(conn: psycopg.Connection) -> DecisionsStatus:
              WHERE d.outcome IS NULL
         )
         SELECT min(decided_at) FILTER (WHERE NOT held AND NOT unconfirmed),
-               coalesce(bool_or(due), false) AND NOT (SELECT paused FROM c),
-               count(*) FILTER (WHERE unconfirmed)
+               coalesce(bool_or(due), false),
+               count(*) FILTER (WHERE unconfirmed),
+               (SELECT paused FROM c)
           FROM open
         """
     ).fetchone()
     assert row is not None
-    return DecisionsStatus(row[0], bool(row[1]), int(row[2]))
+    return DecisionsStatus(row[0], bool(row[1]), int(row[2]), bool(row[3]))
 
 
 def run_decisions(settings: Settings) -> None:
@@ -184,6 +190,7 @@ def run_decisions(settings: Settings) -> None:
         status = open_decisions(settings)
         LIVENESS.decisions_checked(status.oldest)
         LIVENESS.writes_checked(status.unconfirmed)
+        LIVENESS.control_checked(paused=status.paused)
         # Only a due decision is worth a graph session, which loads
         # credentials and builds clients; most ticks find nothing.
         if not status.due or STOPPING.is_set():

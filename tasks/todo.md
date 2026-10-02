@@ -1183,9 +1183,9 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** `app/policy/control.py` (D6); `POST /api/pause`, `/api/resume` and `/api/decisions/withdraw`; `app/jobs/control.py`; poll, the worker, ingestion and the registry stopping; `/health`. In the web app: Pause / Resume and the banner in the header, and Withdraw on a held card. Already built in 17.6: the registry's `PausedError`, the worker applying nothing while paused, and the decisions job opening no session; withdraw requests must still be processed while paused.
 
 **Acceptance criteria:**
-- [ ] Poll, the worker and ingestion stop within one tick, and resume afterwards; `/health` stays 200.
-- [ ] Withdraw returns a queued decision while paused.
-- [ ] Pause, Resume and Withdraw work from the web app against a local API; every change is audited.
+- [x] Poll, the worker and ingestion stop within one tick, and resume afterwards; `/health` stays 200.
+- [x] Withdraw returns a queued decision while paused.
+- [ ] Pause, Resume and Withdraw work from the web app against a local API; every change is audited. (The audit half is tested; the browser check against a local API waits for the owner's end tests.)
 
 **Verification:** `uv run pytest tests/test_control.py tests/test_worker.py tests/test_web_api.py`; the web checks; the browser.
 

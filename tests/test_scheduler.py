@@ -88,7 +88,7 @@ def test_an_empty_queue_costs_one_query_and_no_session(monkeypatch: pytest.Monke
     live = _liveness(monkeypatch)
     live.decisions_checked(datetime.now(UTC) - timedelta(minutes=5))
     monkeypatch.setattr(
-        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(None, False, 0)
+        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(None, False, 0, False)
     )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
     recorded = _capture(monkeypatch)
@@ -103,7 +103,8 @@ def test_an_open_decision_not_yet_due_waits(monkeypatch: pytest.MonkeyPatch) -> 
     live = _liveness(monkeypatch)
     opened = datetime.now(UTC) - timedelta(minutes=2)
     monkeypatch.setattr(
-        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(opened, False, 0)
+        "app.jobs.scheduler.open_decisions",
+        lambda settings: DecisionsStatus(opened, False, 0, False),
     )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
 
@@ -116,7 +117,8 @@ def test_a_due_decision_is_applied_and_the_tick_recorded(monkeypatch: pytest.Mon
     live = _liveness(monkeypatch)
     opened = datetime.now(UTC) - timedelta(seconds=30)
     monkeypatch.setattr(
-        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(opened, True, 0)
+        "app.jobs.scheduler.open_decisions",
+        lambda settings: DecisionsStatus(opened, True, 0, False),
     )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
     calls: list[dict[str, Any]] = []
@@ -142,7 +144,7 @@ def test_a_decision_that_could_not_be_applied_marks_the_tick(
     _liveness(monkeypatch)
     monkeypatch.setattr(
         "app.jobs.scheduler.open_decisions",
-        lambda settings: DecisionsStatus(datetime.now(UTC), True, 0),
+        lambda settings: DecisionsStatus(datetime.now(UTC), True, 0, False),
     )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
     monkeypatch.setattr(
@@ -189,7 +191,7 @@ def test_the_decisions_job_counts_the_writes_it_could_not_confirm(
     """Held, not stuck: `/health` shows them apart (M17, D3)."""
     live = _liveness(monkeypatch)
     monkeypatch.setattr(
-        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(None, False, 2)
+        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(None, False, 2, False)
     )
     monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
 
@@ -838,3 +840,37 @@ def test_a_failing_watch_is_recorded_at_most_every_half_hour(
     run_watch(_settings())
 
     assert recorded == [{"job": "watch", "ok": False, "error": "RuntimeError"}]
+
+
+def test_the_decisions_job_leaves_the_pause_for_health(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = _liveness(monkeypatch)
+    monkeypatch.setattr(
+        "app.jobs.scheduler.open_decisions", lambda settings: DecisionsStatus(None, False, 0, True)
+    )
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _no_session)
+
+    run_decisions(_settings())
+
+    assert live.paused is True
+
+
+def test_ingestion_claims_nothing_while_paused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No batch, and Gmail is not even asked (M17, D6)."""
+    from types import SimpleNamespace
+
+    from app.jobs import ingest_job
+
+    closed: list[bool] = []
+    gate = SimpleNamespace(conn=SimpleNamespace(close=lambda: closed.append(True)))
+    monkeypatch.setattr("app.policy.models.local_gate", lambda settings: gate)
+    monkeypatch.setattr("app.policy.control.is_paused", lambda conn: True)
+
+    def _no_gmail(settings: Settings) -> Any:
+        raise AssertionError("asked Gmail while paused")
+
+    monkeypatch.setattr("app.google.auth.load_credentials", _no_gmail)
+
+    stats = ingest_job.run_ingest(_settings())
+
+    assert stats.messages_seen == 0
+    assert closed == [True]  # the gate's connection is closed all the same

@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
+
+import { ControlBar } from "@/components/ControlBar";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -40,6 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/failures" prefetch={false}>
               Failures
             </Link>
+            <ControlBar />
           </nav>
           {children}
         </div>

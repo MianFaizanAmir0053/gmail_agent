@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   cardToken,
   cardView,
+  footerKey,
   formatWindow,
   layoutKey,
   outsideGuestKeys,
@@ -228,5 +229,62 @@ describe("guests outside the thread (M17, D4)", () => {
 
   it("looks each guest up once, by the key Fly stores", () => {
     assert.deepEqual(outsideGuestKeys([row, row, ROW]), ["new@example.net", "sarakhan@gmail.com"]);
+  });
+});
+
+describe("a queued decision and Withdraw (M17, D6)", () => {
+  const queued: ProposalRow = {
+    ...ROW,
+    status: "deciding",
+    decision_id: "41",
+    decision_action: "confirm",
+    withdraw_requested: false,
+    withdraw_declined: false,
+  };
+
+  it("offers Withdraw on a queued decision nothing has been asked about", () => {
+    const view = cardView(queued, "UTC");
+    assert.equal(view.decisionId, "41");
+    assert.equal(view.canWithdraw, true);
+    assert.equal(view.withdrawing, false);
+  });
+
+  it("offers nothing to withdraw on an operator's sweep", () => {
+    const view = cardView({ ...queued, decision_action: "sweep" }, "UTC");
+    assert.equal(view.canWithdraw, false);
+  });
+
+  it("offers nothing to withdraw on a card waiting for the owner", () => {
+    const view = cardView({ ...queued, status: "pending" }, "UTC");
+    assert.equal(view.decisionId, null);
+    assert.equal(view.canWithdraw, false);
+  });
+
+  it("shows a request in flight, and offers it once only", () => {
+    const view = cardView({ ...queued, withdraw_requested: true }, "UTC");
+    assert.equal(view.withdrawing, true);
+    assert.equal(view.canWithdraw, false);
+  });
+
+  it("says when the worker declined it", () => {
+    const view = cardView({ ...queued, withdraw_declined: true }, "UTC");
+    assert.equal(view.withdrawDeclined, true);
+    assert.equal(view.canWithdraw, false);
+  });
+
+  it("says why a decision waits: paused, or an Edit at the cap", () => {
+    const paused = { paused: true, budgetState: "ok" } as const;
+    const capped = { paused: false, budgetState: "exhausted" } as const;
+    assert.match(cardView(queued, "UTC", new Set(), paused).held ?? "", /^Paused/);
+    assert.equal(cardView(queued, "UTC", new Set(), capped).held, null);
+    const edit = { ...queued, decision_action: "edit" };
+    assert.match(cardView(edit, "UTC", new Set(), capped).held ?? "", /spending cap/);
+  });
+
+  it("moves the layout key when the footer changes", () => {
+    const before = layoutKey([{ ...queued, footer: footerKey(cardView(queued, "UTC")) }]);
+    const asked = { ...queued, withdraw_requested: true };
+    const after = layoutKey([{ ...asked, footer: footerKey(cardView(asked, "UTC")) }]);
+    assert.notEqual(before, after);
   });
 });

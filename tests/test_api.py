@@ -317,6 +317,7 @@ def test_a_spent_budget_is_not_an_outage(
     live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
     live.budget_checked("exhausted", Decimal("39.95"))
     live.writes_checked(1)
+    live.control_checked(paused=True)
 
     response = client.get("/health", headers=_owner())
 
@@ -324,6 +325,7 @@ def test_a_spent_budget_is_not_an_outage(
     body = response.json()
     assert body["budget"] == {"state": "exhausted", "month_spend_usd": "39.95", "cap_usd": 40.0}
     assert (body["unconfirmed_writes"], body["unpriced_models"]) == (1, [])
+    assert body["paused"] is True  # paused is not an outage either (D6)
 
 
 def _with(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> None:

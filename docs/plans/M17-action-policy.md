@@ -679,3 +679,20 @@ and the owner's end tests.
 - **Held decisions are not stuck:** every decision while paused, an Edit while the state is `exhausted`, and a decision whose write could not be confirmed, which is counted apart. The decisions job opens no session for an Edit the cap holds.
 - **Push tags:** the two budget alerts share `budget`, since the cap reached supersedes the warning; an unconfirmed write has `write`.
 - **Left for 17.12:** the card saying an Edit is waiting, and the header's "Spending cap reached", come with the web app's pause work.
+
+### Task 17.12: Pause, Resume and Withdraw (2026-10-02)
+
+- **The switches** (`app/policy/control.py`): one function, `switch(paused=...)`, writes `paused`, `changed_at` and `changed_via`, and audits `paused` or `resumed`, only when something changes. Not `resume()`: `.resume(` stays the graph's, which only the worker may call (`tests/test_one_resumer.py`). From the web app (`POST /api/pause`, `POST /api/resume`), or the command line (`python -m app.jobs.control pause|resume|status`, and `.\tasks.ps1 pause` / `resume` locally). Resume wakes the worker.
+- **While paused:**
+  - poll claims nothing, checked before the pass and before each claim, and the tick still records as successful;
+  - ingestion claims no batch, and does not ask Gmail;
+  - the worker applies nothing but withdraw requests, and the decisions job opens a session only for those;
+  - the registry's `PausedError`, from 17.6, stops an action that slipped past the worker's look.
+- **Withdraw** names the decision, not the proposal, so a request from an old card cannot reach a decision made since; an operator's sweep is never the owner's to withdraw (`POST /api/decisions/withdraw`: 202 requested, 409 settled, 404 no such decision). It only records `withdraw_requested_at`; the worker carries it out:
+  - requests come first, even while paused, and even while the decision waits to retry;
+  - withdrawn only if nothing has run: the thread still parked at the decision's revision, and its action, if any, still `approved`. The decision settles as `no_effect` ("withdrawn by the owner"), the action is refused, and the proposal returns at the next generation, so the old card's Confirm is stale; audited `decision_withdrawn`. Nobody is notified: the owner asked;
+  - otherwise declined ("already being applied"): the request is cleared, `withdraw_declined` audited, and the decision goes on as it was, with no attempt spent.
+- **`/health`** shows `paused` with the bearer. Paused is not an outage, and held decisions are not stuck (17.11).
+- **The web app:** Pause / Resume in the header on every page, with banners while paused, at 80% of the cap and at the cap. A queued card shows Withdraw, then "Withdrawing…", or "Already being applied" if the worker declined. A held decision says why it waits: paused, or an Edit at the cap. These were 17.11's leftovers too.
+- **The header reads the switches on every page,** so a failed read renders the page without them rather than failing it; the redirect to sign in still passes through.
+- **Not done here:** the browser check against a local API waits for the owner's end tests, with the rest of the web checks.

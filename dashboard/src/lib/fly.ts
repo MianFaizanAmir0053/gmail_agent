@@ -1,7 +1,15 @@
 import "server-only";
 
 import { isPairingCode } from "@/lib/access";
-import type { Allow, AllowAnswer, Answer, Decision } from "@/lib/decisionForm";
+import type {
+  Allow,
+  AllowAnswer,
+  Answer,
+  Decision,
+  Switch,
+  SwitchAnswer,
+  WithdrawAnswer,
+} from "@/lib/decisionForm";
 import type { SubscriptionBody } from "@/lib/push";
 
 /**
@@ -109,6 +117,32 @@ export async function postContact(allow: Allow): Promise<AllowAnswer> {
   if (response.status === 422) return "invalid";
   console.error("contact answered", response.status);
   return "error";
+}
+
+/** Pause or resume the agent (M17, D6). */
+export async function postSwitch(kind: Switch): Promise<SwitchAnswer> {
+  const response = await postToFly(`/api/${kind}`, {});
+  if (response === null) return "error";
+  if (response.status === 204) return "done";
+  console.error(kind, "answered", response.status);
+  return "error";
+}
+
+/** Ask for a queued decision to be withdrawn (M17, D6). The worker carries it out. */
+export async function postWithdraw(decisionId: number): Promise<WithdrawAnswer> {
+  const response = await postToFly("/api/decisions/withdraw", { decision_id: decisionId });
+  if (response === null) return "error";
+  switch (response.status) {
+    case 202:
+      return "requested";
+    case 409:
+      return "settled";
+    case 404:
+      return "not_found";
+    default:
+      console.error("withdraw answered", response.status);
+      return "error";
+  }
 }
 
 /** A pairing code as Fly issued it (M16, D4): shown to the owner once. */

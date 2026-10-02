@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { AllowGuest } from "@/components/AllowGuest";
+import { WithdrawButton } from "@/components/WithdrawButton";
 import type { CardView } from "@/lib/timeline";
 
 /**
@@ -46,7 +47,20 @@ export function ProposalCard({ view, children }: { view: CardView; children?: Re
         </p>
       ))}
 
-      <footer>{view.applying ? <span className="applying-label">Applying…</span> : children}</footer>
+      <footer>
+        {view.applying ? (
+          <>
+            <span className="applying-label">{view.withdrawing ? "Withdrawing…" : "Applying…"}</span>
+            {view.held && <p className="note warn held">{view.held}</p>}
+            {view.withdrawDeclined && (
+              <p className="note warn held">Already being applied: it can no longer be withdrawn.</p>
+            )}
+            {view.canWithdraw && view.decisionId && <WithdrawButton decisionId={view.decisionId} />}
+          </>
+        ) : (
+          children
+        )}
+      </footer>
     </article>
   );
 }

@@ -5,8 +5,12 @@ import {
   MAX_CORRECTION_CHARS,
   describeAllow,
   describeAnswer,
+  describeSwitch,
+  describeWithdraw,
   parseAllowForm,
   parseDecisionForm,
+  parseSwitchForm,
+  parseWithdrawForm,
 } from "./decisionForm.ts";
 
 function form(fields: Record<string, string>): FormData {
@@ -112,5 +116,37 @@ describe("an Allow (M17, D4)", () => {
 
   it("explains Fly's refusal of a Confirm with a guest outside", () => {
     assert.match(describeAnswer({ status: "outside" }).message, /not in this email thread/);
+  });
+});
+
+describe("Withdraw, and the switches (M17, D6)", () => {
+  it("names a decision by its id", () => {
+    assert.deepEqual(parseWithdrawForm(form({ decision_id: "41" })), {
+      ok: true,
+      value: { decision_id: 41 },
+    });
+  });
+
+  it("refuses anything that is not a decision's id", () => {
+    for (const id of ["", "0", "-4", "4.5", "41; drop", "1".repeat(16)]) {
+      assert.equal(parseWithdrawForm(form({ decision_id: id })).ok, false, id);
+    }
+  });
+
+  it("says what became of a withdraw, in words", () => {
+    assert.equal(describeWithdraw("requested").message, "Withdrawing…");
+    assert.match(describeWithdraw("settled").message, /already been applied/);
+    assert.equal(describeWithdraw("error").tone, "error");
+  });
+
+  it("knows only Pause and Resume", () => {
+    assert.deepEqual(parseSwitchForm(form({ kind: "pause" })), { ok: true, value: "pause" });
+    assert.deepEqual(parseSwitchForm(form({ kind: "resume" })), { ok: true, value: "resume" });
+    assert.equal(parseSwitchForm(form({ kind: "delete" })).ok, false);
+  });
+
+  it("says when a switch could not be reached", () => {
+    assert.equal(describeSwitch("pause", "done").tone, "ok");
+    assert.match(describeSwitch("resume", "error").message, /could not be resumed/);
   });
 });

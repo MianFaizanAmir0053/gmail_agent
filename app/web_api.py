@@ -11,6 +11,11 @@ header.
 
     POST   /api/decisions            record a decision (202 queued, 409 stale,
                                      404 no proposal, 422 invalid)
+    POST   /api/decisions/withdraw   ask for a queued decision to be withdrawn
+                                     (202 requested, 409 settled, 404 no such
+                                     decision)
+    POST   /api/pause                pause the agent (204)
+    POST   /api/resume               resume it (204)
     POST   /api/contacts             allow a guest outside the thread (204, 422
                                      not an address)
     POST   /api/push-subscriptions   store or refresh a browser's subscription
@@ -33,11 +38,17 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from app.channel.decide import MAX_CORRECTION_CHARS, DecisionResult, decide
+from app.channel.decide import (
+    MAX_CORRECTION_CHARS,
+    DecisionResult,
+    WithdrawStatus,
+    decide,
+    request_withdraw,
+)
 from app.channel.pairing import IssuedCode, issue_code, redeem
 from app.config import Settings, get_settings
-from app.jobs.scheduler import decision_recorded
-from app.policy import contacts
+from app.jobs.scheduler import decision_recorded, wake_decisions
+from app.policy import contacts, control
 from app.policy.hashing import args_key
 from app.store.db import connect_autocommit
 
@@ -59,6 +70,14 @@ class DecisionRequest(BaseModel):
     token: str | None = Field(default=None, max_length=64)
     """What the owner's card showed: hash prefix, mode and generation (M17,
     D2). A Confirm without a valid one is refused as stale."""
+
+
+class WithdrawRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision_id: int = Field(ge=1)
+    """The queued decision the owner's card showed, not its proposal: a
+    request from an old card cannot reach a decision made since."""
 
 
 class ContactRequest(BaseModel):
@@ -215,6 +234,57 @@ def _record_decision(settings: Settings, body: DecisionRequest) -> DecisionResul
             token=body.token,
             dry_run=settings.dry_run,
         )
+
+
+@router.post("/decisions/withdraw")
+async def post_withdraw(
+    request: Request, authorization: str | None = Header(default=None)
+) -> JSONResponse:
+    """Ask for a queued decision to be withdrawn (M17, D6). The worker
+    carries the request out, even while paused, or declines it."""
+    settings = get_settings()
+    _verify(settings, authorization)
+    body = await _body(request, WithdrawRequest)
+
+    status = await run_in_threadpool(_request_withdraw, settings, body.decision_id)
+
+    match status:
+        case "requested":
+            wake_decisions()
+            return JSONResponse({"status": "requested"}, status_code=202)
+        case "settled":
+            return JSONResponse({"status": "settled"}, status_code=409)
+        case _:
+            return JSONResponse({"status": "not_found"}, status_code=404)
+
+
+def _request_withdraw(settings: Settings, decision_id: int) -> WithdrawStatus:
+    with connect_autocommit(settings.database_url) as conn:
+        return request_withdraw(conn, decision_id)
+
+
+@router.post("/pause", status_code=204)
+async def post_pause(authorization: str | None = Header(default=None)) -> Response:
+    """Pause the agent (M17, D6). Pausing a paused agent changes nothing."""
+    settings = get_settings()
+    _verify(settings, authorization)
+    await run_in_threadpool(_switch, settings, True)
+    return Response(status_code=204)
+
+
+@router.post("/resume", status_code=204)
+async def post_resume(authorization: str | None = Header(default=None)) -> Response:
+    """Resume it. The worker is woken, so a held decision moves on at once."""
+    settings = get_settings()
+    _verify(settings, authorization)
+    await run_in_threadpool(_switch, settings, False)
+    wake_decisions()
+    return Response(status_code=204)
+
+
+def _switch(settings: Settings, paused: bool) -> None:
+    with connect_autocommit(settings.database_url) as conn:
+        control.switch(conn, paused=paused, via="web")
 
 
 @router.post("/contacts", status_code=204)

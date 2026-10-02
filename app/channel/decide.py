@@ -186,6 +186,35 @@ def decide(
     return DecisionResult("queued", decision_id=int(inserted[0]))
 
 
+WithdrawStatus = Literal["requested", "settled", "not_found"]
+
+
+def request_withdraw(conn: psycopg.Connection, decision_id: int) -> WithdrawStatus:
+    """Ask for a queued decision to be withdrawn (M17, D6).
+
+    Only the worker may settle a decision it might have applied (M16, D1),
+    so this records the request and nothing more. The worker carries it out
+    before anything else, or declines it if the decision is already being
+    applied. Asking twice changes nothing. A sweep is the operator's, never a
+    tap, and is not the owner's to withdraw: as far as Withdraw goes, it does
+    not exist.
+    """
+    row = conn.execute(
+        """
+        UPDATE decisions SET withdraw_requested_at = coalesce(withdraw_requested_at, now())
+         WHERE id = %s AND outcome IS NULL AND action <> 'sweep'
+        RETURNING id
+        """,
+        (decision_id,),
+    ).fetchone()
+    if row is not None:
+        return "requested"
+    found = conn.execute(
+        "SELECT 1 FROM decisions WHERE id = %s AND action <> 'sweep'", (decision_id,)
+    ).fetchone()
+    return "settled" if found is not None else "not_found"
+
+
 def expire(conn: psycopg.Connection, message_id: str, revision: int) -> bool:
     """End a pending proposal made under another `DRY_RUN` (M17, D2). True
     when this call recorded the expiry.

@@ -6,6 +6,7 @@
  */
 
 import { guestKey } from "./guests.ts";
+import { heldNote, NO_SWITCHES, type Switches } from "./switches.ts";
 
 export const LAST_EDITABLE_REVISION = 2;
 /** `MAX_REVISIONS` in app/graph/nodes.py: two edits, so none at revision 3. */
@@ -39,6 +40,13 @@ export type ProposalRow = {
   /** Null once retention has cleared it. */
   payload: CardPayload | null;
   parked_at: string | Date;
+  /** The open decision, while one is queued: what Withdraw names (M17, D6). */
+  decision_id?: string | null;
+  decision_action?: string | null;
+  /** The owner asked for it to be withdrawn, and the worker has not yet answered. */
+  withdraw_requested?: boolean | null;
+  /** The worker declined a withdraw: the decision was already being applied. */
+  withdraw_declined?: boolean | null;
 };
 
 export type CardView = {
@@ -66,6 +74,14 @@ export type CardView = {
   token: string | null;
   /** Runs for real: `DRY_RUN` was off when it was made. */
   live: boolean;
+  /** The queued decision, which Withdraw names. */
+  decisionId: string | null;
+  /** A queued decision nothing has yet been asked about (M17, D6). */
+  canWithdraw: boolean;
+  withdrawing: boolean;
+  withdrawDeclined: boolean;
+  /** Why the queued decision waits, when something holds it. */
+  held: string | null;
 };
 
 /**
@@ -78,6 +94,7 @@ export function cardView(
   row: ProposalRow,
   ownerZone: string,
   allowed: ReadonlySet<string> = new Set(),
+  switches: Switches = NO_SWITCHES,
 ): CardView {
   const card = row.payload;
   // Deciding needs the content: the owner would otherwise approve something
@@ -85,6 +102,12 @@ export function cardView(
   // only for a row nobody expected.
   const pending = row.status === "pending" && card !== null;
   const token = row.args_hash ? cardToken(row.args_hash, row.dry_run, row.generation) : null;
+  const applying = row.status === "deciding";
+  // A sweep is the operator's, never the owner's tap: nothing to withdraw.
+  const decisionId =
+    applying && row.decision_id && row.decision_action !== "sweep" ? row.decision_id : null;
+  const withdrawing = decisionId !== null && row.withdraw_requested === true;
+  const withdrawDeclined = decisionId !== null && row.withdraw_declined === true;
   return {
     messageId: row.message_id,
     revision: row.revision,
@@ -98,12 +121,17 @@ export function cardView(
     outsideGuests: words(card?.outside_guests).filter((guest) => !allowed.has(guestKey(guest))),
     dryRun: row.dry_run,
     invite: row.action_type === "calendar_invite",
-    applying: row.status === "deciding",
+    applying,
     canDecide: pending,
     canEdit: pending && row.revision <= LAST_EDITABLE_REVISION,
     canConfirm: pending && token !== null,
     token,
     live: !row.dry_run,
+    decisionId,
+    canWithdraw: decisionId !== null && !withdrawing && !withdrawDeclined,
+    withdrawing,
+    withdrawDeclined,
+    held: decisionId !== null && !withdrawing ? heldNote(row.decision_action, switches) : null,
   };
 }
 
@@ -131,11 +159,30 @@ export function cardToken(argsHash: string, dryRun: boolean, generation: number)
  * card cannot land on another that moved into its place.
  */
 export function layoutKey(
-  rows: (Pick<ProposalRow, "message_id" | "revision" | "status"> & { outside?: number })[],
+  rows: (Pick<ProposalRow, "message_id" | "revision" | "status"> & {
+    outside?: number;
+    /** What an applying card's footer holds: its height moves the cards below. */
+    footer?: string;
+  })[],
 ): string {
   return rows
-    .map((row) => `${row.message_id}:${row.revision}:${row.status}:${row.outside ?? 0}`)
+    .map(
+      (row) =>
+        `${row.message_id}:${row.revision}:${row.status}:${row.outside ?? 0}:${row.footer ?? ""}`,
+    )
     .join("|");
+}
+
+/** What an applying card's footer shows, as `layoutKey` wants it. */
+export function footerKey(
+  view: Pick<CardView, "canWithdraw" | "withdrawing" | "withdrawDeclined" | "held">,
+): string {
+  return [
+    view.canWithdraw ? "w" : "",
+    view.withdrawing ? "r" : "",
+    view.withdrawDeclined ? "d" : "",
+    view.held ? "h" : "",
+  ].join("");
 }
 
 /** "Fri 02 Oct, 16:00 – 17:00" in `zone`; the end's day is named only when it differs. */

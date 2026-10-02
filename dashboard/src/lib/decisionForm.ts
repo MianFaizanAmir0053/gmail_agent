@@ -111,6 +111,57 @@ export function parseAllowForm(
 
 export type AllowAnswer = "allowed" | "invalid" | "error";
 
+/** Withdraw on a queued card (M17, D6): it names the decision, not the proposal. */
+export type Withdraw = { decision_id: number };
+
+export function parseWithdrawForm(
+  data: FormData,
+): { ok: true; value: Withdraw } | { ok: false; error: string } {
+  const id = String(data.get("decision_id") ?? "");
+  if (!/^[1-9]\d{0,14}$/.test(id)) return { ok: false, error: "No such decision." };
+  return { ok: true, value: { decision_id: Number(id) } };
+}
+
+export type WithdrawAnswer = "requested" | "settled" | "not_found" | "error";
+
+export function describeWithdraw(answer: WithdrawAnswer): Notice {
+  switch (answer) {
+    case "requested":
+      return { tone: "ok", message: "Withdrawing…" };
+    case "settled":
+      return { tone: "warn", message: "Too late: that decision has already been applied." };
+    case "not_found":
+      return { tone: "warn", message: "That decision no longer exists." };
+    default:
+      return { tone: "error", message: "The request could not be sent. Try again in a moment." };
+  }
+}
+
+/** Pause or Resume, from the header (M17, D6). */
+export type Switch = "pause" | "resume";
+
+export function parseSwitchForm(
+  data: FormData,
+): { ok: true; value: Switch } | { ok: false; error: string } {
+  const kind = String(data.get("kind") ?? "");
+  if (kind !== "pause" && kind !== "resume") return { ok: false, error: "Not a switch." };
+  return { ok: true, value: kind };
+}
+
+export type SwitchAnswer = "done" | "error";
+
+export function describeSwitch(kind: Switch, answer: SwitchAnswer): Notice {
+  if (answer === "done") {
+    return kind === "pause"
+      ? { tone: "ok", message: "Paused. Nothing new runs until you resume." }
+      : { tone: "ok", message: "Resumed." };
+  }
+  return {
+    tone: "error",
+    message: `The agent could not be ${kind === "pause" ? "paused" : "resumed"}. Try again in a moment.`,
+  };
+}
+
 export function describeAllow(answer: AllowAnswer, address: string): Notice {
   switch (answer) {
     case "allowed":

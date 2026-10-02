@@ -43,17 +43,22 @@ def incremental_query(window_days: int) -> str:
 def run_ingest(settings: Settings, *, backfill: bool = False) -> Stats:
     from app.google.auth import build_service, load_credentials
     from app.google.gmail import GmailClient
-    from app.policy import models
+    from app.policy import control, models
     from app.store.db import connect
 
     query = DEFAULT_QUERY if backfill else incremental_query(settings.ingest_window_days)
     limit = settings.ingest_backfill_limit if backfill else settings.ingest_limit
 
-    mailbox = GmailClient(build_service("gmail", "v1", load_credentials(settings)))
     # The spend is recorded on a connection of its own, committed call by
     # call: a run that fails half way has still spent what it spent.
     meter = models.local_gate(settings)
     try:
+        if control.is_paused(meter.conn):
+            # The owner paused the agent (M17, D6): no batch is claimed, and
+            # Gmail is not asked.
+            log.info("ingest skipped: the agent is paused")
+            return Stats()
+        mailbox = GmailClient(build_service("gmail", "v1", load_credentials(settings)))
         client = models.client(settings, meter)
         with connect(settings.database_url) as conn:
             return ingest(
@@ -63,7 +68,8 @@ def run_ingest(settings: Settings, *, backfill: bool = False) -> Stats:
                 settings=settings,
                 query=query,
                 limit=limit,
-                may_continue=meter.allows_new_work,
+                # Before each batch: the spending cap (D5), and a pause (D6).
+                may_continue=lambda: meter.allows_new_work() and not control.is_paused(meter.conn),
             )
     finally:
         meter.conn.close()

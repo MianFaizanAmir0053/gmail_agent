@@ -651,3 +651,76 @@ def test_allowing_without_a_key_is_a_503(monkeypatch: pytest.MonkeyPatch, allowe
     )
 
     assert response.status_code == 503
+
+
+# --- pause, resume and withdraw (M17, D6) -------------------------------------------------------
+
+
+@dataclass
+class Switches:
+    calls: list[tuple[str, str]] = field(default_factory=list)
+    woken: int = 0
+
+    def switch(self, conn: Any, *, paused: bool, via: str) -> bool:
+        self.calls.append(("pause" if paused else "resume", via))
+        return True
+
+
+@pytest.fixture
+def switches(monkeypatch: pytest.MonkeyPatch) -> Switches:
+    fake = Switches()
+    monkeypatch.setattr("app.web_api.control", fake)
+    monkeypatch.setattr("app.web_api.connect_autocommit", _no_connection)
+
+    def _woken() -> bool:
+        fake.woken += 1
+        return True
+
+    monkeypatch.setattr("app.web_api.wake_decisions", _woken)
+    return fake
+
+
+def test_pause_and_resume_are_recorded_as_the_webs(client: TestClient, switches: Switches) -> None:
+    assert client.post("/api/pause", headers=_bearer()).status_code == 204
+    assert client.post("/api/resume", headers=_bearer()).status_code == 204
+
+    assert switches.calls == [("pause", "web"), ("resume", "web")]
+    assert switches.woken == 1  # a held decision moves on at once
+
+
+@pytest.mark.parametrize("path", ["/api/pause", "/api/resume", "/api/decisions/withdraw"])
+def test_the_switches_need_the_secret(client: TestClient, switches: Switches, path: str) -> None:
+    assert client.post(path, json={"decision_id": 7}).status_code == 401
+    assert switches.calls == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "code"), [("requested", 202), ("settled", 409), ("not_found", 404)]
+)
+def test_a_withdraw_request_says_what_became_of_it(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    switches: Switches,
+    answer: str,
+    code: int,
+) -> None:
+    asked: list[int] = []
+
+    def _request(conn: Any, decision_id: int) -> str:
+        asked.append(decision_id)
+        return answer
+
+    monkeypatch.setattr("app.web_api.request_withdraw", _request)
+
+    response = client.post("/api/decisions/withdraw", json={"decision_id": 7}, headers=_bearer())
+
+    assert (response.status_code, response.json()) == (code, {"status": answer})
+    assert asked == [7]
+    assert switches.woken == (1 if answer == "requested" else 0)
+
+
+def test_a_withdraw_names_a_decision_not_a_proposal(client: TestClient, switches: Switches) -> None:
+    """A request from an old card cannot reach a decision made since."""
+    response = client.post("/api/decisions/withdraw", json={"message_id": "m1"}, headers=_bearer())
+
+    assert response.status_code == 422

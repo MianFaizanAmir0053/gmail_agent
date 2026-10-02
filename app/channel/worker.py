@@ -116,6 +116,8 @@ class OpenDecision:
     reason: str | None = None
     """Why a sweep was recorded, when it says: the graph ends the thread with
     it (M17, D2's expiry)."""
+    withdraw_requested: bool = False
+    """The owner asked for it to be withdrawn (M17, D6)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,16 +173,20 @@ def apply_open(
 ) -> list[tuple[str, str]]:
     """Apply every open decision that is due, one at a time.
 
-    Returns `(message_id, outcome)` pairs for the log. While the owner has
-    paused the agent, nothing is applied (M17, D6): a Confirm stays parked,
-    so a Withdraw can still reach it.
+    Returns `(message_id, outcome)` pairs for the log. A withdraw request is
+    carried out before anything else, and before any other decision. While
+    the owner has paused the agent, nothing else is applied (M17, D6): a
+    Confirm stays parked, so a Withdraw can still reach it.
     """
     applied: list[tuple[str, str]] = []
-    if control.is_paused(session.conn):
-        return applied
-    for decision in _due(session.conn, limit):
+    paused = control.is_paused(session.conn)
+    for decision in _due(session.conn, limit, withdrawals_only=paused):
         if stop is not None and stop.is_set():
             break
+        if decision.withdraw_requested:
+            if _take_lease(session.conn, decision.id):
+                applied.append((decision.message_id, _withdraw_leased(session, decision)))
+            continue
         if decision.action == "edit" and not _allows_new_work(session):
             # An edit re-extracts, which calls a model: it waits, queued and
             # costing no attempt, while the spending cap stops new work. A
@@ -529,6 +535,78 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
         return "failed"
 
 
+def _withdraw_leased(session: GraphSession, decision: OpenDecision) -> str:
+    """`_withdraw`, with the lease always released: a request that could not
+    be carried out is tried again at the next tick, not after the lease."""
+    try:
+        return _withdraw(session, decision)
+    except Exception:
+        log.exception("could not withdraw decision %d on %s", decision.id, decision.message_id)
+        session.conn.execute(
+            "UPDATE decisions SET lease_until = NULL WHERE id = %s AND outcome IS NULL",
+            (decision.id,),
+        )
+        return "error"
+
+
+def _withdraw(session: GraphSession, decision: OpenDecision) -> str:
+    """Carry out the owner's withdraw request (M17, D6), holding the lease.
+
+    Withdrawn only if nothing has run: the thread is still parked at the
+    decision's revision, and its action, if any, is still `approved`. Then the
+    decision settles as `no_effect` ("withdrawn by the owner"), its action is
+    refused, and the proposal returns to the owner at the next generation, so
+    a Confirm from the old card is refused as stale; all in one transaction.
+    Otherwise the request is declined ("already being applied"): it is
+    cleared, audited, and the decision goes on as it was.
+    """
+    conn = session.conn
+    decision = _with_action_status(conn, decision)
+    view = session.thread(decision.message_id)
+    entry = MessageLedger(conn).get(decision.message_id)
+    untouched = (
+        view.parked
+        and view.revision == decision.revision
+        and view.payload is not None
+        and entry is not None
+        and decision.action_status in (None, "approved")
+    )
+    if untouched:
+        assert entry is not None
+        with conn.transaction():
+            # Nobody else is told: the owner is the one who asked.
+            outcome = _return_to_owner(
+                session, decision, view, entry.status, None, action_reason="withdrawn"
+            )
+            if outcome == "no_effect":
+                audit.record(
+                    conn,
+                    "decision_withdrawn",
+                    decision_id=decision.id,
+                    message_id=decision.message_id,
+                    outcome="withdrawn",
+                    reason=audit.REASONS["withdrawn"],
+                )
+        return "withdrawn" if outcome == "no_effect" else outcome
+    with conn.transaction():
+        conn.execute(
+            """
+            UPDATE decisions SET withdraw_requested_at = NULL, lease_until = NULL
+             WHERE id = %s AND outcome IS NULL
+            """,
+            (decision.id,),
+        )
+        audit.record(
+            conn,
+            "withdraw_declined",
+            decision_id=decision.id,
+            message_id=decision.message_id,
+            outcome="declined",
+            reason=audit.REASONS["already_applied"],
+        )
+    return "declined"
+
+
 def _allows_new_work(session: GraphSession) -> bool:
     return session.gate is None or session.gate.allows_new_work()
 
@@ -874,18 +952,25 @@ def _close(
     return bool(closed)
 
 
-def _due(conn: psycopg.Connection, limit: int) -> list[OpenDecision]:
+def _due(
+    conn: psycopg.Connection, limit: int, *, withdrawals_only: bool = False
+) -> list[OpenDecision]:
+    """Open decisions to work on now, withdraw requests first (M17, D6): a
+    request is carried out at once, however long the decision is waiting to
+    retry. `withdrawals_only` while paused."""
     rows = conn.execute(
         """
         SELECT d.id, d.message_id, d.revision, d.action, d.correction, d.attempts,
-               a.id, a.nonce, a.status, d.reason
+               a.id, a.nonce, a.status, d.reason, d.withdraw_requested_at IS NOT NULL
           FROM decisions d
           LEFT JOIN outbound_actions a ON a.decision_id = d.id
-         WHERE d.outcome IS NULL AND d.next_attempt_at <= now()
+         WHERE d.outcome IS NULL
            AND (d.lease_until IS NULL OR d.lease_until < now())
-         ORDER BY d.decided_at, d.id
-         LIMIT %s
+           AND (d.withdraw_requested_at IS NOT NULL
+                OR (NOT %(withdrawals_only)s AND d.next_attempt_at <= now()))
+         ORDER BY d.withdraw_requested_at IS NULL, d.decided_at, d.id
+         LIMIT %(limit)s
         """,
-        (limit,),
+        {"limit": limit, "withdrawals_only": withdrawals_only},
     ).fetchall()
     return [OpenDecision(*row) for row in rows]

@@ -418,3 +418,68 @@ h1.section {
 .pairing .note {
   margin: 4px 0 14px;
 }
+
+/* --- the owner's switches (M17, D5 and D6) ------------------------------------ */
+
+.switch {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.switch button,
+.withdraw button {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.switch button.primary {
+  background: #238636;
+  border-color: #2ea043;
+}
+.switch button:disabled,
+.withdraw button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.switch .note {
+  margin: 0;
+}
+.banners {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.banner {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 13px;
+}
+.banner.warn {
+  color: var(--warn);
+  border-color: #5c4813;
+}
+.banner.error {
+  color: var(--err);
+  border-color: #6e2a2a;
+}
+.withdraw {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.note.held {
+  flex: 1 1 100%;
+  margin: 4px 0 0;
+}

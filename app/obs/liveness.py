@@ -56,8 +56,15 @@ class Liveness:
 
     month_spend_usd: Decimal | None = None
 
+    paused: bool | None = None
+    """Whether the owner has paused the agent (M17, D6), as the decisions job
+    last read it. Not an outage: a paused tick records as successful."""
+
     def subscriptions_counted(self, count: int) -> None:
         self.push_subscriptions = count
+
+    def control_checked(self, *, paused: bool) -> None:
+        self.paused = paused
 
     def writes_checked(self, unconfirmed: int) -> None:
         self.unconfirmed_writes = unconfirmed
