@@ -71,12 +71,17 @@ ledger never offers it to the poller again. So billing comes first.
    verification.
    - enable the **Gmail API** and the **Google Calendar API**;
    - in *Google Auth Platform*, the user type is External;
-   - under *Data Access*, the agent's two scopes may be listed,
-     `https://www.googleapis.com/auth/gmail.readonly` and
-     `https://www.googleapis.com/auth/calendar.events`. The justification
-     and video boxes there belong to a verification request, and stay
-     empty. For personal use the list is optional: the sign-in asks for both
-     scopes, and the owner continues past the "unverified app" warning;
+   - under *Data Access*, the agent's three scopes may be listed,
+     `https://www.googleapis.com/auth/gmail.readonly`,
+     `https://www.googleapis.com/auth/calendar.events` and
+     `https://www.googleapis.com/auth/calendar.freebusy`. The last is for
+     the conflict check before a card is made, which `calendar.events` does
+     not cover. The justification and video boxes there belong to a
+     verification request, and stay empty. For personal use the list is
+     optional: the sign-in asks for all three scopes, and the owner continues
+     past the "unverified app" warning. A token minted before 2026-10-03 has
+     only the first two, and every meeting email fails with "insufficient
+     authentication scopes" until the consent is run again;
    - under *Audience*, the status must be **In production**: press **Publish
      app** if it is not, and never **Back to testing**. Do not submit for
      verification: this is personal use by fewer than 100 users. Publishing
