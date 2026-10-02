@@ -384,14 +384,15 @@ and D5's `budget_state`.
 - **From the CLI:** `python -m app.jobs.control pause|resume|status`. In production it runs on the instance, through `fly ssh console`: the image has no PowerShell. `.\tasks.ps1 pause` runs it locally, against the database `.env` names.
 - **While paused, new work stops:**
   - poll claims nothing;
-  - the worker applies no decision;
+  - the worker applies no decision. It reads Pause before each decision, and again just before it resumes or re-drives a thread;
   - ingestion claims nothing;
-  - the registry raises `PausedError` for new actions. The worker releases the lease without counting an attempt, and makes the decision due at once, so it moves on as soon as the owner resumes. An action already past the registry's checks completes.
+  - the registry raises `PausedError` for new actions, checking before it reads Gmail. The worker releases the lease without counting an attempt, and makes the decision due at once, so it moves on as soon as the owner resumes. An action already past the registry's checks completes.
 - **Withdraw** is a request the worker carries out, because only the worker may settle a decision it might have applied (M16 D1):
   - the card's **Withdraw** button records a request on the decision (`POST /api/decisions/withdraw`, which sets `withdraw_requested_at`);
-  - the worker, holding its lease, looks for a request before anything else, and processes requests even while paused;
+  - the worker reads the request in the same statement that takes the lease, and handles it before anything else. It processes requests even while paused;
   - it settles the decision as `no_effect` ("withdrawn by the owner") only if the thread is still parked at the decision's revision and its action, if any, is still `approved`. The action becomes `refused` and the proposal returns to `pending` with the next `generation`, in the same transaction;
-  - otherwise the request is declined ("already being applied"), and the card says so.
+  - a Confirm stopped before its write (`act` next, with the action still `approved`) can be withdrawn too. That happens when a Pause lands after the worker's last look but before the registry's check. A thread past its interrupt cannot be put back in front of the owner, so the decision and the message end as rejected, "withdrawn by the owner". Nothing is sent. (Added after the review of 2026-10-02.)
+  - otherwise the request is declined ("already being applied"), and the card says so. A request that arrives while the decision is being applied is declined when the decision settles, in the same transaction.
 - **What carries on:** reads, reconciliation, the purge, the token check, and M20's mail sync. None calls a model. They may still send the owner notifications: a reconciled proposal is announced, and a token alert goes out.
 - **Health.** `/health` shows `paused` with the bearer. A paused tick records as successful, and held decisions do not count as stuck, so pausing is not an outage.
 
@@ -743,3 +744,67 @@ Accepted, and documented in the runbook:
   - the exit criterion, and the open question on the calendar and invitation emails: §11.8.
 
   No step in the spec is left outside the docs. The developer-only details (the test fixture's delete order, `poll --reset`) stay in the code's own docstrings.
+
+### Reviews of 17.12–17.13, and of the whole module (2026-10-02)
+
+Two adversarial reviews read the code at `81951cb`:
+- one of Pause, Withdraw and the Activity page: two HIGH issues, one MEDIUM and sixteen smaller;
+- one of the seams between M17's parts: one MEDIUM and twelve LOW, three of them shared with the first.
+
+Neither found a way to write twice, under the wrong `DRY_RUN`, or with arguments other than the approved ones. Each finding below was checked against the code before it was recorded. The fixes are tasks 17.15–17.18. They were not made on the day: the session that received the reviews could not run commands, so it could neither test nor commit.
+
+**Withdraw and Pause did not hold at every step (both HIGH):**
+- *A request read from the pass's snapshot.*
+  - The problem:
+    - `apply_open` decided whether to withdraw from `_due`'s read at the start of the pass. A Withdraw made while an earlier decision was being applied was therefore ignored, and the Confirm ran.
+    - A request made while the decision itself was being applied stayed on the settled row. No `withdraw_declined` row was written, and the card said nothing.
+  - The fix (17.15):
+    - the lease is taken and the request read in one statement;
+    - a settle that finds a request declines it, in the same transaction.
+- *A Pause pressed during a pass.*
+  - The problem:
+    - Pause was read once per pass.
+    - A Pause pressed while a Confirm's guests were being checked therefore let the worker use up the interrupt. The registry then held the Confirm at `act`, where Withdraw declined it as "already being applied", and Resume sent it.
+    - Later Edits in the same pass still called models.
+  - The fix (17.15):
+    - Pause is read before each decision, and again just before a thread is resumed or re-driven;
+    - the registry checks Pause before it reads Gmail;
+    - that still leaves a moment between the worker's last look and the registry's check, so a Confirm stopped before its write (`act` next, its action still `approved`) can be withdrawn. It ends as rejected, "withdrawn by the owner": a thread past its interrupt cannot be put back in front of the owner. Nothing is sent.
+
+**To fix in 17.15–17.18:**
+- **Withdraw:**
+  - A withdraw that kept failing was retried every fifteen seconds, for ever, and never reached `/health` (MEDIUM, in both reviews). It will wait five minutes between tries, and a request more than an hour old will count as stuck, even while paused.
+  - Withdrawing a proposal made under the other `DRY_RUN` was audited both as expired and as withdrawn. It will be recorded as the expiry it is.
+  - A second worker could withdraw a decision whose write had begun. The action row will be locked while it is checked.
+- **Resume:**
+  - Resume is one tap on the button that Pause just became, and a held Confirm it releases cannot be called back (MEDIUM). It will ask a second time.
+  - Resume made every open decision due afresh, which hid one already stuck. Instead, each due time will move on by the length of the pause.
+- **The web app:**
+  - While anything was held, the timeline re-read every three seconds, each time scanning the audit log once per card. Held cards will slow the re-read, and the audit log gains an index on its decision.
+  - A Withdraw answered "settled" read "already applied", whatever had happened. The wording will become neutral.
+  - The header's switches:
+    - a failed read hid Pause;
+    - the timeline failed with it;
+    - the header went stale across navigation.
+  - The Activity page labelled poll's too-costly rows "(cleared)", and its times named no zone.
+- **The switches and the command line:**
+  - Pause, Resume, Withdraw and the command line connected with no timeout.
+  - The command line did not name the database it switched, printed local time as UTC, and had no `status` task.
+  - Pause and Resume rows in the audit log did not say where they came from.
+  - A missing `control` row read as "not paused". It will raise.
+- **Spending:** a held Edit's note relied on the sampled budget state, and a model with no price showed nothing at all. The budget state gains "a model has no price", shown in the header and on the card.
+- **The seams:**
+  - The resync path's expiry always failed: it claimed the row at the thread's revision while the row was still at the decision's. The proposal failed instead of expiring.
+  - A re-park's settle skipped the mode check.
+  - The command line's reconcile recorded and announced rows under its own settings.
+  - The one-hour guest hold ran from `decided_at`, so after a long pause a single Gmail error marked every guest outside.
+  - A found event whose settle then failed was alerted as "could not be confirmed".
+  - A return to the owner dropped the guests the check had marked outside.
+  - `_has_event` let a proposal with no end park, and no Confirm could bind it.
+
+**Accepted, for the runbook:**
+- Carrying out a withdraw needs the decisions job's session, and that session needs Google's token. During an outage the request waits, but it is still carried out before the decision could be applied.
+- A restart keeps leases. A decision held by a dead worker waits up to thirty minutes; then its request is carried out first.
+- `/health`'s `paused` comes from the last decisions tick, at most fifteen seconds old. The web app reads it live.
+- A Confirm whose guests change while it is held at `act` fails at execution ("guests outside the thread") instead of coming back. Nothing is sent.
+- A Resume from the command line does not wake the worker, which runs in another process. Its next tick, within fifteen seconds, carries on.

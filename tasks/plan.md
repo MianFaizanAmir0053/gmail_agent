@@ -177,3 +177,61 @@ Gmail's history API, and feed the meeting pipeline from it. The spec is
 ## Open questions
 
 - FAILED messages are never retried (spec, Open questions).
+
+---
+
+# Implementation Plan: M18 · Untrusted input
+
+## Overview
+
+Make email shape proposals without ever acting, speaking with the owner's
+voice, reaching a tool, or carrying a key out:
+- credential mail is set aside before any model reads it;
+- codes and links are removed where mail enters, and again at every prompt;
+- the owner's correction travels apart from the email;
+- no model that reads mail holds a tool;
+- each guest says where it came from;
+- an injection suite gates CI without a model in CI.
+
+The spec, approved on 2026-10-02 with the owner's five decisions, is
+[`docs/plans/M18-untrusted-input.md`](../docs/plans/M18-untrusted-input.md).
+The tasks are 18.1–18.15 in [`todo.md`](todo.md). They begin after M17's
+review fixes (17.15–17.18). `DRY_RUN` stays `true`.
+
+## Architecture decisions
+
+- **Clean where mail enters, and again where it is used.** The scrubber runs in `get_message` and again when a prompt is assembled. It is idempotent, so a checkpoint made before M18 is cleaned on its next read.
+- **Credential mail is set aside whole,** in the graph's first node, before classify. Its body never reaches the state, a checkpoint or a model.
+- **The owner's words travel apart from the email:**
+  - the correction goes in the system instruction;
+  - everything the sender controls sits between markers made fresh for each call.
+- **Remove rather than restrict:**
+  - search and the reviewer go;
+  - a structural test keeps tools out of `app/extraction/`.
+- **A guest's source is computed once, at park,** and every card reads it.
+- **The model half of the suite is a committed run,** keyed by a hash of the code that shapes what the model sees. CI never calls a model.
+
+## Phases
+
+1. **Mail enters clean** (18.1–18.3).
+2. **Readers without tools, and the owner's own channel** (18.4–18.7).
+3. **What the owner sees and what is stored** (18.8–18.10).
+4. **The injection suite and the evals** (18.11–18.15).
+
+18.10 (stored text) depends only on 18.3, and can be done early.
+
+## Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| The scrubber removes meeting details: times, rooms, dial-ins, meeting links | High | Meeting-mail fixtures must survive. The golden set runs through the same preparation, and may drop at most one fixture on exact match |
+| A credential phrase skips a real meeting email | Medium | Phrases are strong and matched as whole words. A skipped message shows in the ledger with its fixed reason |
+| Removing the review node strands a thread stopped mid-graph | Medium | Parked threads are drained before the deploy (runbook). Production runs under `DRY_RUN` with few of them |
+| Scrubbing the title changes the hash of a pending proposal | Low | M17 returns such a proposal to the owner ("the proposal changed"); nothing fails |
+| The committed model run goes stale on every prompt edit | Low | The hash covers exactly the code that shapes the prompt, and a re-run is a few hundred calls on the development key |
+| Injection payloads quoted in a session block its shell (auto mode, 2026-10-02) | Medium | Payloads live in `data/injection/`. Tests, reviews and notes cite case ids, never the text |
+
+## Open questions
+
+- Codes in other languages: the phrases are English, and a miss found later adds its phrase (spec, Open questions).
+- Ingestion in production stays off until the owner turns it on after M18, with the chunks re-indexed.

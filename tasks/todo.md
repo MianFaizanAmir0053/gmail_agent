@@ -1213,10 +1213,100 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 
 **Dependencies:** 17.13 · **Files:** `docs/DEPLOY.md`, `README.md`, `docs/plans/M17-action-policy.md` · **Scope:** S
 
+## Phase 4 · Review fixes
+
+The two reviews of 2026-10-02 (the spec's running notes, "Reviews of 17.12–17.13, and of the whole module") found where Withdraw and Pause did not hold, and smaller gaps along the seams. Each task starts with a test that fails on the code at `81951cb`.
+
+### Task 17.15: Withdraw and Pause hold at every step
+
+**Description:**
+- The worker reads a withdraw request in the same statement that takes the lease, and a settle declines any request it finds.
+- Pause is read before each decision and again just before a resume or re-drive. The registry checks Pause before it reads Gmail.
+- A Confirm stopped before its write can be withdrawn.
+- A withdraw that fails backs off, and shows on `/health`.
+
+**Acceptance criteria:**
+- [ ] A request made after the pass reads its decisions, but before the lease, is carried out. A request made while the decision is being applied is declined when the decision settles: `withdraw_declined` is audited in the same transaction.
+- [ ] A Pause pressed while a Confirm's guests are checked leaves its thread parked, and Withdraw then returns it. Later decisions in the same pass, Edits included, are not applied.
+- [ ] A Confirm stopped before its write, with its action `approved`, is withdrawn: rejected, "withdrawn by the owner", and nothing is sent. The action row is locked while it is checked.
+- [ ] A withdraw that raises is tried again five minutes later, and the rest of the pass goes on. A request more than an hour old counts on `/health`'s stuck clock, whether paused or not.
+- [ ] Withdrawing a proposal made under the other `DRY_RUN` is audited once, as an expiry.
+
+**Verification:** `uv run pytest tests/test_worker.py tests/test_registry.py tests/test_scheduler.py`, and the same files on Neon with `-m integration`; `.\tasks.ps1 check`.
+
+**Dependencies:** 17.14 · **Files:** `app/channel/worker.py`, `app/policy/registry.py`, `app/jobs/scheduler.py`, `app/policy/audit.py`, tests · **Scope:** M
+
+### Task 17.16: The switches and the command line
+
+**Description:**
+- Resume moves each held decision's due time on by the length of the pause, and does not make it due afresh.
+- The switch tells you what it switched, and fails loudly:
+  - a missing `control` row raises;
+  - Pause and Resume rows in the audit log say where they came from;
+  - every connection the switches and Withdraw open has a timeout;
+  - the command line names the database host, prints UTC, and gains `.\tasks.ps1 status`.
+- The budget state gains `unpriced`, a model in use with no price. Migration 012 adds it, together with an index on `audit_log (decision_id)`.
+
+**Acceptance criteria:**
+- [ ] A decision due fifty minutes before a pause is still counted as stuck after Resume. A decision that fell due during the pause starts its clock at Resume.
+- [ ] With the `control` row missing, `is_paused` and `switch` raise. The audit's `paused` and `resumed` rows carry "from the web app" or "from the command line".
+- [ ] With a model in use that has no price, the watch records `unpriced`, and the header says that new work has stopped.
+
+**Verification:** `uv run pytest tests/test_control.py tests/test_watch.py tests/test_budget.py tests/test_scheduler.py`, on Neon too; `.\tasks.ps1 check`.
+
+**Dependencies:** 17.15 · **Files:** `app/policy/control.py`, `app/jobs/control.py`, `app/store/db.py`, `app/policy/budget.py`, `migrations/012_review_fixes.sql`, `tasks.ps1`, tests · **Scope:** M
+
+### Task 17.17: The seams
+
+**Description:**
+- **Expiry on a re-shown proposal:**
+  - the resync expiry claims the row at the thread's revision;
+  - a re-park's settle checks the mode, as a resync's does.
+- **The command line's reconcile:** it records a missing row without binding or announcing it, and leaves both to the scheduler.
+- **Guests:**
+  - the one-hour guest hold runs from the later of `decided_at` and the last Resume;
+  - a return to the owner keeps the guests that the check marked outside.
+- **A found event:** its action is closed before the decision settles.
+- **An end time:** `_has_event` requires one.
+
+**Acceptance criteria:**
+- [ ] A resync or re-park whose payload was made under the other `DRY_RUN` expires: the proposal is not left failed, and is never announced.
+- [ ] After a two-hour pause, one Gmail error holds a Confirm for ten minutes and does not mark its guests outside.
+- [ ] A found event whose settle fails is left open as an error, not alerted as unconfirmed.
+- [ ] `approve --reconcile` writes no hash and announces nothing.
+
+**Verification:** `uv run pytest tests/test_worker.py tests/test_reconcile.py tests/test_graph.py`, on Neon too; `.\tasks.ps1 check`.
+
+**Dependencies:** 17.15 · **Files:** `app/channel/worker.py`, `app/channel/reconcile.py`, `app/jobs/approve.py`, `app/graph/build.py`, tests · **Scope:** M
+
+### Task 17.18: The web app's switches and cards
+
+**Description:**
+- **Resume:** it asks a second time before it releases held decisions.
+- **The header:**
+  - a failed read leaves Pause available and the timeline standing;
+  - the header is read again on each navigation.
+- **Held cards:** they slow the timeline's re-read to every thirty seconds.
+- **Withdraw:** a "settled" answer reads "That decision is no longer queued".
+- **A held card's note:** it covers a model with no price.
+- **The Activity page:**
+  - a row with no proposal shows no "(cleared)";
+  - times are given in the owner's zone.
+
+**Acceptance criteria:**
+- [ ] One tap on Resume changes nothing; the second tap, on a confirmation that appears in a different place, resumes.
+- [ ] With the switches unreadable, the timeline renders, and Pause is still shown.
+- [ ] With every open decision held, the page re-reads every thirty seconds, not three.
+
+**Verification:** `cd dashboard; npm test; npm run typecheck; npm run build`. The browser checks wait for the owner's end tests.
+
+**Dependencies:** 17.16 · **Files:** `dashboard/src/components/SwitchButton.tsx`, `dashboard/src/components/ControlBar.tsx`, `dashboard/src/app/page.tsx`, `dashboard/src/lib/timeline.ts`, `dashboard/src/lib/switches.ts`, `dashboard/src/lib/decisionForm.ts`, `dashboard/src/app/activity/page.tsx`, tests · **Scope:** M
+
 ### Checkpoint: M17 built
 
 - [ ] Python and web checks green, locally and in CI.
-- [ ] Fresh-context review of the whole module.
+- [x] Fresh-context review of the whole module (2026-10-02): its findings, and those of 17.12–17.13's review, are tasks 17.15–17.18.
+- [ ] A fresh-context review of 17.15–17.18.
 - [ ] The exit criterion waits for the owner's end tests.
 
 ---
@@ -1351,3 +1441,290 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 - [ ] Python checks green, locally and in CI.
 - [ ] Fresh-context review of the module.
 - [ ] The exit criterion waits for the owner's end tests.
+
+---
+
+# M18 · Untrusted input — tasks
+
+Spec: [`docs/plans/M18-untrusted-input.md`](../docs/plans/M18-untrusted-input.md), approved by the owner on 2026-10-02. Where a task and the spec differ, the spec wins. The tasks begin after M17's review fixes.
+
+**Injection payloads live in `data/injection/`, and are cited by case id.** Tests, reviews and notes never quote them: quoting them in a session made auto mode block its shell on 2026-10-02.
+
+## Phase 1 · Mail enters clean
+
+### Task 18.1: The scrubber
+
+**Description:** `app/policy/scrub.py` (D2). It provides:
+- D1's normalisation;
+- credential mail, recognised by the strong phrases;
+- codes near a cue word, with the exclusions for times, years, dates and phone numbers;
+- links rewritten to `[link: host]`, except allowlisted meeting hosts, whose path is kept and whose query keeps only the keys a meeting needs.
+
+Known wrappers are unwrapped first. Links are handled before codes, and counts are logged by kind. The first fixtures, real-format credential mail and meeting mail that must survive, start `data/injection/`.
+
+**Acceptance criteria:**
+- [ ] Every strong phrase flags a message, in the subject or the body. No meeting-mail fixture is flagged.
+- [ ] Codes are removed whatever their separators: spaces, dashes, non-breaking or zero-width. Times, years, dates, phone numbers, rooms and order numbers survive.
+- [ ] An allowlisted link keeps its host and path and loses any passcode or token. A wrapped link is unwrapped, and an obfuscated one is found. Scrubbing twice changes nothing.
+
+**Verification:** `uv run pytest tests/test_scrub.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 17.18 · **Files:** `app/policy/scrub.py`, `data/injection/`, `tests/test_scrub.py` · **Scope:** M
+
+### Task 18.2: The body the owner sees
+
+**Description:** `extract_body` (D1):
+- attachments, and every part inside a `message/rfc822` part, are skipped;
+- HTML is preferred over `text/plain`;
+- hidden content is removed before the tags are: comments, `<style>`, `<script>`, `<head>`, elements hidden by an inline style, and the `hidden` attribute;
+- the text is normalised.
+
+`get_message` scrubs before a message leaves the client. Credential mail leaves it flagged, with its body replaced by a fixed notice.
+
+**Acceptance criteria:**
+- [ ] Each hidden-text fixture loses its hidden part. White-on-white text stays, recorded as the known gap.
+- [ ] A message whose `text/plain` part differs yields the HTML's text. An attached message's text never appears.
+- [ ] A credential message leaves the client with the flag and the fixed notice, and with no code and no link.
+
+**Verification:** `uv run pytest tests/test_gmail.py tests/test_scrub.py`.
+
+**Dependencies:** 18.1 · **Files:** `app/google/gmail.py`, `app/contracts.py`, `data/injection/`, `tests/test_gmail.py` · **Scope:** M
+
+### Task 18.3: Credential mail set aside
+
+**Description:** The graph's first node records a flagged message as SKIPPED ("carried a sign-in code"), before classify runs. "carried a sign-in code" joins the purge's fixed reasons (D10).
+
+**Acceptance criteria:**
+- [ ] A credential message ends SKIPPED with the fixed reason, and no model is called: the gate records no spend.
+- [ ] Its checkpoint and its ledger row hold no code, no link and no body text.
+
+**Verification:** `uv run pytest tests/test_graph.py tests/test_poll.py tests/test_purge.py`, and the same on Neon.
+
+**Dependencies:** 18.2 · **Files:** `app/graph/nodes.py`, `app/graph/build.py`, `app/jobs/purge.py`, tests · **Scope:** S
+
+### Checkpoint: mail enters clean
+
+- [ ] Checks green; Neon.
+
+## Phase 2 · Readers without tools, and the owner's own channel
+
+### Task 18.4: The reviewer removed
+
+**Description:** Decision 4:
+- the review node and its routes leave the graph;
+- `app/agents/reviewer.py`, `app/eval/reviewed.py` and the `gemini_reviewed` extractor go;
+- `REVIEWER_ENABLED`, the reviewer's model and its prompt leave the settings and the pipeline version's inputs.
+
+Cards keep rendering the `review_issues` of payloads parked before M18.
+
+**Acceptance criteria:**
+- [ ] The graph has no review node, and `Deps` holds no reviewer.
+- [ ] A payload parked before M18, `review_issues` included, still renders on the web card and in Telegram.
+
+**Verification:** `uv run pytest tests/test_graph.py tests/test_versioning.py tests/test_config.py tests/test_telegram.py`; `.\tasks.ps1 check`; the graph tests on Neon.
+
+**Dependencies:** 18.3 · **Files:** `app/graph/build.py`, `app/graph/nodes.py`, `app/graph/runner.py`, `app/graph/versioning.py`, `app/config.py`, the removed modules and `tests/test_reviewer.py` · **Scope:** M (mostly deletions)
+
+### Task 18.5: Search removed from extraction
+
+**Description:** Decision 3:
+- `ExtractionPipeline` loses its searcher and `SEARCH_SUFFIX`;
+- `graph_session` builds no searcher;
+- `SEARCH_CONTEXT_ENABLED` goes;
+- `app/rag/demo.py` stops running an extractor that searches.
+
+The search code stays, for M19. A structural test checks that `ExtractionPipeline` takes no searcher, and that no `tools` argument reaches `structured_call` from `app/extraction/` (D4).
+
+**Acceptance criteria:**
+- [ ] The structural test fails on the code before the change, and passes after it.
+- [ ] Ingestion and the retrieval eval still run.
+
+**Verification:** `uv run pytest tests/test_pipeline.py tests/test_no_tools.py tests/test_rag_search.py tests/test_config.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 18.4 · **Files:** `app/extraction/pipeline.py`, `app/extraction/prompts.py`, `app/graph/runner.py`, `app/config.py`, `app/rag/demo.py`, `tests/test_no_tools.py`, `tests/test_search_context_tool.py` · **Scope:** M
+
+### Task 18.6: The owner's channel
+
+**Description:** D3:
+- the correction goes in the system instruction of the re-extraction that applies it;
+- markers are made fresh for each call, and marker-shaped text inside the email is defused;
+- From, To, Subject and the body all sit inside the markers;
+- the system instruction explains what the text between the markers is;
+- the cut happens before the markers are added;
+- the Gateway's evaluation path is built the same way;
+- the scrubber runs again at assembly;
+- `PIPELINE_REVISION` goes up.
+
+**Acceptance criteria:**
+- [ ] The correction appears only in the system instruction. All sender text sits between the call's markers, and each forged-structure fixture stays inside them.
+- [ ] A body cut to fit keeps its closing marker.
+- [ ] A checkpoint made before M18 is scrubbed when its prompt is assembled.
+
+**Verification:** `uv run pytest tests/test_pipeline.py tests/test_evaluation.py tests/test_models.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** 18.5 · **Files:** `app/extraction/prompts.py`, `app/extraction/pipeline.py`, `app/extraction/evaluation.py`, `app/graph/versioning.py`, tests · **Scope:** M
+
+### Task 18.7: Titles, locations and Telegram
+
+**Description:** D6. The title and the location are scrubbed before park and inside `event_args`, so the card and the hash see the same text. Telegram disables link previews on every send and every edit. The card's first line is a fixed label.
+
+**Acceptance criteria:**
+- [ ] A title or location carrying a link, a code or a line shaped like an instruction is scrubbed on the card, in Telegram and in the event's arguments. An allowlisted meeting link stays.
+- [ ] Every Telegram call that sends text disables previews.
+- [ ] A pending proposal hashed before the change comes back to the owner ("the proposal changed") rather than failing.
+
+**Verification:** `uv run pytest tests/test_hashing.py tests/test_park.py tests/test_telegram.py tests/test_worker.py`; Neon for the worker.
+
+**Dependencies:** 18.6 · **Files:** `app/policy/hashing.py`, `app/channel/park.py`, `app/telegram/cards.py`, `app/telegram/client.py`, tests · **Scope:** M
+
+### Checkpoint: readers without tools
+
+- [ ] Checks green; Neon.
+
+## Phase 3 · What the owner sees and what is stored
+
+### Task 18.8: Where a guest came from, on Fly and in Telegram
+
+**Description:** D5. At park, each guest gets one of these sources:
+- in the thread;
+- an allowed contact;
+- named in the email;
+- named in a quoted or forwarded section, found with `app/rag/clean.py`'s detectors;
+- not found in the email.
+
+The payload stores them, and notes when the email has a quoted or forwarded section. Telegram shows each source, and marks the last two as warnings.
+
+**Acceptance criteria:**
+- [ ] Each source is computed from a fixture, a Calendar invitation's "Who:" list included.
+- [ ] An address the model invented is "not found in the email", and blocks the Confirm until allowed (M17).
+
+**Verification:** `uv run pytest tests/test_participants.py tests/test_graph.py tests/test_telegram.py`; the graph tests on Neon.
+
+**Dependencies:** 18.7 · **Files:** `app/policy/participants.py`, `app/graph/nodes.py`, `app/channel/park.py`, `app/telegram/cards.py`, tests · **Scope:** M
+
+### Task 18.9: Where a guest came from, on the web card
+
+**Description:** The web card lists each guest with its source. The two warnings sit beside Allow, and the card notes when the email has a quoted or forwarded section.
+
+**Acceptance criteria:**
+- [ ] Each source renders. A payload from before M18 renders without sources.
+- [ ] The layout key counts the sources, so a warning cannot move a button under a tap.
+
+**Verification:** `cd dashboard; npm test; npm run typecheck; npm run build`. The browser check waits for the owner's end tests.
+
+**Dependencies:** 18.8 · **Files:** `dashboard/src/components/ProposalCard.tsx`, `dashboard/src/lib/timeline.ts`, tests · **Scope:** S
+
+### Task 18.10: Stored text
+
+**Description:** D7:
+- `skip` records a fixed phrase ("a meeting with no start time"), never the model's reasoning;
+- `runs.error`, `spans.error` and `ingest_runs.error` keep the exception's type and a scrubbed message;
+- `LlmError` stops embedding the model's output;
+- the purge cuts these errors to the type after a week.
+
+"a meeting with no start time" joins the purge's fixed reasons (D10).
+
+**Acceptance criteria:**
+- [ ] A seeded code, link and sentence of email text never reaches `runs`, `spans`, `ingest_runs` or the ledger through an error or a skip.
+- [ ] A week later, the purge has left only the type.
+
+**Verification:** `uv run pytest tests/test_obs.py tests/test_retries.py tests/test_purge.py tests/test_rag_ingest.py`, and the same on Neon.
+
+**Dependencies:** 18.3 · **Files:** `app/graph/nodes.py`, `app/obs/trace.py`, `app/graph/runner.py`, `app/rag/ingest.py`, `app/extraction/llm.py`, `app/jobs/purge.py`, tests · **Scope:** M
+
+### Checkpoint: what the owner sees
+
+- [ ] Checks green, Python and web; Neon.
+
+## Phase 4 · The injection suite and the evals
+
+### Task 18.11: The fixtures, and the deterministic suite
+
+**Description:** D8's fixtures, completed as recorded Gmail payloads, each with what must hold:
+- forged structure;
+- guests;
+- titles and locations;
+- meeting mail that must survive;
+- each attack paraphrased three ways and hidden three ways.
+
+The tests run every fixture through the real `get_message` preparation and the prompt assembly.
+
+**Acceptance criteria:**
+- [ ] Every fixture's "must hold" holds, through the preparation and in the assembled prompt.
+- [ ] A failure names its case id, and never prints the payload.
+
+**Verification:** `uv run pytest tests/test_injection.py`.
+
+**Dependencies:** 18.10 · **Files:** `data/injection/`, `tests/test_injection.py` · **Scope:** M
+
+### Task 18.12: The compliant fake model
+
+**Description:** A fake model that does whatever each injection asks, driven through the graph to park, `decide()` and the registry.
+
+**Acceptance criteria:**
+- [ ] Nothing is booked without a Confirm bound to the exact arguments.
+- [ ] Every injected guest is marked, and blocks the Confirm.
+- [ ] A forged correction changes nothing.
+
+**Verification:** `uv run pytest tests/test_injection_flow.py`, on Neon (`-m integration`).
+
+**Dependencies:** 18.11 · **Files:** `tests/test_injection_flow.py`, the fakes it needs · **Scope:** M
+
+### Task 18.13: The model run, and the CI gate
+
+**Description:** `app/eval/injection.py` and `.\tasks.ps1 injection-eval`:
+- every fixture goes through the real pipeline, from the same preparation, to park;
+- Gmail and Calendar are fakes, and production's settings are used whatever the environment says;
+- each case runs five samples, and the results go to `results/injection-<stamp>.json`.
+
+`results/injection-baseline.json` records a hash of the code that shapes what the model sees. A CI test fails when that hash no longer matches, or when the baseline has a failure.
+
+**Acceptance criteria:**
+- [ ] Changing a prompt, the scrubber, the body preparation or a fixture fails the CI test until the run is redone.
+- [ ] The committed baseline has no failures.
+
+The run spends on the development key: a few hundred calls, well inside the cap.
+
+**Verification:** `uv run pytest tests/test_injection_baseline.py`; the run itself, recorded in the spec's running notes.
+
+**Dependencies:** 18.12 · **Files:** `app/eval/injection.py`, `tasks.ps1`, `results/injection-baseline.json`, `tests/test_injection_baseline.py` · **Scope:** M
+
+### Task 18.14: The golden set and the retrieval eval, again
+
+**Description:** D9:
+- the golden set runs through the same preparation production uses, with new fixtures that hold meeting links, passcodes and dial-in numbers;
+- chunks in the development database are deleted and re-ingested;
+- the retrieval eval is re-run;
+- the new runs become the baselines;
+- threads parked in development before M18 are drained.
+
+**Acceptance criteria:**
+- [ ] Exact match falls by at most one fixture, and `is_meeting` F1 not at all. Every new fixture's time and link survive.
+- [ ] Recall at 5 stays within two points of the last run. The "order reference" queries are judged by hand.
+
+**Verification:** `.\tasks.ps1 eval --extractor gemini`; `.\tasks.ps1 retrieval-eval --by-kind`; results committed.
+
+**Dependencies:** 18.13 · **Files:** `app/eval/dataset.py`, `app/eval/run.py`, the golden fixtures, `results/` · **Scope:** M
+
+### Task 18.15: Runbook and README
+
+**Description:** `docs/DEPLOY.md`:
+- draining parked threads before the deploy;
+- re-indexing;
+- what removing search and the reviewer means;
+- re-running the injection eval after any change to a prompt or to the scrubber.
+
+README: the safety section. The spec: its running notes.
+
+**Acceptance criteria:**
+- [ ] A read-through against the spec finds no step outside the docs.
+
+**Verification:** the read-through, recorded in the running notes.
+
+**Dependencies:** 18.14 · **Files:** `docs/DEPLOY.md`, `README.md`, `docs/plans/M18-untrusted-input.md` · **Scope:** S
+
+### Checkpoint: M18 built
+
+- [ ] Python and web checks green, locally and in CI, with the committed injection run current.
+- [ ] Fresh-context review of the module, citing injection cases by id.
+- [ ] Exit criterion 3 on the deployed stack, and 4 at the owner's end tests.
