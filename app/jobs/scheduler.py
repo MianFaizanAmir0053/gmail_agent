@@ -131,7 +131,8 @@ def run_ingest(settings: Settings) -> None:
 class DecisionsStatus(NamedTuple):
     oldest: datetime | None
     """When the decision that has waited longest became due, of those the
-    worker is free to apply: `/health`'s clock for a stuck queue."""
+    worker is free to apply, or when the oldest withdraw request was made,
+    paused or not: `/health`'s clock for a stuck queue."""
     due: bool
     """Whether any is due now, so worth a graph session."""
     paused: bool
@@ -155,7 +156,10 @@ def decisions_status(conn: psycopg.Connection) -> DecisionsStatus:
     - a write that could not be confirmed asks Google again every hour (D3).
     A decision that keeps failing is never pushed back, so it is stuck within
     the hour. Nothing is due while paused but a withdraw request, which the
-    worker carries out even then.
+    worker carries out even then. A request is carried out within a tick, so
+    one an hour old is stuck too, paused or not, waiting out a failure or not.
+    So is a decision whose calendar write is done but which could not settle:
+    the failed pass's lease would otherwise hide it for half an hour at a time.
     """
     row = conn.execute(
         """
@@ -163,12 +167,17 @@ def decisions_status(conn: psycopg.Connection) -> DecisionsStatus:
             SELECT coalesce(bool_or(paused), false) AS paused FROM control WHERE id = 1
         ), open AS (
             SELECT d.next_attempt_at,
+                   d.withdraw_requested_at,
                    d.withdraw_requested_at IS NOT NULL AS withdraw,
-                   (d.lease_until IS NULL OR d.lease_until < now()) AS free
+                   (d.lease_until IS NULL OR d.lease_until < now()) AS free,
+                   EXISTS (SELECT 1 FROM outbound_actions a
+                            WHERE a.decision_id = d.id AND a.status = 'done') AS written
               FROM decisions d
              WHERE d.outcome IS NULL
         )
-        SELECT min(next_attempt_at) FILTER (WHERE free AND NOT (SELECT paused FROM c)),
+        SELECT least(min(next_attempt_at) FILTER (WHERE free AND NOT (SELECT paused FROM c)),
+                     min(withdraw_requested_at),
+                     min(next_attempt_at) FILTER (WHERE written)),
                coalesce(bool_or(free AND (withdraw OR (next_attempt_at <= now()
                                                        AND NOT (SELECT paused FROM c)))),
                         false),

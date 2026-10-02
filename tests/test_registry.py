@@ -628,6 +628,30 @@ def test_an_invite_whose_guests_cannot_be_checked_is_held_not_refused(
 
 
 @pytest.mark.integration
+def test_a_pause_is_seen_before_gmail_is_asked_about_the_guests(
+    conn: psycopg.Connection,
+) -> None:
+    """Paused, with Gmail down: the action waits as paused, which costs no
+    attempt, not as a Gmail hold, which can count one after an hour (D6)."""
+    approval = _approved(conn, attendees=["sara@example.com"])
+    conn.execute("UPDATE control SET paused = true")
+    asked: list[str] = []
+
+    def down(message_id: str, guests: object) -> list[str]:
+        asked.append(message_id)
+        raise ConnectionError("Gmail unavailable")
+
+    registry = Registry(conn, Writer(dry_run=True), key=KEY, outsiders=down)
+    with pytest.raises(PausedError):
+        registry.execute(
+            INVITE, _args(attendees=["sara@example.com"]), approval=approval, message_id="m1"
+        )
+
+    assert asked == []
+    assert _action(conn)[0] == "approved"
+
+
+@pytest.mark.integration
 def test_a_write_begun_is_finished_without_asking_gmail_about_its_guests(
     conn: psycopg.Connection,
 ) -> None:

@@ -105,6 +105,12 @@ worker that dies holding one only delays the decision until it expires.
 Longer than any resume should take, because it cannot be renewed while one
 runs, and the model calls inside a resume have no deadline of their own."""
 
+WITHDRAW_RETRY = timedelta(minutes=5)
+"""How long a withdraw that failed waits before it is tried again (M17, D6).
+The decision keeps its lease for that long, so nothing applies it meanwhile
+and no pass retries it every tick. `/health` reports a request an hour old as
+stuck."""
+
 
 @dataclass(frozen=True, slots=True)
 class OpenDecision:
@@ -180,23 +186,29 @@ def apply_open(
     """Apply every open decision that is due, one at a time.
 
     Returns `(message_id, outcome)` pairs for the log. A withdraw request is
-    carried out before anything else, and before any other decision. While
-    the owner has paused the agent, nothing else is applied (M17, D6): a
-    Confirm stays parked, so a Withdraw can still reach it.
+    carried out before anything else: it is read with the lease, so one made
+    after the pass began is still seen. While the owner has paused the agent,
+    nothing else is applied (M17, D6). Pause is read before each decision, and
+    again just before a thread is resumed, so a Confirm stays parked, where a
+    Withdraw can still reach it.
     """
     applied: list[tuple[str, str]] = []
     paused = control.is_paused(session.conn)
     for decision in _due(session.conn, limit, withdrawals_only=paused):
         if stop is not None and stop.is_set():
             break
-        if decision.withdraw_requested:
-            if _take_lease(session.conn, decision.id):
-                applied.append((decision.message_id, _withdraw_leased(session, decision)))
-            continue
-        if not _take_lease(session.conn, decision.id):
+        leased = _take_lease(session.conn, decision)
+        if leased is None:
             continue  # another worker has it
+        if leased.withdraw_requested:
+            applied.append((decision.message_id, _withdraw_leased(session, leased)))
+            continue
+        if control.is_paused(session.conn):
+            # Paused since the pass began: left as it was, and due.
+            _release(session.conn, leased)
+            continue
         try:
-            outcome = apply_one(session, decision, announce=announce)
+            outcome = apply_one(session, leased, announce=announce)
         except Exception:
             # One broken decision must not hold up the others. Its lease
             # expires and the next pass tries it again.
@@ -278,11 +290,19 @@ def _advance(session: GraphSession, decision: OpenDecision, announce: Announce |
         held = _edit_held(session, decision, view, ledger_status, announce)
         if held is not None:
             return held
+        if step.kind == "resume" and decision.action == "confirm":
+            returned = _check_confirm(session, decision, view, ledger_status, announce)
+            if returned is not None:
+                return returned
+        # The checks can take half a minute: Gmail retries the guest check.
+        # Whatever the owner did meanwhile is read now, before anything runs
+        # (D6). A withdraw is carried out, holding the lease already held; a
+        # pause leaves the thread as it is, where a Withdraw can still reach it.
+        if _withdraw_requested(session.conn, decision):
+            return _withdraw_leased(session, decision)
+        if control.is_paused(session.conn):
+            raise PausedError
         if step.kind == "resume":
-            if decision.action == "confirm":
-                returned = _check_confirm(session, decision, view, ledger_status, announce)
-                if returned is not None:
-                    return returned
             session.resume(decision.message_id, _resume_value(decision))
         else:
             session.redrive(decision.message_id)
@@ -381,8 +401,19 @@ def _check_guests(
 
 
 def _decided_within(conn: psycopg.Connection, decision: OpenDecision, span: timedelta) -> bool:
+    """Whether the owner confirmed within `span`, counting from the last
+    Resume when that came later: time the agent spent paused is not the
+    hold's to use up (D4). While paused it never runs out: nothing is
+    concluded then, and the decision waits."""
     row = conn.execute(
-        "SELECT decided_at > now() - %s FROM decisions WHERE id = %s", (span, decision.id)
+        """
+        SELECT c.paused
+               OR greatest(d.decided_at, CASE WHEN NOT c.paused THEN c.changed_at END)
+                  > now() - %s
+          FROM decisions d, control c
+         WHERE d.id = %s AND c.id = 1
+        """,
+        (span, decision.id),
     ).fetchone()
     return bool(row and row[0])
 
@@ -401,7 +432,10 @@ def _return_to_owner(
     """Settle the decision as `no_effect` and show the proposal again, as it
     is now: the current tool and hash, and the next generation, so a Confirm
     from any earlier card is refused as stale. Its action, if any, is refused.
+
     `outside_guests`, when given, replaces the card's: read just now.
+    Otherwise the card keeps every guest marked outside so far, the park's
+    and any a later check marked, so `decide()` still asks for each Allow.
     """
     assert view.payload is not None and ledger_status is not None
     conn = session.conn
@@ -418,12 +452,25 @@ def _return_to_owner(
         ):
             return "already settled"
         record = proposal_from(decision.message_id, view.payload, view.revision, session.binding())
-        if outside_guests is not None:
-            record = replace(record, payload={**record.payload, "outside_guests": outside_guests})
+        if outside_guests is None:
+            outside_guests = _marked_outside(conn, decision.message_id, record.payload)
+        record = replace(record, payload={**record.payload, "outside_guests": outside_guests})
         record = replace(record, generation=write_park(conn, record, ledger_status=ledger_status))
     if announce is not None:
         _announce(announce, record)
     return "no_effect"
+
+
+def _marked_outside(
+    conn: psycopg.Connection, message_id: str, payload: dict[str, Any]
+) -> list[str]:
+    """The park's outside guests, then any the row has marked since: a check
+    before a Confirm may have found one the park never saw."""
+    row = conn.execute(
+        "SELECT payload->'outside_guests' FROM proposals WHERE message_id = %s", (message_id,)
+    ).fetchone()
+    marked = row[0] if row is not None and isinstance(row[0], list) else []
+    return list(dict.fromkeys([*payload.get("outside_guests", []), *map(str, marked)]))
 
 
 def _made_under(payload: dict[str, Any]) -> bool:
@@ -441,12 +488,16 @@ def _expire_queued(conn: psycopg.Connection, decision: OpenDecision, view: Threa
     with conn.transaction():
         if not _close(conn, decision.id, "no_effect", reason=phrase, action_reason="mode"):
             return "already settled"
+        # At the thread's revision, which a resync or a re-park has moved on
+        # from the decision's: the expiry's sweep claims the row there.
         conn.execute(
             """
-            UPDATE proposals SET status = 'pending', generation = generation + 1, updated_at = now()
+            UPDATE proposals
+               SET status = 'pending', revision = %s, generation = generation + 1,
+                   updated_at = now()
              WHERE message_id = %s AND status = 'deciding'
             """,
-            (decision.message_id,),
+            (view.revision, decision.message_id),
         )
         if not expire(conn, decision.message_id, view.revision):
             # Rolls the settle back: the decision stays open and is tried
@@ -488,7 +539,9 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
         if step.kind == "redrive" and decision.action_status == "dry_run":
             return _settle_dry_run(conn, decision)
 
-        if step.kind == "resume":
+        # A sweep is never handed back: one that expires a proposal from the
+        # other mode would expire it again, and queue another sweep, for ever.
+        if step.kind == "resume" and decision.action != "sweep":
             return _return_to_owner(
                 session,
                 decision,
@@ -535,29 +588,43 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
 
 
 def _withdraw_leased(session: GraphSession, decision: OpenDecision) -> str:
-    """`_withdraw`, with the lease always released: a request that could not
-    be carried out is tried again at the next tick, not after the lease."""
+    """`_withdraw`, kept from repeating a failure every tick: a request that
+    could not be carried out keeps the lease for `WITHDRAW_RETRY`, and is
+    tried again then. Nothing applies the decision meanwhile."""
     try:
         return _withdraw(session, decision)
     except Exception:
         log.exception("could not withdraw decision %d on %s", decision.id, decision.message_id)
-        session.conn.execute(
-            "UPDATE decisions SET lease_until = NULL WHERE id = %s AND outcome IS NULL",
-            (decision.id,),
-        )
+        try:
+            session.conn.execute(
+                "UPDATE decisions SET lease_until = now() + %s WHERE id = %s AND outcome IS NULL",
+                (WITHDRAW_RETRY, decision.id),
+            )
+        except Exception:
+            # The lease taken for this attempt still holds it, for longer.
+            log.exception("could not push back the withdraw of decision %d", decision.id)
         return "error"
 
 
 def _withdraw(session: GraphSession, decision: OpenDecision) -> str:
     """Carry out the owner's withdraw request (M17, D6), holding the lease.
 
-    Withdrawn only if nothing has run: the thread is still parked at the
-    decision's revision, and its action, if any, is still `approved`. Then the
-    decision settles as `no_effect` ("withdrawn by the owner"), its action is
-    refused, and the proposal returns to the owner at the next generation, so
-    a Confirm from the old card is refused as stale; all in one transaction.
-    Otherwise the request is declined ("already being applied"): it is
-    cleared, audited, and the decision goes on as it was.
+    - **Nothing has run:** the thread is still parked at the decision's
+      revision, and its action, if any, is still `approved`. The decision
+      settles as `no_effect` ("withdrawn by the owner"), its action is refused,
+      and the proposal returns to the owner at the next generation, so a
+      Confirm from the old card is refused as stale. One made under the other
+      `DRY_RUN` is expired instead, as it would be anyway.
+    - **A Confirm stopped before its write:** `act` is next, and its action is
+      still `approved`. A Pause that landed after the worker's last look does
+      this. The thread is past its interrupt and cannot go back to the owner,
+      so the decision and the message end as rejected, "withdrawn by the
+      owner". Nothing is sent.
+    - **Otherwise** the request is declined ("already being applied"): it is
+      cleared and audited, and the decision goes on as it was.
+
+    The action is read again under a lock before it is refused: a write
+    another worker began since the first look declines the request.
     """
     conn = session.conn
     decision = _with_action_status(conn, decision)
@@ -571,22 +638,94 @@ def _withdraw(session: GraphSession, decision: OpenDecision) -> str:
         and decision.action_status in (None, "approved")
     )
     if untouched:
-        assert entry is not None
+        assert entry is not None and view.payload is not None
+        if _made_under(view.payload) != session.dry_run:
+            with conn.transaction():
+                if not _still_approved(conn, decision):
+                    return _decline(conn, decision)
+                # Audited once, by the expiry.
+                expired = _expire_queued(conn, decision, view)
+            return "expired" if expired == "no_effect" else expired
         with conn.transaction():
+            if not _still_approved(conn, decision):
+                return _decline(conn, decision)
             # Nobody else is told: the owner is the one who asked.
             outcome = _return_to_owner(
                 session, decision, view, entry.status, None, action_reason="withdrawn"
             )
             if outcome == "no_effect":
-                audit.record(
-                    conn,
-                    "decision_withdrawn",
-                    decision_id=decision.id,
-                    message_id=decision.message_id,
-                    outcome="withdrawn",
-                    reason=audit.REASONS["withdrawn"],
-                )
+                _audit_withdrawn(conn, decision)
         return "withdrawn" if outcome == "no_effect" else outcome
+    stopped_before_write = (
+        view.next == ("act",)
+        and entry is not None
+        and entry.status is MessageStatus.AWAITING_APPROVAL
+        and decision.action_status == "approved"
+    )
+    if stopped_before_write:
+        return _withdraw_before_write(conn, decision)
+    return _decline(conn, decision)
+
+
+def _still_approved(conn: psycopg.Connection, decision: OpenDecision) -> bool:
+    """Whether the decision's action, if it has one, is still `approved`, read
+    with both rows locked until the caller's transaction ends.
+
+    The decision first, then the action: the order every settle takes them
+    in (`_close`, then `refuse_approved`), so two workers never wait on each
+    other in a circle."""
+    conn.execute("SELECT 1 FROM decisions WHERE id = %s FOR UPDATE", (decision.id,))
+    if decision.action_id is None:
+        return True
+    row = conn.execute(
+        "SELECT status FROM outbound_actions WHERE id = %s FOR UPDATE", (decision.action_id,)
+    ).fetchone()
+    return row is not None and row[0] == "approved"
+
+
+def _withdraw_requested(conn: psycopg.Connection, decision: OpenDecision) -> bool:
+    row = conn.execute(
+        "SELECT withdraw_requested_at IS NOT NULL FROM decisions WHERE id = %s", (decision.id,)
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def _withdraw_before_write(conn: psycopg.Connection, decision: OpenDecision) -> str:
+    """End a Confirm stopped at `act` before its write began (M17, D6): the
+    decision and the message as rejected, "withdrawn by the owner", its
+    action refused, in one transaction."""
+    phrase = audit.REASONS["withdrawn"]
+    with conn.transaction():
+        if not _still_approved(conn, decision):
+            return _decline(conn, decision)
+        if not _close(
+            conn,
+            decision.id,
+            MessageStatus.REJECTED.value,
+            reason=phrase,
+            action_reason="withdrawn",
+        ):
+            return "already settled"
+        _mark_final(conn, decision.message_id, MessageStatus.REJECTED, error=phrase)
+        _mark_decided(conn, decision.message_id, MessageStatus.REJECTED.value)
+        _audit_withdrawn(conn, decision)
+    return "withdrawn"
+
+
+def _audit_withdrawn(conn: psycopg.Connection, decision: OpenDecision) -> None:
+    audit.record(
+        conn,
+        "decision_withdrawn",
+        decision_id=decision.id,
+        message_id=decision.message_id,
+        outcome="withdrawn",
+        reason=audit.REASONS["withdrawn"],
+    )
+
+
+def _decline(conn: psycopg.Connection, decision: OpenDecision) -> str:
+    """The withdraw came too late: the request is cleared and audited, and
+    the decision goes on as it was, with no attempt spent."""
     with conn.transaction():
         conn.execute(
             """
@@ -726,6 +865,13 @@ def _unfinished_write(session: GraphSession, decision: OpenDecision) -> str:
         _unconfirmed(conn, decision)
         return "unconfirmed"
 
+    if event_id is not None:
+        # Known to exist: recorded first, on its own. A settle that then
+        # fails leaves the action `done`, an error the stuck clock reports,
+        # never "could not be confirmed".
+        with conn.transaction():
+            registry.close(decision.action_id, event_id=event_id)
+
     with conn.transaction():
         if event_id is None:
             if not settle_failed(conn, decision.id, decision.message_id, reason=ATTEMPTS_EXHAUSTED):
@@ -734,7 +880,6 @@ def _unfinished_write(session: GraphSession, decision: OpenDecision) -> str:
             return "failed"
         if not _close(conn, decision.id, MessageStatus.CREATED.value, reason=None):
             return "already settled"
-        registry.close(decision.action_id, event_id=event_id)
         _mark_final(conn, decision.message_id, MessageStatus.CREATED, event_id=event_id)
         _mark_decided(conn, decision.message_id, MessageStatus.CREATED.value)
         return MessageStatus.CREATED.value
@@ -825,17 +970,32 @@ def _record_failure(conn: psycopg.Connection, decision: OpenDecision) -> int:
     return attempts
 
 
-def _take_lease(conn: psycopg.Connection, decision_id: int) -> bool:
+def _take_lease(conn: psycopg.Connection, decision: OpenDecision) -> OpenDecision | None:
+    """The decision, leased, or None when another worker holds it.
+
+    Whether the owner asked to withdraw it is read in the same statement
+    (M17, D6). A request made after the pass read its decisions is still
+    carried out first.
+    """
     row = conn.execute(
         """
         UPDATE decisions SET lease_until = now() + %s
          WHERE id = %s AND outcome IS NULL
            AND (lease_until IS NULL OR lease_until < now())
-        RETURNING id
+        RETURNING withdraw_requested_at IS NOT NULL
         """,
-        (LEASE, decision_id),
+        (LEASE, decision.id),
     ).fetchone()
-    return row is not None
+    return None if row is None else replace(decision, withdraw_requested=bool(row[0]))
+
+
+def _release(conn: psycopg.Connection, decision: OpenDecision) -> None:
+    """Give the lease back without applying anything: the decision stays as
+    it was, due when it was due."""
+    conn.execute(
+        "UPDATE decisions SET lease_until = NULL WHERE id = %s AND outcome IS NULL",
+        (decision.id,),
+    )
 
 
 def settle_decided(
@@ -890,11 +1050,12 @@ def _settle(
     Each settle closes its own decision first and changes the rest only if
     that close took effect. A late settle -- from a worker whose lease ran
     out -- therefore never reaches a proposal that has moved on to a newer
-    decision. A resync of a proposal made under the other `DRY_RUN` expires
-    it instead of showing it again (M17, D2).
+    decision. A proposal shown again -- a resync, or a re-park the Edit made
+    before a restart changed `DRY_RUN` -- is expired instead when its payload
+    was made under the other `DRY_RUN` (M17, D2).
     """
     if (
-        step.outcome == "resync"
+        step.outcome in ("resync", "reparked")
         and dry_run is not None
         and view.payload is not None
         and _made_under(view.payload) != dry_run
@@ -1012,19 +1173,36 @@ def _close(
     the settle gives one. Its action, if still `approved`, is refused in the
     same transaction with `action_reason`, a key of `audit.REASONS`: no
     action outlives its decision (M17, D2).
+
+    A withdraw request the owner made while the decision was being applied
+    is answered here, in the same transaction (D6). A decision that went
+    back to the owner, or expired, has done what Withdraw asks. One that ran
+    came too late to stop, and the request is declined.
     """
-    closed = conn.execute(
+    row = conn.execute(
         """
         UPDATE decisions
            SET outcome = %s, reason = coalesce(%s, reason), settled_at = now(),
                lease_until = NULL
          WHERE id = %s AND outcome IS NULL
+        RETURNING message_id, withdraw_requested_at IS NOT NULL
         """,
         (outcome, reason, decision_id),
-    ).rowcount
-    if closed:
-        refuse_approved(conn, decision_id, reason=action_reason)
-    return bool(closed)
+    ).fetchone()
+    if row is None:
+        return False
+    refuse_approved(conn, decision_id, reason=action_reason)
+    message_id, requested = row
+    if requested and outcome != "no_effect" and action_reason != "withdrawn":
+        audit.record(
+            conn,
+            "withdraw_declined",
+            decision_id=decision_id,
+            message_id=message_id,
+            outcome="declined",
+            reason=audit.REASONS["already_applied"],
+        )
+    return True
 
 
 def _due(

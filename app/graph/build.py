@@ -47,8 +47,15 @@ def _is_meeting(state: GraphState) -> Literal["extract", "skip"]:
 
 
 def _has_event(state: GraphState) -> Literal["conflicts", "skip"]:
+    """A meeting goes on to the owner only with both times: the approval binds
+    them, and without an end no Confirm could ever run (M17, D2)."""
     extraction = state.get("extraction")
-    if extraction is None or not extraction.is_meeting or extraction.start_utc is None:
+    if (
+        extraction is None
+        or not extraction.is_meeting
+        or extraction.start_utc is None
+        or extraction.end_utc is None
+    ):
         return "skip"
     return "conflicts"
 

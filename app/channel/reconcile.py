@@ -21,7 +21,9 @@ revision read, and can then be confirmed. One made under the other
 `DRY_RUN`, awaiting the owner, is expired: a sweep ends it, "made under
 another mode". Both passes run only when asked, and only the scheduler asks:
 it runs under production's `DRY_RUN`, calendar and key. A command-line run
-under its own would bind with the wrong hash, or expire live proposals.
+under its own would bind with the wrong hash, or expire live proposals. For
+the same reason, a command-line run records no missing row: it counts them,
+and the scheduler's next pass records, binds and announces each.
 
 A `deciding` proposal is never touched: it belongs to the worker.
 
@@ -71,20 +73,32 @@ class ReconcileResult:
     expired: int = 0
     """Pending proposals made under the other `DRY_RUN`, swept."""
 
+    left: int = 0
+    """Parked threads with no row, left for the scheduler's pass: a
+    command-line run records none."""
+
 
 def reconcile(
     session: GraphSession, *, announce: Announce | None = None, bind_and_expire: bool = False
 ) -> ReconcileResult:
     recorded = closed = errors = 0
 
+    left = 0
     for message_id in _unrecorded(session.conn):
         try:
             view = session.thread(message_id)
             if not view.parked:
                 continue
             assert view.payload is not None
+            if not bind_and_expire:
+                # A command-line run records nothing: under its own settings,
+                # a hash could be one production refuses, and a card from the
+                # other mode could be pushed as live. The scheduler's next pass
+                # records, binds and announces it.
+                left += 1
+                continue
             # One about to be expired below is recorded but never announced.
-            doomed = bind_and_expire and bool(view.payload.get("dry_run", True)) != session.dry_run
+            doomed = bool(view.payload.get("dry_run", True)) != session.dry_run
             record_park(session, message_id, view.payload, announce=None if doomed else announce)
             recorded += 1
         except ParkConflictError:
@@ -154,7 +168,12 @@ def reconcile(
             expired,
         )
     return ReconcileResult(
-        recorded=recorded, closed=closed, errors=errors, bound=bound_rows, expired=expired
+        recorded=recorded,
+        closed=closed,
+        errors=errors,
+        bound=bound_rows,
+        expired=expired,
+        left=left,
     )
 
 

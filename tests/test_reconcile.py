@@ -326,6 +326,31 @@ def test_a_command_line_run_neither_binds_nor_expires(conn: psycopg.Connection) 
 
 
 @pytest.mark.integration
+def test_a_command_line_run_leaves_a_missing_row_to_the_scheduler(
+    conn: psycopg.Connection,
+) -> None:
+    """Under the command line's own settings, a hash could be one production
+    refuses, and a card from the other mode could be pushed as live. So it
+    records nothing, and says so; the scheduler's next pass records the row,
+    binds it and announces it, as it would have anyway."""
+    session = _session(conn)
+    _ledger_row(conn, "m1", MessageStatus.CLAIMED, "1 hour")
+    session.parks("m1", TIMED)
+    announced: list[str] = []
+
+    by_hand = _run(session, announced, bind_and_expire=False)
+
+    assert (by_hand.recorded, by_hand.left) == (0, 1)
+    assert _proposal(conn, "m1") is None
+    assert announced == []
+
+    scheduled = _run(session, announced)
+
+    assert scheduled.recorded == 1
+    assert announced == ["m1"]
+
+
+@pytest.mark.integration
 def test_a_proposal_whose_message_is_final_is_closed_not_expired(
     conn: psycopg.Connection,
 ) -> None:

@@ -202,6 +202,17 @@ class FakeReviewer:
 # --- routing ---------------------------------------------------------------
 
 
+def test_a_meeting_with_a_start_and_no_end_is_not_parked() -> None:
+    """No Confirm could ever bind it: the hash needs both times (M17, D2). It
+    is skipped, rather than left "not ready" for good."""
+    from app.graph.build import _has_event
+
+    no_end = _meeting().model_copy(update={"end_utc": None})
+
+    assert _has_event(cast(Any, {"extraction": no_end})) == "skip"
+    assert _has_event(cast(Any, {"extraction": _meeting()})) == "conflicts"
+
+
 def test_meeting_parks_at_approval_without_writing_anything() -> None:
     """Nothing irreversible happens before a human decides. That is the guardrail."""
     registry = FakeRegistry()

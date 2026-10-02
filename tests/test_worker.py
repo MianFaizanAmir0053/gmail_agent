@@ -637,9 +637,9 @@ def test_a_decision_that_never_reaches_the_graph_returns_as_no_effect(
 def test_a_second_worker_skips_a_leased_decision(conn: psycopg.Connection) -> None:
     session = _counting(conn)
     _parked(conn, session)
-    result = _confirm(conn, "m1", revision=1)
-    assert result.decision_id is not None
-    assert worker._take_lease(conn, result.decision_id)
+    _confirm(conn, "m1", revision=1)
+    (due,) = worker._due(conn, 10)
+    assert worker._take_lease(conn, due) is not None
 
     assert apply_open(session) == []
 
@@ -653,9 +653,9 @@ def test_a_crash_after_taking_the_lease_converges_once_it_expires(
 ) -> None:
     session = _counting(conn)
     _parked(conn, session)
-    result = _confirm(conn, "m1", revision=1)
-    assert result.decision_id is not None
-    assert worker._take_lease(conn, result.decision_id)  # the worker that died
+    _confirm(conn, "m1", revision=1)
+    (due,) = worker._due(conn, 10)
+    assert worker._take_lease(conn, due) is not None  # the worker that died
 
     _expire_lease(conn)
     assert apply_open(session) == [("m1", "skipped")]
@@ -880,8 +880,11 @@ def test_the_job_sees_when_a_decision_became_due_and_whether_it_is_due(
     control.switch(conn, paused=True, via="cli")
     assert decisions_status(conn) == (None, False, True)  # paused: held (M17, D6)
 
-    # Held for two hours, then resumed: due again, its clock starting afresh.
-    conn.execute("UPDATE decisions SET next_attempt_at = now() - interval '2 hours'")
+    # Paused two hours ago, and it fell due during the pause: at Resume it is
+    # due at once, its clock starting afresh (M17, 17.16). One already
+    # overdue before the pause keeps its clock: tests/test_control.py.
+    conn.execute("UPDATE control SET changed_at = now() - interval '2 hours'")
+    conn.execute("UPDATE decisions SET next_attempt_at = now() - interval '90 minutes'")
     control.switch(conn, paused=False, via="cli")
     assert decisions_status(conn) == (now, True, False)
 
@@ -1719,3 +1722,454 @@ def test_a_withdrawn_cancel_returns_the_proposal(conn: psycopg.Connection) -> No
 
     assert _proposal(conn) == ("pending", 1, None)
     assert session.resumes == 0
+
+
+# --- Withdraw and Pause at every step (M17, 17.15) ----------------------------------
+
+
+def _park(conn: psycopg.Connection, session: GraphSession, message_id: str) -> None:
+    """`_parked`, for a message other than m1."""
+    MessageLedger(conn).claim(message_id, message_id)
+    session.start(message_id, message_id)
+    pending = session.pending(message_id)
+    assert pending is not None
+    record_park(session, message_id, pending)
+
+
+@pytest.mark.integration
+def test_a_withdraw_made_after_the_pass_read_its_decisions_is_carried_out_first(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner taps Withdraw while the worker is busy with another decision.
+    The request is read with the lease, not from the pass's first look (D6)."""
+    calendar = FakeCalendar(dry_run=False)
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    original = worker._due
+
+    def due_then_withdraw(*args: Any, **kwargs: Any) -> list[OpenDecision]:
+        due = original(*args, **kwargs)
+        request_withdraw(conn, decision.decision_id)  # tapped as the pass begins
+        return due
+
+    monkeypatch.setattr(worker, "_due", due_then_withdraw)
+
+    assert apply_open(session) == [("m1", "withdrawn")]
+    assert (session.resumes, calendar.calls) == (0, 0)
+    assert _withdrawals(conn, decision.decision_id) == ["decision_withdrawn"]
+
+
+@pytest.mark.integration
+def test_a_withdraw_made_during_the_checks_is_carried_out_before_the_resume(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gmail can take half a minute to answer the guest check. A Withdraw
+    tapped meanwhile is seen just before the resume: nothing has run, so the
+    proposal comes back (D6)."""
+    calendar = FakeCalendar(dry_run=False)
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    original = worker._check_confirm
+
+    def withdraw_then_check(*args: Any, **kwargs: Any) -> str | None:
+        request_withdraw(conn, decision.decision_id)  # tapped while Gmail is read
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "_check_confirm", withdraw_then_check)
+
+    assert apply_open(session) == [("m1", "withdrawn")]
+    assert (session.resumes, calendar.calls) == (0, 0)
+    assert _withdrawals(conn, decision.decision_id) == ["decision_withdrawn"]
+
+
+@pytest.mark.integration
+def test_a_withdraw_made_while_the_write_goes_out_is_declined_when_it_settles(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Too late to stop it, so the settle says so in the same transaction: no
+    request is left unanswered (D6)."""
+    calendar = FakeCalendar(dry_run=False)
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    write = calendar.insert
+
+    def withdraw_then_write(*args: Any, **kwargs: Any) -> str | None:
+        request_withdraw(conn, decision.decision_id)  # tapped as the write goes out
+        return write(*args, **kwargs)
+
+    monkeypatch.setattr(calendar, "insert", withdraw_then_write)
+
+    assert apply_open(session) == [("m1", "created")]
+    assert _withdrawals(conn, decision.decision_id) == ["withdraw_declined"]
+
+
+@pytest.mark.integration
+def test_a_pause_pressed_while_a_confirm_is_checked_leaves_it_parked_for_withdraw(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker looks again just before it resumes, so the interrupt is not
+    used up: Withdraw still returns the proposal, and Resume sends nothing
+    (D6)."""
+    calendar = FakeCalendar(dry_run=False)
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    original = worker._check_confirm
+
+    def pause_then_check(*args: Any, **kwargs: Any) -> str | None:
+        control.switch(conn, paused=True, via="web")  # tapped while Gmail is read
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "_check_confirm", pause_then_check)
+
+    assert apply_open(session) == [("m1", "paused")]
+    assert session.resumes == 0
+    assert session.thread("m1").parked
+    assert cast(tuple[int, float, bool], _open(conn))[0] == 0  # no attempt spent
+
+    request_withdraw(conn, decision.decision_id)
+    assert apply_open(session) == [("m1", "withdrawn")]
+    control.switch(conn, paused=False, via="web")
+    assert apply_open(session) == []
+    assert calendar.calls == 0
+
+
+@pytest.mark.integration
+def test_a_pause_stops_the_rest_of_the_pass(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pause is read before each decision, not once a pass: the ones after it
+    wait, as they were (D6)."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _park(conn, session, "m2")
+    _confirm(conn, "m1", revision=1)
+    assert decide(conn, "m2", action="cancel", revision=1, via="web").status == "queued"
+    original = worker._check_confirm
+
+    def pause_then_check(*args: Any, **kwargs: Any) -> str | None:
+        control.switch(conn, paused=True, via="web")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "_check_confirm", pause_then_check)
+
+    assert apply_open(session) == [("m1", "paused")]
+    later = conn.execute(
+        "SELECT outcome, lease_until FROM decisions WHERE message_id = 'm2'"
+    ).fetchone()
+    assert later == (None, None)
+
+
+@pytest.mark.integration
+def test_a_confirm_stopped_before_its_write_is_withdrawn_by_ending_it(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Pause after the worker's last look stops the Confirm at `act`, past
+    its interrupt. It can still be withdrawn: nothing is sent, and it ends as
+    rejected, since it cannot be put back in front of the owner (D6)."""
+    calendar = FakeCalendar(dry_run=False)
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    conn.execute("UPDATE control SET paused = true")
+    monkeypatch.setattr(worker, "control", SimpleNamespace(is_paused=lambda conn: False))
+    assert apply_open(session) == [("m1", "paused")]  # held by the registry, at `act`
+    assert session.thread("m1").next == ("act",)
+
+    request_withdraw(conn, decision.decision_id)
+    assert apply_open(session) == [("m1", "withdrawn")]
+
+    assert _outcomes(conn) == [("rejected", audit.REASONS["withdrawn"], True)]
+    assert _proposal(conn) == ("decided", 1, "rejected")
+    assert _ledger(conn) is MessageStatus.REJECTED
+    assert _action(conn)[:2] == ("refused", audit.REASONS["withdrawn"])
+    assert _withdrawals(conn, decision.decision_id) == ["decision_withdrawn"]
+
+    conn.execute("UPDATE control SET paused = false")
+    assert apply_open(session) == []
+    assert calendar.calls == 0
+
+
+@pytest.mark.integration
+def test_a_withdraw_checks_the_action_again_under_its_lock(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second worker started the write after this one read the action. The
+    locked read sees it, and the withdraw is declined rather than returning a
+    proposal whose event is being made."""
+    session = _counting(conn)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    request_withdraw(conn, decision.decision_id)
+    original = worker._with_action_status
+
+    def read_then_started(connection: psycopg.Connection, seen: OpenDecision) -> OpenDecision:
+        read = original(connection, seen)
+        conn.execute(
+            "UPDATE outbound_actions SET status = 'executing', calendar_id = 'c', event_id = 'e'"
+        )
+        return read
+
+    monkeypatch.setattr(worker, "_with_action_status", read_then_started)
+
+    assert apply_open(session) == [("m1", "declined")]
+    assert _proposal(conn)[0] == "deciding"
+
+
+@pytest.mark.integration
+def test_a_withdraw_that_fails_waits_five_minutes_and_the_pass_goes_on(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    _park(conn, session, "m2")
+    decision = _confirm(conn, "m1", revision=1)
+    assert decide(conn, "m2", action="cancel", revision=1, via="web").status == "queued"
+    request_withdraw(conn, decision.decision_id)
+
+    def broken(*args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("checkpoint unreadable")
+
+    monkeypatch.setattr(worker, "_withdraw", broken)
+
+    assert apply_open(session) == [("m1", "error"), ("m2", "rejected")]
+    row = conn.execute(
+        """
+        SELECT withdraw_requested_at IS NOT NULL,
+               EXTRACT(EPOCH FROM lease_until - now()), attempts
+          FROM decisions WHERE message_id = 'm1'
+        """
+    ).fetchone()
+    assert row is not None
+    assert (row[0], row[2]) == (True, 0)
+    assert float(row[1]) == pytest.approx(300)
+    assert apply_open(session) == []  # not tried again every tick
+
+
+@pytest.mark.integration
+def test_a_withdraw_request_over_an_hour_old_is_stuck_even_while_paused(
+    conn: psycopg.Connection,
+) -> None:
+    """A request is carried out within a tick, paused or not, so one an hour
+    old means something is wrong, and `/health` says so."""
+    from app.jobs.scheduler import decisions_status
+
+    session = _counting(conn)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    request_withdraw(conn, decision.decision_id)
+    conn.execute(
+        "UPDATE decisions SET withdraw_requested_at = now() - interval '2 hours',"
+        " lease_until = now() + interval '5 minutes'"
+    )
+    control.switch(conn, paused=True, via="web")
+
+    oldest = decisions_status(conn).oldest
+    assert oldest is not None and oldest <= _now(conn) - timedelta(hours=1)
+
+
+@pytest.mark.integration
+def test_withdrawing_a_proposal_from_the_other_mode_is_recorded_as_its_expiry(
+    conn: psycopg.Connection,
+) -> None:
+    """Made under dry run, withdrawn after `DRY_RUN` went off: the proposal is
+    expired, as it would have been anyway, and audited once, as that (D2)."""
+    calendar = FakeCalendar()
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    decision = _confirm(conn, "m1", revision=1)
+    calendar.dry_run = False
+    request_withdraw(conn, decision.decision_id)
+
+    assert apply_open(session) == [("m1", "expired")]
+
+    assert _withdrawals(conn, decision.decision_id) == []
+    expired = conn.execute(
+        "SELECT count(*) FROM audit_log WHERE kind = 'proposal_expired' AND message_id = 'm1'"
+    ).fetchone()
+    assert expired == (1,)
+    assert calendar.calls == 0
+
+
+# --- the seams (M17, 17.17) ------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_a_thread_moved_under_the_other_mode_is_expired_not_failed(
+    conn: psycopg.Connection,
+) -> None:
+    """A resync whose payload was made under the other `DRY_RUN` expires (D2).
+    The expiry claims the row at the thread's revision: claiming it at the
+    decision's never succeeded, and the proposal failed instead."""
+    calendar = FakeCalendar()
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    GraphSession.resume(session, "m1", {"action": "edit", "correction": "make it 5pm"})
+    calendar.dry_run = False
+    announced: list[str] = []
+
+    assert apply_open(session, announce=lambda record: announced.append(record.message_id)) == [
+        ("m1", "no_effect")
+    ]
+
+    assert announced == []
+    assert _outcomes(conn)[0][:2] == ("no_effect", "made under another mode")
+    assert apply_open(session) == [("m1", "rejected")]  # the expiry's sweep
+    entry = MessageLedger(conn).get("m1")
+    assert entry is not None
+    assert (entry.status, entry.error) == (MessageStatus.REJECTED, "made under another mode")
+    assert calendar.calls == 0
+
+
+@pytest.mark.integration
+def test_a_repark_settled_after_dry_run_changed_is_expired_not_shown(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Edit ran under one mode, and the process restarted under the other
+    before it settled. The re-park is expired, never announced as live."""
+    calendar = FakeCalendar()
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+    _crash_once(monkeypatch, "_settle")
+    with pytest.raises(Crash):
+        apply_open(session)  # re-parked under dry run, then the process died
+    calendar.dry_run = False  # and restarted with it off
+    _expire_lease(conn)
+    announced: list[str] = []
+
+    assert apply_open(session, announce=lambda record: announced.append(record.message_id)) == [
+        ("m1", "no_effect")
+    ]
+
+    assert announced == []
+    assert _outcomes(conn)[0][:2] == ("no_effect", "made under another mode")
+
+
+@pytest.mark.integration
+def test_after_a_long_pause_one_gmail_error_holds_the_confirm(conn: psycopg.Connection) -> None:
+    """The hour runs from the later of the Confirm and the last Resume. A pause
+    longer than an hour must not make the first Gmail error mark every guest
+    outside, which would have the owner allow each one for good."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    conn.execute("UPDATE decisions SET decided_at = now() - interval '2 hours'")
+    conn.execute("UPDATE control SET paused = false, changed_at = now() - interval '1 minute'")
+    cast(FakeGmail, session.deps.gmail).down = True
+
+    assert apply_open(session) == [("m1", "held")]
+
+
+@pytest.mark.integration
+def test_a_found_event_whose_settle_fails_is_left_open_not_alerted(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Google has the event, so the action is recorded as done before the
+    decision settles. A settle that then fails is an error the stuck clock
+    reports, never "a calendar write could not be confirmed"."""
+    session = _cut_off_and_exhausted(conn, FakeCalendar(dry_run=False, fail_after=1))
+
+    def broken(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(worker, "_mark_final", broken)
+
+    assert apply_open(session) == [("m1", "error")]
+
+    assert _action(conn)[0] == "done"
+    unconfirmed = conn.execute(
+        "SELECT count(*) FROM audit_log WHERE kind = 'write_unconfirmed' AND message_id = 'm1'"
+    ).fetchone()
+    assert unconfirmed == (0,)
+
+
+@pytest.mark.integration
+def test_an_expiry_that_keeps_failing_ends_failed_not_in_a_loop(conn: psycopg.Connection) -> None:
+    """A sweep whose attempts run out is never returned to the owner. One made
+    to expire a proposal from the other mode would otherwise expire it again,
+    queue another sweep, and go round for ever, an audit row each time."""
+    calendar = FakeCalendar()
+    session = _counting(conn, calendar=calendar)
+    _parked(conn, session)
+    sweep = decide(
+        conn, "m1", action="sweep", revision=1, via="sweep", reason=audit.REASONS["mode"]
+    )
+    assert sweep.status == "queued"
+    calendar.dry_run = False  # the payload is from the other mode
+    conn.execute("UPDATE decisions SET attempts = 3")  # and every attempt failed
+
+    assert apply_open(session) == [("m1", "failed")]
+
+    open_now = conn.execute("SELECT count(*) FROM decisions WHERE outcome IS NULL").fetchone()
+    assert open_now == (0,)
+
+
+@pytest.mark.integration
+def test_a_gmail_error_while_paused_holds_the_confirm(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guest hold never runs out while paused: the check concludes
+    nothing then, and the Confirm waits (D4, D6)."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    conn.execute("UPDATE decisions SET decided_at = now() - interval '2 hours'")
+    cast(FakeGmail, session.deps.gmail).down = True
+    original = worker._check_confirm
+
+    def pause_then_check(*args: Any, **kwargs: Any) -> str | None:
+        control.switch(conn, paused=True, via="web")  # paused as Gmail is read
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "_check_confirm", pause_then_check)
+
+    assert apply_open(session) == [("m1", "held")]
+
+    payload = conn.execute("SELECT payload FROM proposals WHERE message_id = 'm1'").fetchone()
+    assert payload is not None and payload[0]["outside_guests"] == []
+
+
+@pytest.mark.integration
+def test_a_decision_whose_write_is_done_but_unsettled_is_stuck_even_leased(
+    conn: psycopg.Connection,
+) -> None:
+    """Giving up leaves it open as an error, and the lease the failed pass
+    keeps would hide it from the stuck clock: the clock counts it anyway."""
+    from app.jobs.scheduler import decisions_status
+
+    _cut_off_and_exhausted(conn, FakeCalendar(dry_run=False, fail_before=1))
+    conn.execute("UPDATE outbound_actions SET status = 'done'")
+    conn.execute(
+        "UPDATE decisions SET next_attempt_at = now() - interval '2 hours',"
+        " lease_until = now() + interval '20 minutes'"
+    )
+
+    oldest = decisions_status(conn).oldest
+    assert oldest is not None and oldest <= _now(conn) - timedelta(hours=1)
+
+
+@pytest.mark.integration
+def test_a_proposal_returned_again_keeps_the_guests_marked_outside(
+    conn: psycopg.Connection,
+) -> None:
+    """The check marked Sara outside. A later return -- a withdrawn Edit here --
+    rebuilds the card from the park, which never knew that: she stays
+    marked, so `decide()` still asks for her Allow first."""
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    cast(FakeGmail, session.deps.gmail).thread = {"messages": []}
+    assert apply_open(session) == [("m1", "no_effect")]  # back, with Sara marked
+    queued = decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+    assert queued.decision_id is not None
+    request_withdraw(conn, queued.decision_id)
+
+    assert apply_open(session) == [("m1", "withdrawn")]
+
+    payload = conn.execute("SELECT payload FROM proposals WHERE message_id = 'm1'").fetchone()
+    assert payload is not None and payload[0]["outside_guests"] == ["sara@example.com"]

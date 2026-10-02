@@ -159,10 +159,14 @@ def list_pending(conn: psycopg.Connection) -> int:
 def reconcile_now(session: GraphSession, *, announce: Announce | None = None) -> str:
     """Run reconciliation (M16, D3) at once, rather than at the next hourly pass."""
     result = reconcile(session, announce=announce)
-    return (
+    report = (
         f"Recorded {result.recorded} parked thread(s); closed {result.closed} row(s); "
         f"bound {result.bound}; expired {result.expired}; {result.errors} error(s)."
     )
+    if result.left:
+        # Recorded by the server's next pass, under production's settings.
+        report += f" {result.left} parked thread(s) with no row are left for the server."
+    return report
 
 
 def main() -> None:

@@ -217,6 +217,10 @@ class Registry:
         # already under way never waits on Gmail to finish (D3).
         outsiders: list[str] | None = None
         if tier is Tier.EXTERNAL and self._status(approval.action_id) == "approved":
+            if control.is_paused(self._conn):
+                # Before Gmail: a pause holds the action at no cost, while a
+                # Gmail outage may cost an attempt after an hour (D6).
+                raise PausedError
             try:
                 outsiders = self._outsiders(message_id, args.attendees)
             except Exception as exc:
