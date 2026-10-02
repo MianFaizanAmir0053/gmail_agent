@@ -842,61 +842,70 @@ def test_settles_refuse_to_run_outside_a_transaction(migrated_database: str) -> 
 # --- what the decisions job asks before opening a session (16.9) ----------------
 
 
+def _now(conn: psycopg.Connection) -> Any:
+    """The transaction's `now()`, which every statement in a test shares."""
+    row = conn.execute("SELECT now()").fetchone()
+    assert row is not None
+    return row[0]
+
+
 @pytest.mark.integration
-def test_the_job_sees_the_oldest_open_decision_and_whether_it_is_due(
+def test_the_job_sees_when_a_decision_became_due_and_whether_it_is_due(
     conn: psycopg.Connection,
 ) -> None:
+    """The stuck clock runs from when a decision became due, so one waiting
+    for its next attempt, or leased, or held, is not stuck."""
     from app.jobs.scheduler import decisions_status
 
-    conn.execute("UPDATE control SET paused = false, budget_state = 'ok'")
-    assert decisions_status(conn) == (None, False, 0, False)
+    conn.execute("UPDATE control SET paused = false")
+    assert decisions_status(conn) == (None, False, False)
 
     session, _ = _world(conn)
     _parked(conn, session)
     _confirm(conn, "m1", revision=1)
-    decided_at = conn.execute("SELECT decided_at FROM decisions").fetchone()
-    assert decided_at is not None
-    assert decisions_status(conn) == (decided_at[0], True, 0, False)
+    now = _now(conn)
+    assert decisions_status(conn) == (now, True, False)
 
     conn.execute("UPDATE decisions SET next_attempt_at = now() + interval '1 minute'")
-    assert decisions_status(conn) == (decided_at[0], False, 0, False)  # waiting to retry
+    status = decisions_status(conn)
+    assert status.due is False  # waiting to retry
+    assert status.oldest is not None and status.oldest > now  # not due, so not stuck
 
     conn.execute(
         "UPDATE decisions SET next_attempt_at = now(), lease_until = now() + interval '1 minute'"
     )
-    assert decisions_status(conn) == (decided_at[0], False, 0, False)  # another worker has it
+    assert decisions_status(conn) == (None, False, False)  # another worker has it
 
     conn.execute("UPDATE decisions SET lease_until = NULL")
-    conn.execute("UPDATE control SET paused = true")
-    # Paused: held, so neither due nor stuck (M17, D6).
-    assert decisions_status(conn) == (None, False, 0, True)
+    control.switch(conn, paused=True, via="cli")
+    assert decisions_status(conn) == (None, False, True)  # paused: held (M17, D6)
 
-    conn.execute("UPDATE control SET paused = false")
-    conn.execute("UPDATE control SET budget_state = 'exhausted'")
-    # The cap holds an Edit, not a Confirm, which calls no model (D5).
-    assert decisions_status(conn) == (decided_at[0], True, 0, False)
+    # Held for two hours, then resumed: due again, its clock starting afresh.
+    conn.execute("UPDATE decisions SET next_attempt_at = now() - interval '2 hours'")
+    control.switch(conn, paused=False, via="cli")
+    assert decisions_status(conn) == (now, True, False)
 
-    conn.execute("UPDATE control SET budget_state = 'ok'")
     apply_open(session)
-    assert decisions_status(conn) == (None, False, 0, False)
+    assert decisions_status(conn) == (None, False, False)
 
 
 @pytest.mark.integration
-def test_an_edit_held_by_the_cap_is_neither_due_nor_stuck(conn: psycopg.Connection) -> None:
-    """No session is opened for it, and `/health` does not count it (D5)."""
+def test_an_edit_held_by_the_cap_is_pushed_back_not_left_due(conn: psycopg.Connection) -> None:
+    """Neither a session every fifteen seconds, nor stuck, nor ahead of a
+    Confirm that could still apply (D5)."""
     from app.jobs.scheduler import decisions_status
 
-    conn.execute("UPDATE control SET paused = false, budget_state = 'ok'")
-    session, _ = _world(conn)
+    conn.execute("UPDATE control SET paused = false")
+    session = _counting(conn)
     _parked(conn, session)
     decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
-    decided_at = conn.execute("SELECT decided_at FROM decisions").fetchone()
-    assert decided_at is not None
-    assert decisions_status(conn) == (decided_at[0], True, 0, False)
+    session.gate = cast(Any, CapGate(room=False))
 
-    conn.execute("UPDATE control SET budget_state = 'exhausted'")
+    assert apply_open(session) == [("m1", "waiting")]
 
-    assert decisions_status(conn) == (None, False, 0, False)
+    status = decisions_status(conn)
+    assert status.due is False
+    assert status.oldest is not None and status.oldest > _now(conn)
 
 
 # --- writes that can be finished (M17, 17.5-17.6) -------------------------------
@@ -1055,15 +1064,17 @@ def test_a_write_that_could_not_be_confirmed_is_counted_apart_and_alerted_once(
 
     [decision_id] = unconfirmed_writes(conn)
     status = decisions_status(conn)
-    assert (status.oldest, status.unconfirmed) == (None, 1)
+    assert status.due is False  # it asks Google again in an hour
+    assert status.oldest is not None and status.oldest > _now(conn)  # so it is not stuck
 
     settings = Settings(
         _env_file=None, database_url="postgresql://localhost/test", gemini_api_key="k"
     )
     channels = AlertChannels()
-    watch(conn, settings, channels)
+    watched = watch(conn, settings, channels)
     watch(conn, settings, channels)
 
+    assert watched.unconfirmed == 1
     assert channels.asked == ["write_unconfirmed"]
     sent = conn.execute("SELECT subject FROM alerts_sent WHERE code = 'write_unconfirmed'")
     assert sent.fetchall() == [(str(decision_id),)]
@@ -1436,9 +1447,13 @@ def test_gmail_down_at_execution_holds_without_spending_attempts(
 @dataclass
 class CapGate:
     room: bool = True
+    message_room: bool = True
 
     def allows_new_work(self) -> bool:
         return self.room
+
+    def allows_message(self, message_id: str) -> bool:
+        return self.message_room
 
 
 @pytest.mark.integration
@@ -1452,8 +1467,9 @@ def test_at_the_cap_an_edit_waits_and_costs_nothing(conn: psycopg.Connection) ->
     assert apply_open(session) == [("m1", "waiting")]
 
     assert session.resumes == 0
-    attempts, _, leased = cast(tuple[int, float, bool], _open(conn))
+    attempts, wait, leased = cast(tuple[int, float, bool], _open(conn))
     assert (attempts, leased) == (0, False)
+    assert abs(wait - worker.HELD_RETRY.total_seconds()) < 1  # pushed back, not left due
 
 
 @pytest.mark.integration
@@ -1465,6 +1481,39 @@ def test_at_the_cap_a_cancel_still_applies(conn: psycopg.Connection) -> None:
     session.gate = cast(Any, CapGate(room=False))
 
     assert apply_open(session) == [("m1", "rejected")]
+
+
+@pytest.mark.integration
+def test_at_the_cap_a_confirm_still_applies(conn: psycopg.Connection) -> None:
+    session = _counting(conn)
+    _parked(conn, session)
+    _confirm(conn, "m1", revision=1)
+    session.gate = cast(Any, CapGate(room=False))
+
+    assert apply_open(session) == [("m1", "skipped")]  # a dry run, applied
+
+
+@pytest.mark.integration
+def test_an_edit_on_a_message_over_its_ceiling_goes_back_to_the_owner(
+    conn: psycopg.Connection,
+) -> None:
+    """Checked before the resume: the proposal is still parked, so the owner
+    can still Confirm or Cancel it, neither of which calls a model."""
+    session = _counting(conn)
+    _parked(conn, session)
+    queued = decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
+    session.gate = cast(Any, CapGate(message_room=False))
+
+    assert apply_open(session) == [("m1", "no_effect")]
+
+    assert session.resumes == 0
+    assert _outcomes(conn) == [("no_effect", "too costly to read", True)]
+    assert _proposal(conn) == ("pending", 1, None)
+    audited = conn.execute(
+        "SELECT count(*) FROM audit_log WHERE kind = 'message_too_costly' AND decision_id = %s",
+        (queued.decision_id,),
+    ).fetchone()
+    assert audited == (1,)
 
 
 @dataclass
@@ -1490,12 +1539,14 @@ def test_a_refusal_mid_edit_waits_without_spending_attempts(conn: psycopg.Connec
     assert apply_open(session) == [("m1", "waiting")]
 
     attempts, wait, leased = cast(tuple[int, float, bool], _open(conn))
-    assert (attempts, leased) == (0, False) and wait <= 0
+    assert (attempts, leased) == (0, False)
+    assert abs(wait - worker.HELD_RETRY.total_seconds()) < 1
 
 
 @pytest.mark.integration
-def test_a_message_over_its_ceiling_fails_its_edit_at_once(conn: psycopg.Connection) -> None:
-    """No retry can change what the message has already spent."""
+def test_a_message_that_reaches_its_ceiling_mid_edit_is_skipped(conn: psycopg.Connection) -> None:
+    """Past its interrupt, nothing can finish it: SKIPPED, as poll records a
+    message it could not afford, and audited with the settle."""
     from app.policy.budget import MessageTooCostlyError
 
     pipeline = RefusingPipeline(refusal=MessageTooCostlyError("ceiling"))
@@ -1503,9 +1554,32 @@ def test_a_message_over_its_ceiling_fails_its_edit_at_once(conn: psycopg.Connect
     _parked(conn, session)
     decide(conn, "m1", action="edit", revision=1, correction="make it 5pm", via="web")
 
-    assert apply_open(session) == [("m1", "failed")]
+    assert apply_open(session) == [("m1", "skipped")]
 
-    assert _outcomes(conn) == [("failed", "too costly to read", True)]
+    assert _outcomes(conn) == [("skipped", "too costly to read", True)]
+    assert _ledger(conn) is MessageStatus.SKIPPED
+
+
+@pytest.mark.integration
+def test_a_write_known_to_exist_whose_settle_fails_is_left_open_as_an_error(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failing it would be untrue, and so would saying it could not be
+    confirmed: no `write_unconfirmed`, and the stuck clock reports it."""
+    session = _cut_off_and_exhausted(conn, FakeCalendar(dry_run=False, fail_before=1))
+    conn.execute("UPDATE outbound_actions SET status = 'done'")
+
+    def unreadable(*args: Any, **kwargs: Any) -> Step:
+        raise RuntimeError("the checkpoint cannot be read")
+
+    monkeypatch.setattr(worker, "step_for", unreadable)
+
+    assert apply_open(session) == [("m1", "error")]
+    assert _open(conn) is not None
+    unconfirmed = conn.execute(
+        "SELECT count(*) FROM audit_log WHERE kind = 'write_unconfirmed' AND message_id = 'm1'"
+    ).fetchone()
+    assert unconfirmed == (0,)
 
 
 # --- withdraw (M17, 17.12) ------------------------------------------------------------

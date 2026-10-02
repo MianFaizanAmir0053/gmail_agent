@@ -83,6 +83,12 @@ GUEST_HOLD = timedelta(hours=1)
 """How long after the owner confirmed a Gmail outage may hold the Confirm.
 After that its guests count as outside, and the proposal comes back."""
 
+HELD_RETRY = timedelta(minutes=5)
+"""How long an Edit waits while new work is stopped -- the spending cap, or a
+model with no price -- before the worker looks again (M17, D5). It costs no
+attempt. Pushed back rather than left due, it never fills a pass ahead of a
+Confirm or a Cancel, which call no model and still apply."""
+
 LOOKUP_DELAY = timedelta(minutes=10)
 """How long after its last failed write an action is looked up. Google can
 finish an insert after the call timed out on this side; asked at once, it
@@ -187,12 +193,6 @@ def apply_open(
             if _take_lease(session.conn, decision.id):
                 applied.append((decision.message_id, _withdraw_leased(session, decision)))
             continue
-        if decision.action == "edit" and not _allows_new_work(session):
-            # An edit re-extracts, which calls a model: it waits, queued and
-            # costing no attempt, while the spending cap stops new work. A
-            # Confirm or a Cancel calls none, and still applies (M17, D5).
-            applied.append((decision.message_id, "waiting"))
-            continue
         if not _take_lease(session.conn, decision.id):
             continue  # another worker has it
         try:
@@ -230,22 +230,11 @@ def apply_one(
     except SPENDING_STOPPED:
         # The spend gate stopped it mid-apply (D5): it waits like a held edit,
         # costing no attempt, and goes on when spending is allowed again.
-        _hold(session.conn, decision)
+        _wait(session.conn, decision, HELD_RETRY)
         return "waiting"
     except MessageTooCostlyError:
-        # This message has spent its ceiling: no retry can change that.
-        with session.conn.transaction():
-            settle_failed(
-                session.conn, decision.id, decision.message_id, reason=audit.REASONS["too_costly"]
-            )
-        audit.record(
-            session.conn,
-            "message_too_costly",
-            decision_id=decision.id,
-            message_id=decision.message_id,
-            reason=audit.REASONS["too_costly"],
-        )
-        return "failed"
+        # The message reached its ceiling mid-edit: no attempt can finish it.
+        return _too_costly_skipped(session.conn, decision)
     except HeldError:
         # Gmail could not be read for the guests at execution. Nothing ran;
         # it waits like the check before the Confirm, then counts (D4).
@@ -286,6 +275,9 @@ def _advance(session: GraphSession, decision: OpenDecision, announce: Announce |
                 session.binding(),
                 dry_run=session.dry_run,
             )
+        held = _edit_held(session, decision, view, ledger_status, announce)
+        if held is not None:
+            return held
         if step.kind == "resume":
             if decision.action == "confirm":
                 returned = _check_confirm(session, decision, view, ledger_status, announce)
@@ -521,9 +513,16 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
         # ends it, rather than retrying the same failure every pass for ever.
         # Unless a write it began may exist: failing that would be a guess.
         log.exception("could not settle %s cleanly", decision.message_id)
-        if _with_action_status(conn, decision).action_status in ("executing", "done"):
+        action_status = _with_action_status(conn, decision).action_status
+        if action_status == "executing":
             _unconfirmed(conn, decision)
             return "unconfirmed"
+        if action_status == "done":
+            # The write happened, so failing the decision would be untrue,
+            # and saying it could not be confirmed would be too. It is left
+            # open as an error: retried as the lease expires, and reported
+            # by `/health` as stuck within the hour.
+            raise
         with conn.transaction():
             settle_failed(
                 conn,
@@ -607,8 +606,84 @@ def _withdraw(session: GraphSession, decision: OpenDecision) -> str:
     return "declined"
 
 
-def _allows_new_work(session: GraphSession) -> bool:
-    return session.gate is None or session.gate.allows_new_work()
+def _edit_held(
+    session: GraphSession,
+    decision: OpenDecision,
+    view: ThreadView,
+    ledger_status: MessageStatus | None,
+    announce: Announce | None,
+) -> str | None:
+    """The outcome, when an Edit cannot run its re-extraction now; None when
+    it can, or when the decision is not an Edit (M17, D5).
+
+    It waits, costing no attempt, while new work is stopped: the spending
+    cap, or a model with no price. It is pushed back by `HELD_RETRY`.
+
+    A message that has already spent its ceiling cannot be edited at all. A
+    proposal still parked goes back to the owner as it was, to Confirm or
+    Cancel, which call no model; one already past its interrupt is skipped
+    as too costly to read.
+    """
+    gate = session.gate
+    if decision.action != "edit" or gate is None:
+        return None
+    if not gate.allows_message(decision.message_id):
+        if view.parked and ledger_status is not None:
+            return _too_costly_returned(session, decision, view, ledger_status, announce)
+        return _too_costly_skipped(session.conn, decision)
+    if not gate.allows_new_work():
+        _wait(session.conn, decision, HELD_RETRY)
+        return "waiting"
+    return None
+
+
+def _too_costly_returned(
+    session: GraphSession,
+    decision: OpenDecision,
+    view: ThreadView,
+    ledger_status: MessageStatus,
+    announce: Announce | None,
+) -> str:
+    """The Edit settles as `no_effect` ("too costly to read") and the proposal
+    goes back to the owner, at the next generation; audited with it."""
+    conn = session.conn
+    with conn.transaction():
+        outcome = _return_to_owner(
+            session, decision, view, ledger_status, announce, action_reason="too_costly"
+        )
+        if outcome == "no_effect":
+            _audit_too_costly(conn, decision)
+    return outcome
+
+
+def _too_costly_skipped(conn: psycopg.Connection, decision: OpenDecision) -> str:
+    """The message reached its ceiling past its interrupt: the decision and the
+    message settle as SKIPPED ("too costly to read"), as for a message poll
+    could not afford; audited with them."""
+    phrase = audit.REASONS["too_costly"]
+    with conn.transaction():
+        if not _close(
+            conn,
+            decision.id,
+            MessageStatus.SKIPPED.value,
+            reason=phrase,
+            action_reason="too_costly",
+        ):
+            return "already settled"
+        _mark_final(conn, decision.message_id, MessageStatus.SKIPPED, error=phrase)
+        _mark_decided(conn, decision.message_id, MessageStatus.SKIPPED.value)
+        _audit_too_costly(conn, decision)
+    return MessageStatus.SKIPPED.value
+
+
+def _audit_too_costly(conn: psycopg.Connection, decision: OpenDecision) -> None:
+    audit.record(
+        conn,
+        "message_too_costly",
+        decision_id=decision.id,
+        message_id=decision.message_id,
+        reason=audit.REASONS["too_costly"],
+    )
 
 
 def _resume_value(decision: OpenDecision) -> dict[str, Any]:

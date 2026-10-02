@@ -139,8 +139,39 @@ def test_a_budget_alert_is_about_the_month_and_the_cap(monkeypatch: pytest.Monke
     raised = _spent(monkeypatch, "0", cap="50")
     raised.clock = lambda: end_of_month
 
-    assert gate.alert_subject() == "2026-10:40"
-    assert raised.alert_subject() == "2026-10:50"
+    assert gate.alert_subject() == "2026-10:40.00"
+    assert raised.alert_subject() == "2026-10:50.00"
+
+
+def test_the_subject_is_the_month_of_the_moment_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A look that straddles midnight on the 1st files its alert under the
+    month its state was read in."""
+    gate = _spent(monkeypatch, "0")
+    gate.clock = lambda: datetime(2026, 11, 1, 0, 0, 1, tzinfo=UTC)
+
+    assert gate.alert_subject(datetime(2026, 10, 31, 23, 59, 59, tzinfo=UTC)) == "2026-10:40.00"
+
+
+def test_a_model_with_no_price_stops_new_work_but_spends_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that reached it would be refused part way, and run again from the
+    start. The state stays where spending is: `/health` reports the model."""
+    gate = _spent(monkeypatch, "0")
+    gate.models_in_use = ("gemini-3.6-flash", "gemini-0-unpriced")
+
+    assert gate.allows_new_work() is False
+    assert gate.unpriced() == ["gemini-0-unpriced"]
+    assert gate.state() == "ok"
+
+
+def test_a_message_under_its_ceiling_may_spend(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = _spent(monkeypatch, "0")
+    monkeypatch.setattr(Gate, "message_spend", lambda self, message_id: Decimal("0.49"))
+    assert gate.allows_message("m1") is True
+
+    monkeypatch.setattr(Gate, "message_spend", lambda self, message_id: Decimal("0.50"))
+    assert gate.allows_message("m1") is False
 
 
 @pytest.mark.integration

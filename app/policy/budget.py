@@ -16,9 +16,11 @@ This month's spend is the sum of `model_spend` over the UTC calendar month.
 The gate reads it from the database at most once a minute, and adds what it
 metered itself since. It needs a database: there is no gate without one.
 
-Where spending stands -- `ok`, `warning` from 80% of the cap, `exhausted`
-once new work has stopped -- is written to the `control` row when it changes,
-and audited (`record_state`): the web app's header reads it there.
+New work waits while the month's spend plus a reserve reaches the cap, or
+while a model in use has no price (`allows_new_work`). Where spending stands
+-- `ok`, `warning` from 80% of the cap, `exhausted` once new work has stopped
+for want of budget -- is written to the `control` row when it changes, and
+audited (`record_state`): the web app's header reads it there.
 """
 
 from __future__ import annotations
@@ -35,12 +37,19 @@ from app.obs.pricing import rate_at
 from app.policy import audit
 
 READ_EVERY = timedelta(minutes=1)
-"""How stale the month's total may be. Calls metered here since the read are
-added to it, so only other processes' spend can lag, by at most this long."""
+"""How stale the month's total may be. Calls metered by this gate since the
+read are added to it, so only spend through other gates -- the other jobs'
+sessions in this process, and other processes -- can lag, by at most this
+long."""
 
 RESERVE_USD = Decimal("0.10")
 """Kept back when deciding whether to start new work, so a message begun
-just under the cap can finish rather than stop half way."""
+just under the cap can usually finish rather than stop half way. Checked, not
+set aside: every gate checks it against its own reading, and one message may
+spend up to its ceiling, so a month can end a little over the cap. Every call
+is still refused once the month's spend reaches the cap itself."""
+
+CENT = Decimal("0.01")
 
 WARNING_SHARE = Decimal("0.8")
 """The share of the cap at which the owner is warned (D5)."""
@@ -96,28 +105,49 @@ class Gate:
     cap_usd: Decimal
     ceiling_usd: Decimal
     clock: Callable[[], datetime] = _utcnow
+    models_in_use: tuple[str, ...] = ()
+    """The models the running app calls (`app.policy.models.in_use`). New work
+    waits while any has no price: a run that reached it would be refused part
+    way, and run again from the start, paying again for the calls before."""
     _month: datetime | None = field(default=None, init=False)
     _total: Decimal = field(default=Decimal(0), init=False)
     _read_at: datetime | None = field(default=None, init=False)
 
-    def allows_new_work(self) -> bool:
-        """Whether a new message, an edit or an ingestion batch may start:
-        the month's spend plus `RESERVE_USD` is under the cap (D5)."""
-        return self.month_spend() + RESERVE_USD < self.cap_usd
+    def allows_new_work(self, now: datetime | None = None) -> bool:
+        """Whether a new message, an edit or an ingestion batch may start
+        (D5): every model in use has a price, and the month's spend plus
+        `RESERVE_USD` is under the cap."""
+        return not self.unpriced(now) and self._under_cap(now)
 
-    def state(self) -> BudgetState:
+    def unpriced(self, now: datetime | None = None) -> list[str]:
+        """The models in use with no rate at `now`."""
+        at = now or self.clock()
+        return sorted({model for model in self.models_in_use if rate_at(model, at) is None})
+
+    def allows_message(self, message_id: str) -> bool:
+        """Whether this message may still spend: it is under its ceiling."""
+        return self.message_spend(message_id) < self.ceiling_usd
+
+    def state(self, now: datetime | None = None) -> BudgetState:
         """Where this month's spending stands (D5): `exhausted` once new work
-        has stopped, `warning` from 80% of the cap, `ok` below that."""
-        if not self.allows_new_work():
+        has stopped for want of budget, `warning` from 80% of the cap, `ok`
+        below that. A model with no price stops new work too, but spends
+        nothing: `/health` reports it."""
+        if not self._under_cap(now):
             return "exhausted"
-        if self.month_spend() >= self.cap_usd * WARNING_SHARE:
+        if self.month_spend(now) >= self.cap_usd * WARNING_SHARE:
             return "warning"
         return "ok"
 
-    def alert_subject(self) -> str:
-        """What a budget alert is about: this month and the cap. A new month,
-        or a raised cap, is a new subject, and so re-arms the alerts (D5)."""
-        return f"{self.clock().astimezone(UTC):%Y-%m}:{self.cap_usd}"
+    def alert_subject(self, now: datetime | None = None) -> str:
+        """What a budget alert is about: the month of `now`, and the cap. A
+        new month, or a raised cap, is a new subject, and so re-arms the
+        alerts (D5)."""
+        at = now or self.clock()
+        return f"{at.astimezone(UTC):%Y-%m}:{self.cap_usd.quantize(CENT)}"
+
+    def _under_cap(self, now: datetime | None = None) -> bool:
+        return self.month_spend(now) + RESERVE_USD < self.cap_usd
 
     def check(self, model: str, message_id: str | None) -> None:
         """Raise the first refusal that applies, after recording it."""

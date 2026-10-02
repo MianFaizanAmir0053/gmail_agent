@@ -702,3 +702,28 @@ and the owner's end tests.
 - **`/activity`** lists the latest 100 audit entries, newest first, read as `web_reader`, with each entry's proposal title while the proposal keeps it. The page is in the header's links.
 - **Every kind has words of its own** (`dashboard/src/lib/activity.ts`). A test reads `app/policy/audit.py`'s `Kind` and fails if the two lists differ, so a kind added on Fly must be given words here. A kind the page does not yet know is shown as it is rather than failing the page.
 - **No content:** the log holds none, and the page adds only the proposal's title, as the timeline does. The browser check waits for the owner's end tests.
+
+### Reviews of 17.11 (2026-10-02)
+
+Two adversarial reviews of `c7aee25`, one on where work stops and one on what shows, found 26 issues between them, several shared. Fixed:
+- **A model with no price stops new work, as the cap does.** Poll had claimed, run and released the same message every tick, paying each time for the calls before the refusal, until the message's ceiling skipped it for good; an Edit was refused every fifteen seconds. The gate now knows the models in use, and `allows_new_work` waits while any has no price. The budget's state stays where spending is, and `/health` names the model.
+- **A held Edit is pushed back, not left due.** The worker checks after taking the lease, and only when the Edit would run its re-extraction, then pushes it back five minutes, costing no attempt. Held Edits no longer fill every pass ahead of a Confirm, and no session opens every fifteen seconds for them. The decisions job no longer reads `budget_state`: the live gate is the one source of truth.
+- **The stuck clock runs from when a decision became due,** not from when it was made, so a decision no longer counts as stuck the moment a hold ends. Resume makes what the pause held due afresh. An unconfirmed write is asked about hourly, so it is never stuck; a decision that keeps failing still is, within the hour. `/health`'s phrase is now "a decision has been due for over an hour".
+- **The message ceiling is checked before an Edit runs.** A proposal still parked goes back to the owner ("too costly to read"), who can still Confirm or Cancel it. One already past its interrupt is SKIPPED, as poll records a message it could not afford. The audit row is written with the settle.
+- **A write known to exist whose settle fails** is no longer alerted as "could not be confirmed": it is left open as an error, and the stuck clock reports it.
+- **The watch** reads the clock once, so a look across midnight on the 1st files its alert under the right month. The alert's subject carries the cap to the cent. Each half is tried even if the other fails, and an alert no channel delivers is offered again hourly rather than every five minutes. The unconfirmed count moved from the fifteen-second decisions job to the watch, off the audit log's hot path, and `/health` shows when the watch last read the budget.
+- **Smaller:**
+  - poll's skip and its audit are written together, and a pass that stops short says why (`PollResult.held`);
+  - the token check records its alerts on a connection that commits as it goes;
+  - `MONTHLY_BUDGET_USD` and `MESSAGE_CEILING_USD` must be real, non-negative amounts;
+  - the mail recall uses the shared sender;
+  - ingestion asks Gmail nothing when stopped before it starts, and a stopped run is recorded as failed, saying so.
+- **The purge clears a stored calendar request a week after its write began** (D8), the last item deferred from 17.6.
+
+Accepted, and documented in the runbook:
+- the message ceiling counts every run's spend on a message, including a run the cap stopped: it bounds what one message can cost in all;
+- mail that waits more than seven days, at the cap or paused, is skipped as too old (M20's rule), so a long cap is better raised than waited out;
+- "cap reached" fires when new work stops, $0.10 short of the cap, and a cap of $0.50 or less can reach it before the 80% warning;
+- a graph run the gate stopped is recorded as failed in `runs`, whose schema allows no other word;
+- the budget's state is sampled every five minutes, so its audit rows can lag the true stop by as much;
+- a phone running the old service worker shows a new alert as a proposal until it loads the app once.

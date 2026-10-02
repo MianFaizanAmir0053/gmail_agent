@@ -365,3 +365,45 @@ def test_expired_pairing_codes_are_deleted(
 
     assert conn.execute("SELECT code_sha256 FROM pairing_codes").fetchall() == [("live",)]
     assert result.pairing_codes_deleted == 1
+
+
+# --- a calendar write's stored request (M17, D8) ------------------------------------------
+
+
+def _write_begun(conn: psycopg.Connection, message_id: str, *, days_ago: int) -> None:
+    """A write that began `days_ago` and was never finished: its request stays."""
+    decision_id = _edited(conn, message_id)
+    conn.execute(
+        """
+        INSERT INTO outbound_actions
+               (decision_id, message_id, tool, tier, args_hash, dry_run, nonce, status,
+                calendar_id, event_id, request, started_at)
+        VALUES (%s, %s, 'calendar.create_hold', 1, 'hash', false, 'nonce', 'executing',
+                'test-calendar', 'ev1', '{"summary": "Design review"}',
+                now() - %s * interval '1 day')
+        """,
+        (decision_id, message_id, days_ago),
+    )
+
+
+def _request(conn: psycopg.Connection, message_id: str) -> Any:
+    row = conn.execute("SELECT request FROM outbound_actions WHERE message_id = %s", (message_id,))
+    found = row.fetchone()
+    assert found is not None
+    return found[0]
+
+
+def test_a_stored_request_is_cleared_a_week_after_its_write_began(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    """It holds the event's content. By then nothing will replay it: a write
+    still unconfirmed is only looked up, by its event's id."""
+    old, recent = f"write-{uuid.uuid4().hex[:8]}", f"write-{uuid.uuid4().hex[:8]}"
+    _write_begun(conn, old, days_ago=8)
+    _write_begun(conn, recent, days_ago=6)
+
+    result = purge(conn, migrated_database)
+
+    assert _request(conn, old) is None
+    assert _request(conn, recent) == {"summary": "Design review"}
+    assert result.requests_cleared >= 1

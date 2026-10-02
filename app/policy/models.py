@@ -88,6 +88,7 @@ def gate(settings: Settings, conn: psycopg.Connection) -> Gate:
         conn,
         cap_usd=Decimal(str(settings.monthly_budget_usd)),
         ceiling_usd=Decimal(str(settings.message_ceiling_usd)),
+        models_in_use=tuple(in_use(settings)),
     )
 
 

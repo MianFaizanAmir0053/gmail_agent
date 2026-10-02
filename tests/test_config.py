@@ -194,3 +194,18 @@ def test_startup_refuses_a_transaction_pooler(monkeypatch: pytest.MonkeyPatch) -
         assert "hunter2" not in str(caught.value)
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), -1.0])
+@pytest.mark.parametrize("name", ["monthly_budget_usd", "message_ceiling_usd"])
+def test_a_spending_limit_must_be_a_real_amount(name: str, value: float) -> None:
+    """Infinity would crash `/health`'s JSON, NaN every comparison the gate
+    makes, and a negative amount means nothing (M17, D5)."""
+    limit: dict[str, Any] = {name: value}
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            database_url="postgresql://localhost/test",
+            gemini_api_key="k",
+            **limit,
+        )

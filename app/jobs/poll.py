@@ -39,6 +39,10 @@ timeout, leaving a `claimed` row that nothing ever offers again.
 """
 
 
+HELD_PAUSED = "the agent is paused"
+HELD_BY_GATE = "new work is stopped: the spending cap, or a model with no price"
+
+
 class PollResult(NamedTuple):
     seen: int
     """Messages the pass looked at: the feed's candidates, or before the first
@@ -50,6 +54,9 @@ class PollResult(NamedTuple):
     failed: int
     """Of those, how many failed: dead-lettered as FAILED, or parked without
     their records being written (reconciliation writes those later)."""
+    held: str | None = None
+    """Why the pass stopped short: the owner paused the agent, or the spend
+    gate stopped new work (M17). Nothing more was claimed; not a failure."""
 
 
 def poll_once(
@@ -75,12 +82,13 @@ def poll_once(
         # The owner paused the agent (M17, D6): nothing is claimed, and mail
         # waits in the feed. Not a failure: the tick records as successful.
         print("  paused: nothing is claimed")
-        return PollResult(seen=0, started=0, failed=0)
+        return PollResult(seen=0, started=0, failed=0, held=HELD_PAUSED)
 
     candidates, seen, from_feed = _candidates(session, ledger, limit)
     started = 0
     failed = 0
     stopped = False
+    held: str | None = None
 
     for message_id in candidates:
         if stop is not None and stop.is_set():
@@ -88,13 +96,14 @@ def poll_once(
             break
         if control.is_paused(session.conn):
             # Paused during the pass: the rest wait (M17, D6).
-            stopped = True
+            stopped, held = True, HELD_PAUSED
             break
         if session.gate is not None and not session.gate.allows_new_work():
-            # The spending cap (M17, D5): the rest wait in the feed until
-            # spending is allowed again. Not a failure: the tick succeeds.
-            print("  spending cap reached: nothing more is claimed")
-            stopped = True
+            # The spending cap, or a model with no price (M17, D5): the rest
+            # wait in the feed until spending is allowed again. Not a
+            # failure: the tick succeeds.
+            print(f"  {HELD_BY_GATE}: nothing more is claimed")
+            stopped, held = True, HELD_BY_GATE
             break
         # The one place a message is claimed. The candidates are only a cheap
         # pre-filter -- another run can insert between that query and this
@@ -117,16 +126,17 @@ def poll_once(
             session.checkpointer.delete_thread(message_id)
             ledger.release(message_id)
             print(f"  {message_id}  RELEASED  spending stopped")
-            stopped = True
+            stopped, held = True, HELD_BY_GATE
             break
         except MessageTooCostlyError:
-            ledger.mark(message_id, MessageStatus.SKIPPED, error=audit.REASONS["too_costly"])
-            audit.record(
-                session.conn,
-                "message_too_costly",
-                message_id=message_id,
-                reason=audit.REASONS["too_costly"],
-            )
+            with session.conn.transaction():
+                ledger.mark(message_id, MessageStatus.SKIPPED, error=audit.REASONS["too_costly"])
+                audit.record(
+                    session.conn,
+                    "message_too_costly",
+                    message_id=message_id,
+                    reason=audit.REASONS["too_costly"],
+                )
             print(f"  {message_id}  SKIPPED  {audit.REASONS['too_costly']}")
             continue
         except Exception as exc:
@@ -162,7 +172,7 @@ def poll_once(
         # Once the feed has started, it is where the sync's first run began,
         # and nothing moves it again.
         SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
-    return PollResult(seen=seen, started=started, failed=failed)
+    return PollResult(seen=seen, started=started, failed=failed, held=held)
 
 
 def _candidates(
@@ -223,7 +233,9 @@ def main() -> None:
         result = poll_once(session, args.limit, announce=configured_channels(settings).announce)
 
     print(f"\nSaw {result.seen} unread, started {result.started} new, {result.failed} failed.")
-    if result.started == 0 and result.seen:
+    if result.held:
+        print(f"Nothing more was claimed: {result.held}.")
+    elif result.started == 0 and result.seen:
         print("Nothing new -- idempotency holding.")
 
 

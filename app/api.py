@@ -12,6 +12,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from hmac import compare_digest
 from typing import Any, cast
 
@@ -61,7 +62,7 @@ def health(authorization: str | None = Header(default=None)) -> JSONResponse:
             problems.append("no successful poll in three intervals")
 
         if LIVENESS.decision_stuck(now):
-            problems.append("a decision has been open for over an hour")
+            problems.append("a decision has been due for over an hour")
 
         # The gate refuses every call to a model with no price, so whatever
         # needs it has stopped (M17, D5). A spent budget is not an outage:
@@ -75,17 +76,20 @@ def health(authorization: str | None = Header(default=None)) -> JSONResponse:
         # the uptime monitor need only the status code.
         if _is_owner(settings, authorization):
             oldest = LIVENESS.oldest_open_decision_at
+            # Zero while the decision waiting longest is not yet due.
             body["oldest_open_decision_seconds"] = (
-                round((now - oldest).total_seconds()) if oldest else None
+                max(round((now - oldest).total_seconds()), 0) if oldest else None
             )
             # Zero is visible, not a failure: before the first phone subscribes
             # there is simply nobody to push to.
             body["push_subscriptions"] = LIVENESS.push_subscriptions
             spend = LIVENESS.month_spend_usd
+            checked = LIVENESS.budget_checked_at
             body["budget"] = {
                 "state": LIVENESS.budget_state,
                 "month_spend_usd": str(spend) if spend is not None else None,
-                "cap_usd": settings.monthly_budget_usd,
+                "cap_usd": str(Decimal(str(settings.monthly_budget_usd))),
+                "checked_at": checked.isoformat() if checked else None,
             }
             body["unpriced_models"] = unpriced
             # Held, not stuck: each asks Google again every hour (M17, D3).

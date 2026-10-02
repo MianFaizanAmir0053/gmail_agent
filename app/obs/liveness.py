@@ -26,9 +26,9 @@ FETCHES_JUDGED_FROM = 3
 against it: in its own report (`job_runs`) and here."""
 
 DECISION_STUCK_AFTER = timedelta(hours=1)
-"""How long a decision may stay open before health degrades. Three failed
-attempts settle one within about twelve minutes, so an hour means the worker
-itself is stuck."""
+"""How long a decision may stay due, unapplied, before health degrades. Three
+failed attempts settle one within about twelve minutes, and a held decision is
+not due, so an hour means the worker itself is stuck."""
 
 
 @dataclass
@@ -37,9 +37,10 @@ class Liveness:
     last_poll_at: datetime | None = None
     last_poll_ok_at: datetime | None = None
     oldest_open_decision_at: datetime | None = None
-    """When the oldest open decision was made, as the decisions job last saw
-    it. A decision recorded in this process sets it too, if the job saw none:
-    a job that hangs stops refreshing it, and the hang then ages into a 503."""
+    """When the decision that has waited longest became due, as the decisions
+    job last saw it (`app.jobs.scheduler.decisions_status`). A decision
+    recorded in this process sets it too, if the job saw none: a job that
+    hangs stops refreshing it, and the hang then ages into a 503."""
 
     push_subscriptions: int | None = None
     """Browsers subscribed to push, as the hourly token check last counted.
@@ -56,6 +57,9 @@ class Liveness:
 
     month_spend_usd: Decimal | None = None
 
+    budget_checked_at: datetime | None = None
+    """When the watch last read the budget: a stale time means it is failing."""
+
     paused: bool | None = None
     """Whether the owner has paused the agent (M17, D6), as the decisions job
     last read it. Not an outage: a paused tick records as successful."""
@@ -69,9 +73,10 @@ class Liveness:
     def writes_checked(self, unconfirmed: int) -> None:
         self.unconfirmed_writes = unconfirmed
 
-    def budget_checked(self, state: str, month_spend_usd: Decimal) -> None:
+    def budget_checked(self, state: str, month_spend_usd: Decimal, *, at: datetime) -> None:
         self.budget_state = state
         self.month_spend_usd = month_spend_usd
+        self.budget_checked_at = at
 
     def decisions_checked(self, oldest_open: datetime | None) -> None:
         self.oldest_open_decision_at = oldest_open

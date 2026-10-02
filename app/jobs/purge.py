@@ -18,6 +18,13 @@ and the owner's corrections quote the mail too, so they are cleared a week
 after the ledger row settled, and expired pairing codes are deleted. What M24
 counts autonomy from -- action type, pipeline version, channel, revision,
 outcome and timings -- quotes nothing and stays for good.
+
+The action policy's records quote nothing either (M17, D8), with one
+exception: a calendar write stores the exact request it sends, so that a
+later attempt replays it rather than rebuilding it from current code. The
+registry clears it once the write is done; the purge clears any left a week
+after the write began. By then no attempt will replay it: a write still
+unconfirmed is only looked up, by its event's id.
 """
 
 from __future__ import annotations
@@ -41,6 +48,9 @@ REASONS_KEPT_FOR = timedelta(days=7)
 CONTENT_KEPT_FOR = REASONS_KEPT_FOR
 """Proposal cards and the owner's corrections (M16, D8): the same week as the
 ledger's reasons, counted on the same clock. The owner approved no other."""
+
+REQUESTS_KEPT_FOR = timedelta(days=7)
+"""A calendar write's stored request (M17, D8), counted from when it began."""
 
 FIXED_REASONS = (
     "declined by user",
@@ -80,6 +90,9 @@ class PurgeResult:
     mail_messages_deleted: int = 0
     """Mail sync rows past their 180 days, or a week gone (M20, D7)."""
 
+    requests_cleared: int = 0
+    """Stored calendar requests a week after their write began (M17, D8)."""
+
 
 def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
     # Opened first: its setup() creates the checkpoint tables on a fresh
@@ -117,6 +130,7 @@ def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
         corrections_cleared=corrections_cleared,
         pairing_codes_deleted=pairing_codes_deleted,
         mail_messages_deleted=_purge_mail(conn),
+        requests_cleared=_clear_requests(conn),
     )
 
 
@@ -167,6 +181,18 @@ def _clear_reasons(conn: psycopg.Connection) -> int:
         (MessageStatus.FAILED.value, list(FIXED_REASONS), REASONS_KEPT_FOR),
     ).rowcount
     return cleared
+
+
+def _clear_requests(conn: psycopg.Connection) -> int:
+    """Clear the stored request of every write that began over a week ago."""
+    return conn.execute(
+        """
+        UPDATE outbound_actions SET request = NULL
+         WHERE request IS NOT NULL
+           AND coalesce(started_at, created_at) < now() - %s
+        """,
+        (REQUESTS_KEPT_FOR,),
+    ).rowcount
 
 
 def _clear_content(conn: psycopg.Connection) -> tuple[int, int]:

@@ -64,4 +64,13 @@ def switch(conn: psycopg.Connection, *, paused: bool, via: Via) -> bool:
         ).fetchone()
         if changed is not None:
             audit.record(conn, "paused" if paused else "resumed")
+            if not paused:
+                # Held while paused: due now, and their clock for a stuck
+                # queue starts afresh (`app.jobs.scheduler.decisions_status`).
+                conn.execute(
+                    """
+                    UPDATE decisions SET next_attempt_at = now()
+                     WHERE outcome IS NULL AND next_attempt_at < now()
+                    """
+                )
     return changed is not None

@@ -82,10 +82,12 @@ def scheduled_ingest(settings: Settings) -> bool:
     """
     try:
         stats = run_ingest(settings)
-    except SPENDING_STOPPED:
+    except SPENDING_STOPPED as exc:
         # The spend gate said no mid-batch (M17, D5): not a failure worth an
-        # alert. The next run picks up where this one stopped.
-        log.info("ingest stopped by the spending cap")
+        # alert, and `/health` reports a model with no price. A later run's
+        # dedupe skips what this one embedded; a stop longer than the window
+        # leaves a gap that `--backfill` fills.
+        log.info("ingest stopped by the spend gate: %s", type(exc).__name__)
         return True
     except Exception as exc:
         log.exception("ingest failed")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import psycopg
@@ -113,3 +114,23 @@ def test_a_raised_cap_puts_the_state_back_and_audits_it(spent: psycopg.Connectio
     assert (watched.state, channels.asked, _state(spent)) == ("ok", [], "ok")
     kinds = spent.execute("SELECT kind FROM audit_log WHERE id > %s", (row[0],)).fetchall()
     assert kinds == [("budget_ok",)]
+
+
+@pytest.mark.integration
+def test_an_alert_no_channel_delivers_is_offered_again_hourly(spent: psycopg.Connection) -> None:
+    """A blocked bot, or no phone subscribed: not every five minutes all month."""
+    _spend(spent, "0.80")
+    tried: dict[tuple[str, str], datetime] = {}
+    now = datetime.now(UTC)
+
+    class Undelivered(FakeChannels):
+        def alert(self, code: str, *, skip: frozenset[str] = frozenset()) -> set[str]:
+            self.asked.append(code)
+            return set()
+
+    channels = Undelivered()
+    watch(spent, _settings(), channels, now=now, tried=tried)
+    watch(spent, _settings(), channels, now=now + timedelta(minutes=5), tried=tried)
+    watch(spent, _settings(), channels, now=now + timedelta(minutes=61), tried=tried)
+
+    assert channels.asked == ["budget_warning", "budget_warning"]

@@ -59,11 +59,11 @@ class Settings(BaseSettings):
     """Vercel AI Gateway key. Needed only when `classify_model` is an evaluation
     model the gateway serves, such as `typesafe-ai/jev`, rather than a Gemini one."""
 
-    monthly_budget_usd: float = 40.0
+    monthly_budget_usd: float = Field(default=40.0, ge=0, allow_inf_nan=False)
     """Model spending stops here each UTC month (M17, D5). Raising it means
-    setting `MONTHLY_BUDGET_USD` and restarting."""
+    setting `MONTHLY_BUDGET_USD` and restarting. Zero stops every call."""
 
-    message_ceiling_usd: float = 0.50
+    message_ceiling_usd: float = Field(default=0.50, ge=0, allow_inf_nan=False)
     """What one message may spend on model calls before it is skipped as too
     costly to read (M17, D5)."""
 

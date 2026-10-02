@@ -15,6 +15,7 @@ It calls no model: the month's spend is read from `model_spend`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import psycopg
@@ -34,20 +35,65 @@ BUDGET_ALERTS: dict[BudgetState, AlertCode] = {
 `exhausted` sends only the second."""
 
 
+RETRY_EVERY = timedelta(hours=1)
+"""How often an alert some channel has not delivered is offered again."""
+
+
 @dataclass(frozen=True, slots=True)
 class Watched:
     state: BudgetState
     month_spend_usd: Decimal
+    unconfirmed: int
+    """Open decisions whose calendar write could not be confirmed (D3)."""
     sent: list[AlertCode]
     """Alerts that reached at least one channel they had not reached before."""
 
 
-def watch(conn: psycopg.Connection, settings: Settings, channels: AlertSender) -> Watched:
-    """One look. `conn` must commit as it goes (`app.jobs.scheduler.run_watch`)."""
+def watch(
+    conn: psycopg.Connection,
+    settings: Settings,
+    channels: AlertSender,
+    *,
+    now: datetime | None = None,
+    tried: dict[tuple[str, str], datetime] | None = None,
+) -> Watched:
+    """One look. `conn` must commit as it goes (`app.jobs.scheduler.run_watch`).
+
+    The clock is read once, so a look that straddles midnight on the 1st
+    files its state and its alert under the same month. The budget and the
+    unconfirmed writes are each tried even if the other fails; the first
+    failure is raised once both have been tried. With `tried`, an alert is
+    offered to the channels at most once per `RETRY_EVERY`.
+    """
+    now = now or datetime.now(UTC)
     meter = models.gate(settings, conn)
-    state = meter.state()
-    record_state(conn, state)
-    alerts = [Alert(BUDGET_ALERTS[state], meter.alert_subject())] if state in BUDGET_ALERTS else []
-    alerts += [Alert("write_unconfirmed", str(each)) for each in unconfirmed_writes(conn)]
-    sent = send_alerts(conn, channels, alerts)
-    return Watched(state=state, month_spend_usd=meter.month_spend(), sent=sent)
+    alerts: list[Alert] = []
+    failures: list[Exception] = []
+
+    state: BudgetState = "ok"
+    spend = Decimal(0)
+    try:
+        state = meter.state(now)
+        spend = meter.month_spend(now)
+        record_state(conn, state)
+        if state in BUDGET_ALERTS:
+            alerts.append(Alert(BUDGET_ALERTS[state], meter.alert_subject(now)))
+    except Exception as exc:
+        failures.append(exc)
+
+    unconfirmed: list[int] = []
+    try:
+        unconfirmed = unconfirmed_writes(conn)
+        alerts += [Alert("write_unconfirmed", str(each)) for each in unconfirmed]
+    except Exception as exc:
+        failures.append(exc)
+
+    if tried is not None:
+        due = now - RETRY_EVERY
+        alerts = [a for a in alerts if tried.get((a.code, a.subject), due) <= due]
+        for alert in alerts:
+            tried[(alert.code, alert.subject)] = now
+    sent = send_alerts(conn, channels, alerts) if alerts else []
+    if failures:
+        raise failures[0]
+    return Watched(state=state, month_spend_usd=spend, unconfirmed=len(unconfirmed), sent=sent)

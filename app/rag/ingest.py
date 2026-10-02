@@ -61,6 +61,11 @@ class MailboxLike(Protocol):
     def get_message(self, message_id: str) -> EmailMessage: ...
 
 
+STOPPED = "stopped before the end: new work was stopped"
+"""The run record's error when the spending cap, a model with no price or a
+pause stopped it (M17)."""
+
+
 @dataclass(slots=True)
 class Stats:
     messages_seen: int = 0
@@ -71,6 +76,9 @@ class Stats:
     embed_calls: int = 0
     estimated_tokens: int = 0
     skipped_messages: list[str] = field(default_factory=list)
+    stopped: bool = False
+    """New work was stopped before the end (M17): the spending cap, a model
+    with no price, or a pause. Recorded as a failed run, saying so."""
 
     @property
     def estimated_cost_usd(self) -> Decimal:
@@ -191,6 +199,12 @@ def ingest(
     pacer = Pacer()
 
     try:
+        if may_continue is not None and not may_continue():
+            # Stopped before Gmail is even asked (M17).
+            stats.stopped = True
+            _finish_run(conn, run_id, stats, status="failed", error=STOPPED)
+            conn.commit()
+            return stats
         chunks, stats = collect(mailbox, query=query, limit=limit, owner_email=settings.owner_email)
 
         seen = existing_hashes(conn, [c.content_hash for c in chunks])
@@ -203,8 +217,10 @@ def ingest(
         # it resumes from where the failure was.
         for start in range(0, len(fresh), batch_size):
             if may_continue is not None and not may_continue():
-                # The spending cap (M17, D5): the rest waits for the next run,
-                # whose dedupe skips what this one already embedded.
+                # The rest waits for a later run, whose dedupe skips what this
+                # one embedded. A scheduled run covers only its own window, so
+                # a stop longer than that leaves a gap a backfill fills.
+                stats.stopped = True
                 break
             group = fresh[start : start + batch_size]
             texts = [chunk.embedding_text() for chunk in group]
@@ -223,7 +239,10 @@ def ingest(
             stats.chunks_inserted += insert_chunks(conn, group, vectors, settings.embedding_model)
             conn.commit()
 
-        _finish_run(conn, run_id, stats, status="success")
+        if stats.stopped:
+            _finish_run(conn, run_id, stats, status="failed", error=STOPPED)
+        else:
+            _finish_run(conn, run_id, stats, status="success")
         conn.commit()
     except Exception as exc:
         conn.rollback()

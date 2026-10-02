@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -117,7 +119,7 @@ class FakeSession:
     on_start: Callable[[str], None] = lambda message_id: None
     parked: dict[str, str] = field(default_factory=dict)
     started: list[str] = field(default_factory=list)
-    conn: object = field(default_factory=object)
+    conn: Any = field(default_factory=lambda: SimpleNamespace(transaction=nullcontext))
     gate: Any = None
     """The spend gate (M17, D5); None, as in tests before it existed."""
     deleted: list[str] = field(default_factory=list)
@@ -381,7 +383,7 @@ def test_at_the_cap_nothing_is_claimed_and_the_pass_is_not_a_failure(
     result = poll.poll_once(cast(GraphSession, session), limit=10)
 
     assert ledger.claimed == [] and session.started == []
-    assert (result.started, result.failed) == (0, 0)
+    assert (result.started, result.failed, result.held) == (0, 0, poll.HELD_BY_GATE)
 
 
 def test_a_message_stopped_mid_run_goes_back_to_the_feed(
@@ -441,7 +443,7 @@ def test_while_paused_nothing_is_claimed_and_the_tick_is_not_a_failure(
     result = poll.poll_once(cast(GraphSession, session), limit=10)
 
     assert ledger.claimed == [] and session.started == []
-    assert (result.started, result.failed) == (0, 0)
+    assert (result.started, result.failed, result.held) == (0, 0, poll.HELD_PAUSED)
     assert cursor.values == []  # nothing moves while paused
 
 
@@ -457,3 +459,22 @@ def test_a_pause_during_the_pass_stops_the_rest(
     poll.poll_once(cast(GraphSession, session), limit=10)
 
     assert ledger.claimed == ["m1"]
+
+
+def test_a_message_stopped_by_a_model_with_no_price_goes_back_to_the_feed(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """Released like one stopped by the cap: never FAILED, and nothing more
+    is claimed this pass."""
+    from app.policy.budget import UnpricedModelError
+
+    def unpriced(message_id: str) -> None:
+        raise UnpricedModelError("no rate")
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=unpriced, gate=FakeGate())
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
+    assert (result.failed, result.held) == (0, poll.HELD_BY_GATE)

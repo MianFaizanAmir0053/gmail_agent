@@ -17,7 +17,7 @@ import pytest
 
 from app.config import Settings
 from app.contracts import EmailMessage
-from app.rag.ingest import DEFAULT_QUERY, collect, ingest
+from app.rag.ingest import DEFAULT_QUERY, STOPPED, collect, ingest
 
 pytestmark = pytest.mark.integration
 
@@ -252,12 +252,28 @@ def test_at_the_spending_cap_ingestion_stops_between_batches(
     body = "Paragraph {i}. " + "word " * 400
     mailbox = FakeMailbox([email(f"m{i}", body.replace("{i}", str(i))) for i in range(4)])
     client = CountingClient(settings.embedding_dimensions)
-    room = iter([True, False])
+    room = iter([True, True, False])  # before Gmail is asked, then before each batch
 
-    ingest(
+    stats = ingest(
         rag_conn, mailbox, client, settings=settings, batch_size=2, may_continue=lambda: next(room)
     )
 
     row = rag_conn.execute("SELECT count(*) FROM chunks WHERE thread_id = %s", (THREAD,)).fetchone()
     assert row is not None and row[0] == 2
     assert client.models.calls == 1
+    assert stats.stopped is True
+    run = rag_conn.execute(
+        "SELECT status, error FROM ingest_runs ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    assert run == ("failed", STOPPED)  # a stopped run says so, rather than success
+
+
+def test_stopped_before_it_starts_ingestion_asks_gmail_nothing(
+    rag_conn: psycopg.Connection, settings: Settings
+) -> None:
+    mailbox = FakeMailbox([email("m0", "Paragraph. " + "word " * 400)])
+    client = CountingClient(settings.embedding_dimensions)
+
+    stats = ingest(rag_conn, mailbox, client, settings=settings, may_continue=lambda: False)
+
+    assert (stats.messages_seen, stats.stopped, client.models.calls) == (0, True, 0)

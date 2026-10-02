@@ -64,6 +64,10 @@ WATCH_FAILURES_RECORDED_EVERY = timedelta(minutes=30)
 
 _watch_failure_recorded_at: datetime | None = None
 
+_watch_tried: dict[tuple[str, str], datetime] = {}
+"""When each alert was last offered to the channels, so that one no channel
+delivers is offered again hourly rather than every five minutes."""
+
 _active: BackgroundScheduler | None = None
 """The scheduler this process runs, for `wake_decisions`."""
 
@@ -126,11 +130,10 @@ def run_ingest(settings: Settings) -> None:
 
 class DecisionsStatus(NamedTuple):
     oldest: datetime | None
-    """When the oldest open decision not held was made: `/health`'s clock."""
+    """When the decision that has waited longest became due, of those the
+    worker is free to apply: `/health`'s clock for a stuck queue."""
     due: bool
     """Whether any is due now, so worth a graph session."""
-    unconfirmed: int
-    """Open decisions whose calendar write could not be confirmed."""
     paused: bool
     """Whether the owner has paused the agent (M17, D6)."""
 
@@ -143,43 +146,38 @@ def open_decisions(settings: Settings) -> DecisionsStatus:
 def decisions_status(conn: psycopg.Connection) -> DecisionsStatus:
     """The open decisions, as the decisions job and `/health` see them.
 
-    A held decision does not count toward the one-hour clock for stuck ones:
-    every decision while the owner has paused the agent (M17, D6), an Edit
-    while the spending cap stops new work (D5), and a decision whose
-    calendar write could not be confirmed, which asks Google again every
-    hour and is counted apart (D3). Nothing is due while paused but a
-    withdraw request, which the worker carries out even then, and no Edit
-    while the cap stops new work: no session is opened for them.
+    The stuck clock runs from when a decision became due, not from when it
+    was made, so a decision waiting, or held, is not stuck:
+    - while the owner has paused the agent, nothing counts, and Resume makes
+      what was held due afresh (M17, D6);
+    - an Edit the spending cap, or a model with no price, holds is pushed back
+      by the worker each time it looks (D5);
+    - a write that could not be confirmed asks Google again every hour (D3).
+    A decision that keeps failing is never pushed back, so it is stuck within
+    the hour. Nothing is due while paused but a withdraw request, which the
+    worker carries out even then.
     """
     row = conn.execute(
         """
         WITH c AS (
-            SELECT coalesce(bool_or(paused), false) AS paused,
-                   coalesce(bool_or(budget_state = 'exhausted'), false) AS spent
-              FROM control WHERE id = 1
+            SELECT coalesce(bool_or(paused), false) AS paused FROM control WHERE id = 1
         ), open AS (
-            SELECT d.decided_at,
-                   (d.lease_until IS NULL OR d.lease_until < now())
-                       AND (d.withdraw_requested_at IS NOT NULL
-                            OR (d.next_attempt_at <= now()
-                                AND NOT c.paused
-                                AND NOT (d.action = 'edit' AND c.spent))) AS due,
-                   c.paused OR (d.action = 'edit' AND c.spent) AS held,
-                   EXISTS (SELECT 1 FROM audit_log a
-                            WHERE a.kind = 'write_unconfirmed' AND a.decision_id = d.id)
-                       AS unconfirmed
-              FROM decisions d CROSS JOIN c
+            SELECT d.next_attempt_at,
+                   d.withdraw_requested_at IS NOT NULL AS withdraw,
+                   (d.lease_until IS NULL OR d.lease_until < now()) AS free
+              FROM decisions d
              WHERE d.outcome IS NULL
         )
-        SELECT min(decided_at) FILTER (WHERE NOT held AND NOT unconfirmed),
-               coalesce(bool_or(due), false),
-               count(*) FILTER (WHERE unconfirmed),
+        SELECT min(next_attempt_at) FILTER (WHERE free AND NOT (SELECT paused FROM c)),
+               coalesce(bool_or(free AND (withdraw OR (next_attempt_at <= now()
+                                                       AND NOT (SELECT paused FROM c)))),
+                        false),
                (SELECT paused FROM c)
           FROM open
         """
     ).fetchone()
     assert row is not None
-    return DecisionsStatus(row[0], bool(row[1]), int(row[2]), bool(row[3]))
+    return DecisionsStatus(row[0], bool(row[1]), bool(row[2]))
 
 
 def run_decisions(settings: Settings) -> None:
@@ -189,7 +187,6 @@ def run_decisions(settings: Settings) -> None:
     try:
         status = open_decisions(settings)
         LIVENESS.decisions_checked(status.oldest)
-        LIVENESS.writes_checked(status.unconfirmed)
         LIVENESS.control_checked(paused=status.paused)
         # Only a due decision is worth a graph session, which loads
         # credentials and builds clients; most ticks find nothing.
@@ -292,7 +289,7 @@ def run_watch(settings: Settings) -> None:
         with psycopg.connect(
             settings.database_url, autocommit=True, connect_timeout=RECORD_CONNECT_TIMEOUT
         ) as conn:
-            watched = watch(conn, settings, configured_channels(settings))
+            watched = watch(conn, settings, configured_channels(settings), tried=_watch_tried)
     except Exception as exc:
         log.exception("watch failed")
         last = _watch_failure_recorded_at
@@ -300,7 +297,8 @@ def run_watch(settings: Settings) -> None:
             _watch_failure_recorded_at = started_at
             record_tick(settings, "watch", started_at, ok=False, error=type(exc).__name__)
         return
-    LIVENESS.budget_checked(watched.state, watched.month_spend_usd)
+    LIVENESS.budget_checked(watched.state, watched.month_spend_usd, at=started_at)
+    LIVENESS.writes_checked(watched.unconfirmed)
     if watched.sent:
         log.info("watch: sent %s", ", ".join(watched.sent))
 
@@ -330,6 +328,8 @@ def run_purge(settings: Settings) -> None:
         )
         if result.mail_messages_deleted:
             log.info("purge: %d mail sync row(s) deleted", result.mail_messages_deleted)
+        if result.requests_cleared:
+            log.info("purge: %d stored calendar request(s) cleared", result.requests_cleared)
     record_tick(settings, "purge", started_at, ok=True)
 
 
@@ -358,7 +358,11 @@ def check_token(settings: Settings) -> None:
     if not alerts:
         return
     try:
-        with connect(settings.database_url, connect_timeout=RECORD_CONNECT_TIMEOUT) as conn:
+        # Committed as it goes, like the watch: a record of an alert a
+        # channel delivered must never be rolled back into a resend.
+        with psycopg.connect(
+            settings.database_url, autocommit=True, connect_timeout=RECORD_CONNECT_TIMEOUT
+        ) as conn:
             send_alerts(conn, configured_channels(settings), alerts)
     except Exception:
         log.exception("could not send token alerts")

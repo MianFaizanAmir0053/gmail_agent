@@ -291,7 +291,7 @@ def test_a_decision_open_for_over_an_hour_is_a_503(
     response = client.get("/health", headers=_owner())
 
     assert response.status_code == 503
-    assert response.json()["problems"] == ["a decision has been open for over an hour"]
+    assert response.json()["problems"] == ["a decision has been due for over an hour"]
     assert response.json()["oldest_open_decision_seconds"] >= 3660
 
 
@@ -315,7 +315,7 @@ def test_a_spent_budget_is_not_an_outage(
     """The cap doing its job (M17, D5): 200, and with the bearer, the state
     and the month's spend."""
     live = _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
-    live.budget_checked("exhausted", Decimal("39.95"))
+    live.budget_checked("exhausted", Decimal("39.95"), at=datetime(2026, 10, 2, 9, 0, tzinfo=UTC))
     live.writes_checked(1)
     live.control_checked(paused=True)
 
@@ -323,7 +323,12 @@ def test_a_spent_budget_is_not_an_outage(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["budget"] == {"state": "exhausted", "month_spend_usd": "39.95", "cap_usd": 40.0}
+    assert body["budget"] == {
+        "state": "exhausted",
+        "month_spend_usd": "39.95",
+        "cap_usd": "40.0",
+        "checked_at": "2026-10-02T09:00:00+00:00",
+    }
     assert (body["unconfirmed_writes"], body["unpriced_models"]) == (1, [])
     assert body["paused"] is True  # paused is not an outage either (D6)
 

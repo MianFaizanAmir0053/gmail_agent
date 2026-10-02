@@ -34,7 +34,8 @@ from typing import Any
 
 import psycopg
 
-from app.channel.alerts import AlertSender
+from app.channel.alerts import Alert, AlertSender
+from app.channel.alerts import send_alerts as send_once
 from app.channel.channels import AlertCode, configured_channels
 from app.config import Settings
 from app.google.gmail import GmailClient, MessageGoneError, is_outage
@@ -458,30 +459,8 @@ def send_alerts(
     channels: AlertSender,
     day: str,
 ) -> list[AlertCode]:
-    """Send each alert at most once a day per channel, through the channels'
-    own `alert`, so a channel that hangs or raises cannot hold up the rest.
-
-    Recorded in `alerts_sent`, as M16's token alerts are: a row is written
-    only once a channel delivered, so one that did not is asked again by the
-    next check that finds a shortfall the same day.
-    """
-    sent: list[AlertCode] = []
-    for code in codes:
-        rows = conn.execute(
-            "SELECT channel FROM alerts_sent WHERE code = %s AND subject = %s", (code, day)
-        ).fetchall()
-        already = frozenset(row[0] for row in rows)
-        if not channels.names - already:
-            continue
-        delivered = channels.alert(code, skip=already)
-        for name in sorted(delivered):
-            conn.execute(
-                """
-                INSERT INTO alerts_sent (code, subject, channel) VALUES (%s, %s, %s)
-                ON CONFLICT DO NOTHING
-                """,
-                (code, day, name),
-            )
-        if delivered:
-            sent.append(code)
-    return sent
+    """Send each alert at most once a day per channel: the shared sender for
+    alerts sent once (`app.channel.alerts`), with the day as the subject. A
+    row is written only once a channel delivered, so one that did not is
+    asked again by the next check that finds a shortfall the same day."""
+    return send_once(conn, channels, [Alert(code, day) for code in codes])
