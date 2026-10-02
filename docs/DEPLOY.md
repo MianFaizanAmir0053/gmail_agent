@@ -590,6 +590,201 @@ in `/health`.
 5. `mail_recall_sync`, `mail_recall_feed` and `mail_recall_categories` are
    `ok` in `job_runs` for seven days running.
 
+## 11. M17: the action policy
+
+Everything the agent does to the world now goes through one registry, under
+an approval bound to the exact arguments and to the `DRY_RUN` the owner saw.
+Calendar writes can be finished after a crash without booking twice; an
+invite's guests must be in the email's thread or allowed by the owner;
+model spending stops at a monthly cap; the owner can pause the agent and
+withdraw a queued decision; and every attempt is in an append-only audit
+log. Spec: [`docs/plans/M17-action-policy.md`](plans/M17-action-policy.md).
+
+`DRY_RUN` stays `true` until the owner's end tests (11.8).
+
+### 11.1 Before the deploy
+
+- Migration `010_action_policy.sql` applies at boot with
+  `MIGRATE_ON_BOOT=true`, before `011`. It is additive and can be re-run. It
+  gives `web_reader` read access to `control`, `confirmed_contacts` and
+  `audit_log`, for the web app's header, cards and Activity page.
+- `FERNET_KEY` must be set on Fly: it keys the hash every approval binds,
+  and the audit log's record of a contact. Without it, Allow answers 503.
+- Two optional settings: `MONTHLY_BUDGET_USD` (default 40) and
+  `MESSAGE_CEILING_USD` (default 0.50). The defaults are the owner's.
+- Development uses its own Gemini API key, so its spend never hides inside
+  production's budget. The cap counts what each database's `model_spend`
+  records, not what Google bills a key.
+- At boot, and hourly, reconciliation expires a proposal made under the
+  other `DRY_RUN` ("made under another mode"): turning `DRY_RUN` off expires
+  every proposal still waiting from dry-run days, and the reverse. Decide
+  what is waiting before switching.
+- Confirming from the command line now needs the token that `approve
+  --list` prints for the proposal: what the owner is confirming. A token
+  from before the proposal last changed, or from the other mode, is refused
+  as stale, on the command line as on the web and Telegram:
+
+  ```bash
+  fly ssh console -C "sh -c 'cd /app && python -m app.jobs.approve --message-id <id> --action confirm --expect <token>'"
+  ```
+
+### 11.2 The spending cap
+
+- **What counts:** every model call, metered as it is made and recorded in
+  `model_spend` with no content: the model, the message it served, tokens and
+  cost. Embeddings are estimated at four characters a token. A call the gate
+  refuses is recorded too, at no cost. The month is the UTC calendar month.
+- **Where work stops,** once the month's spend plus a $0.10 reserve reaches
+  the cap:
+  - poll claims nothing, and mail waits in the feed. A message stopped mid-run
+    goes back to the feed, from the start, never FAILED. The tick still
+    records as successful. Mail that waits more than seven days is skipped
+    as too old (10.4), so a long cap is better raised than waited out;
+  - an Edit waits, costing no attempt; its card says so. Confirm and Cancel
+    call no model, and still apply;
+  - ingestion stops between batches. Its scheduled runs cover only their own
+    window, so after a stop longer than that, run
+    `python -m app.jobs.ingest_job --backfill` to fill the gap.
+- **One message** may spend at most `MESSAGE_CEILING_USD`. Past that it is
+  recorded SKIPPED ("too costly to read"), and audited.
+- **Alerts,** through every configured channel, with no amounts in the
+  words: "Model spending is at 80% of this month's cap", then "Model spending
+  cap reached: mail processing has stopped". Each is sent once per month and
+  cap value; the second fires when new work stops, $0.10 short of the cap. An
+  alert no channel delivers is offered again hourly. The web app's header
+  says the same while it lasts.
+- **Raising the cap:** `fly secrets set MONTHLY_BUDGET_USD=60`, which
+  restarts the machine. The alerts re-arm for the new value, the header
+  clears within five minutes, and held work moves on. A new month does the
+  same by itself.
+- **A model in use with no price** makes `/health` a 503 ("a model in use
+  has no price"): the gate refuses every call to it, and new work waits as
+  it does at the cap. Add its rate to `app/obs/pricing.py`, or switch back to
+  a priced model. The embedding model counts only while search or ingestion
+  is on.
+
+### 11.3 Pause and Resume
+
+From the web app's header, on any page, or the command line:
+
+```bash
+fly ssh console -C "sh -c 'cd /app && python -m app.jobs.control pause'"
+fly ssh console -C "sh -c 'cd /app && python -m app.jobs.control resume'"
+fly ssh console -C "sh -c 'cd /app && python -m app.jobs.control status'"
+```
+
+Locally, `.\tasks.ps1 pause` and `.\tasks.ps1 resume`, against the database
+`.env` names. Every change is audited.
+
+- **While paused,** within one tick: poll claims nothing, the worker applies
+  no decision, ingestion claims nothing, and the registry refuses any action
+  already on its way. A decision held this way costs no attempt and applies
+  as soon as the agent resumes.
+- **What carries on:** reads, reconciliation, the purge, the token check and
+  the mail sync. None calls a model. Notifications still go out: a
+  reconciled proposal is announced, and a token alert is sent.
+- **`/health`** stays 200. With the bearer it shows `paused`. Held decisions
+  do not count toward the one-hour clock for stuck ones.
+
+### 11.4 Withdraw
+
+A card being applied ("Applying…") offers Withdraw. The worker carries the
+request out before anything else, even while paused:
+
+- if nothing has run yet, the decision is withdrawn and the proposal comes
+  back, at a new generation, so the old card's Confirm is refused as stale;
+- if the decision is already being applied -- a calendar write begun, or an
+  Edit's re-extraction under way -- the request is declined, the card says
+  "Already being applied", and the decision goes on.
+
+To stop a queued Confirm for certain: Pause, then Withdraw, then Resume.
+
+### 11.5 Guests outside the thread
+
+An invite's guest counts as in the thread when they were a recipient of the
+owner's sent mail in it, or sent mail in it that Gmail authenticated
+(`dmarc=pass` for their domain), or the owner allowed them. Anyone else is
+marked on the card, and Confirm is refused until each is allowed or the
+proposal is edited to drop them.
+
+- **Allow:** the card's Allow button, or `approve --allow <address>`. An
+  allowed contact stays allowed.
+- **Remove:** on the command line only, so an allowance is never undone by
+  a stray tap:
+
+```bash
+fly ssh console -C "sh -c 'cd /app && python -m app.jobs.contacts --remove <address>'"
+```
+
+- **Gmail down:** a Confirm waits up to an hour for the thread to be read,
+  costing no attempt. After that its guests count as outside, and the
+  proposal comes back. Cancel and Edit never wait.
+
+### 11.6 Watching it
+
+- **`/health`** with the bearer adds `budget` (state, the month's spend, the
+  cap, and when the watch last read them), `unpriced_models`, `paused`, and
+  `unconfirmed_writes`. Its stuck-queue check now reads "a decision has been
+  due for over an hour": a decision waiting for its next attempt, or held by
+  a pause, the cap or a model with no price, is not due.
+- **A calendar write that could not be confirmed:** the write began, the
+  attempts ran out, and Google could not be asked whether the event exists.
+  Nothing is settled on a guess: the decision stays open and asks Google
+  again every hour. One alert per decision ("A calendar write could not be
+  confirmed"); `/health` counts them apart from stuck decisions. Check the
+  test calendar; it settles by itself once Google answers.
+- **The Activity page** (`/activity`) lists the latest 100 audit entries:
+  every attempt to act, refusals included, and every Pause, Resume,
+  Withdraw, budget change and contact change. The log holds no email
+  content.
+- **`job_runs`:** a `watch` row when the job that reads the budget and sends
+  these alerts fails, at most every half hour.
+- **What is kept.** `outbound_actions`, `model_spend` and `audit_log` are
+  kept for good, as M24's evidence and the budget's; none holds email
+  content. A calendar write's stored request is cleared once the write is
+  done, and by the purge a week after it began. Confirmed contacts stay until
+  removed (11.5). The audit log is append-only: a trigger refuses `UPDATE`
+  and `DELETE`. It guards against the code, not against the database's owner,
+  who can still `TRUNCATE` it.
+
+### 11.7 The calendar probe
+
+```powershell
+uv run python -m app.jobs.calendar_probe
+```
+
+On the test calendar only, with a fresh id each run, it checks the two
+behaviours a re-driven write relies on: an id already taken is refused with
+a `409` rather than booked twice, and a deleted event keeps its id, so a
+re-drive never recreates an event the owner removed. It is the one tool that
+ignores `DRY_RUN`, and says so before it writes. Run it before `DRY_RUN`
+goes off; if it fails, `DRY_RUN` stays on.
+
+### 11.8 The owner's end tests (exit criterion)
+
+After the probe passes, with `DRY_RUN` off on the test calendar:
+
+1. **Bound.** Confirming a hold creates exactly one event. Then the mode
+   check: Pause; Confirm a proposal made under dry run; set `DRY_RUN=false`
+   and restart; Resume. The proposal is expired ("made under another mode"),
+   nothing is booked, and the old card's Confirm is refused as stale.
+2. **Finishable.** Shown by the fault-injection tests on Neon.
+3. **Recipients.** An invite whose guest appears only in an inbound `Cc`
+   cannot be confirmed until that guest is allowed.
+4. **Cap.** With `MONTHLY_BUDGET_USD` set below the month's spend: polling
+   stops and a push arrives; `model_spend` shows only refusals from then on;
+   raising the cap restarts polling.
+5. **Pause.** Pause stops polling and applying within one tick; Withdraw
+   returns a queued decision, and its old card cannot confirm it; Resume
+   restarts both.
+6. **Audit.** Every attempt has an audit row, and none quotes an email.
+
+Before `DRY_RUN` goes off for real use, beyond these tests, choose the
+calendar, and whether an invite should email its guests. Events go to
+`TEST_CALENDAR_ID`, and the insert does not set `sendUpdates`, so Google
+sends guests no invitation, though its documentation warns some emails may
+still go out.
+
 ---
 
 ## Checklist
@@ -622,3 +817,13 @@ in `/health`.
 - [ ] `/health` 200, and with the bearer `mail_sync.cursor_age_seconds` under two minutes
 - [ ] No `measure` run while the backfill or a catch-up is in progress
 - [ ] The exit criterion (10.8), then seven clean days of recall
+
+**M17**
+
+- [ ] Migration 010 applied; `FERNET_KEY` set on Fly
+- [ ] Development runs on its own Gemini API key
+- [ ] `/health` 200, and with the bearer `budget.state` is `ok` and `paused` is false
+- [ ] Pause and Resume from the header; the Activity page shows both
+- [ ] The web app opened once on each phone, so the new service worker knows the new alerts' tags
+- [ ] The probe passes; only then `DRY_RUN=false`, after deciding what is still waiting (11.1)
+- [ ] The exit criterion (11.8)

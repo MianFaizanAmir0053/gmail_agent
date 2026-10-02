@@ -727,3 +727,19 @@ Accepted, and documented in the runbook:
 - a graph run the gate stopped is recorded as failed in `runs`, whose schema allows no other word;
 - the budget's state is sampled every five minutes, so its audit rows can lag the true stop by as much;
 - a phone running the old service worker shows a new alert as a proposal until it loads the app once.
+
+### Task 17.14: runbook and README (2026-10-02)
+
+- **`docs/DEPLOY.md` §11** covers M17 for the owner: what to do before the deploy (migration 010, `FERNET_KEY`, the two settings, a development key of its own, what turning `DRY_RUN` off expires, the token a command-line Confirm needs), the spending cap and how to raise it, Pause and Resume, Withdraw, guests outside the thread, what to watch, what is kept, the calendar probe, and the exit criterion with the mode check. Its checklist gains an M17 block.
+- **README's safety defaults** gain the registry's bound approvals, the recipient rule, the spending limits, Pause and Withdraw, and the audit log.
+- **The read-through,** section by section against this spec:
+  - D2: the expiry at boot, and the token a command-line Confirm carries: §11.1;
+  - D3: the probe, §11.7; an unconfirmed write, §11.6;
+  - D4: Allow, Remove, and a Gmail outage holding a Confirm: §11.5;
+  - D5: the cap, raising it, the ceiling, the alerts, a model with no price, a development key of its own: §11.1 and §11.2; the health fields: §11.6;
+  - D6: Pause and Resume from the web app and the command line, what carries on, Withdraw: §11.3 and §11.4;
+  - D7: the Activity page and the append-only log: §11.6;
+  - D8: the migration, §11.1; what is kept, §11.6;
+  - the exit criterion, and the open question on the calendar and invitation emails: §11.8.
+
+  No step in the spec is left outside the docs. The developer-only details (the test fixture's delete order, `poll --reset`) stay in the code's own docstrings.

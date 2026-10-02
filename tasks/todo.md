@@ -1207,7 +1207,7 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** `docs/DEPLOY.md`: the cap and how to raise it, Pause, Withdraw, contacts, the mode-check procedure for the end tests. README: the safety section. The spec's running notes.
 
 **Acceptance criteria:**
-- [ ] A read-through against the spec finds no step outside the docs.
+- [x] A read-through against the spec finds no step outside the docs.
 
 **Verification:** the read-through, recorded in the running notes.
 

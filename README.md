@@ -370,6 +370,18 @@ Deployment runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 - `REVIEWER_ENABLED` and `INGEST_ENABLED` default to **false**. Both spend money
   without anyone having asked for anything.
 - The dashboard admits one verified Google address, `OWNER_EMAIL`. A blank value admits nobody.
+- Every side effect goes through one registry, under an approval bound to
+  the exact arguments and the `DRY_RUN` the owner saw: a Confirm from an
+  older card, or one for a proposal made under the other mode, is refused.
+- An invite's guests must be in the email's thread, or allowed by the owner.
+  Anyone else blocks the Confirm until they are.
+- Model spending stops at `MONTHLY_BUDGET_USD` a month (default $40), and one
+  message at `MESSAGE_CEILING_USD` ($0.50). A model with no price is never
+  called.
+- The owner can pause the agent, and withdraw a queued decision, from the web
+  app or the command line.
+- Every attempt to act, refusals included, is recorded in an append-only audit
+  log that quotes no email.
 - Real email lives in gitignored directories. Only anonymised fixtures are
   committed, and the labelled retrieval queries are not committed at all.
 
