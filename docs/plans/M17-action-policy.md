@@ -651,3 +651,15 @@ and the owner's end tests.
 - **Embeddings** are priced at four characters a token and marked estimates. `gemini-embedding-001` is no longer listed on the pricing page, so it is priced at Gemini Embedding 2's $0.20 per million tokens, as M15's measurement priced it.
 - **The settings** `MONTHLY_BUDGET_USD` (40) and `MESSAGE_CEILING_USD` (0.50) are new. What happens when the gate refuses -- poll stopping, a message released or skipped as too costly, the alerts and `/health` -- is 17.11's.
 - **Search** passes the gate's refusals up instead of degrading to keyword search.
+- **The review (2026-10-02)** found the cut aimed at the wrong place. Production sends each prompt as one string, with an owner's correction or the proposal under review after the email, and a cut from the end removed exactly those: an Edit could silently do nothing, and a sender could pad an email to switch the reviewer off. Now:
+  - callers cut first, where they know what can give way: the email's body, never what follows it (`prompts.user_content(..., room=)`). A short email's prompt is byte for byte what it was, so the frozen baseline still stands;
+  - the wrapper's cut stays as a backstop. It counts tool calls and their answers, never touches a model's own turn (it carries the thought signature), and cuts the user's text from the middle, keeping both ends;
+  - the Gateway's state is held to the same bound: 23,000 characters, plus the question.
+- **Also from the review:**
+  - a call that reports no usage is estimated from characters and flagged, rather than recorded as free;
+  - a report of more cached tokens than prompt tokens no longer stops the row being written;
+  - search with no gate passed meters on a connection of its own, not on the caller's, where a rollback would erase the rows;
+  - the eval harness and the demo share one gate per run, and a command-line gate waits at most 10 seconds for the database;
+  - the wrapper's raw clients are private, and the call-site test now also catches other spellings of a Gemini client, the Gemini API's host, and any reach for the raw client;
+  - the model probe lists models without the metered client, which offers no listing.
+- **Accepted:** if the database fails just after a billed embedding, search falls back to keyword search and that row is lost. The session's next write fails anyway, and one embedding costs a fraction of a cent. The review's finding that poll and the worker dead-lettered a refusal was 17.11's work, and is done there.

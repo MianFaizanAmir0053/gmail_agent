@@ -75,9 +75,13 @@ def build_reviewed(owner_email: str = "me@example.com") -> ReviewedExtractor:
     evidence is measuring something different from one with it.
     """
     from app.agents.reviewer import build_reviewer
+    from app.config import get_settings
     from app.extraction.pipeline import build_pipeline
+    from app.policy import models
 
+    # One gate for both, so each sees the other's spend at once (M17, D5).
+    meter = models.local_gate(get_settings())
     return ReviewedExtractor(
-        pipeline=build_pipeline(owner_email=owner_email),
-        reviewer=build_reviewer(),
+        pipeline=build_pipeline(owner_email=owner_email, gate=meter),
+        reviewer=build_reviewer(gate=meter),
     )

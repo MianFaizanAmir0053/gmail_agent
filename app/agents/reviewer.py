@@ -45,6 +45,7 @@ from app.extraction import prompts
 from app.extraction.llm import GenaiLike, Usage, structured_call
 from app.google.calendar import CalendarClient
 from app.policy.budget import Gate
+from app.policy.models import MAX_PROMPT_CHARS
 from app.tools.calendar_tool import FREEBUSY_TOOL, execute_freebusy
 from app.tools.search_context import SEARCH_CONTEXT_TOOL, Searcher, execute_search_context
 from app.tools.search_context import TOOL_NAME as SEARCH_TOOL_NAME
@@ -222,13 +223,18 @@ class Reviewer:
         user_timezone: str,
     ) -> str:
         proposed = extraction.model_dump(mode="json", exclude={"reasoning", "confidence"})
-        return (
-            f"{prompts.grounding_block(now_utc, user_timezone)}\n"
-            f"{prompts.email_block(email)}\n"
-            "The extractor proposed:\n"
-            f"{proposed}\n\n"
-            f"Its stated reasoning: {extraction.reasoning}\n"
+        # The proposal under review is never cut: on a long email the body
+        # gives way, so there is always something to review (M17, D5).
+        tail = (
+            f"The extractor proposed:\n{proposed}\n\nIts stated reasoning: {extraction.reasoning}\n"
         )
+        content = prompts.user_content(
+            email,
+            now_utc=now_utc,
+            user_timezone=user_timezone,
+            room=MAX_PROMPT_CHARS - 1 - len(tail),
+        )
+        return f"{content}\n{tail}"
 
 
 def build_reviewer(

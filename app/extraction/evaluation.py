@@ -35,10 +35,10 @@ while a false positive only costs an extraction call that can still say no --
 so the golden set, not intuition, should be what moves it.
 """
 
-STATE_CHAR_LIMIT = 40_000
-"""Jev reads at most 32,000 tokens of state plus question. Forty thousand
-characters stays under that even for scripts that tokenise at under two
-characters a token; a longer email is cut, and its verdict says so."""
+STATE_CHAR_LIMIT = 23_000
+"""Within the bound on one call (M17, D5), 24,000 characters, with room for the
+question. Jev reads at most 32,000 tokens of state plus question, so this stays
+under that too. A longer email is cut, and its verdict says so."""
 
 _QUESTION_ID = "calendar_event"
 

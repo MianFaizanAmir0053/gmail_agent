@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from app.config import get_settings
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.pipeline import build_pipeline
+from app.policy import models
 from app.rag.search import build_context_search
 from app.store.db import connect
 
@@ -60,7 +61,9 @@ def main() -> None:
     email = _email(args.body, args.sender, args.subject, now)
     zone = settings.user_timezone
 
-    blind = build_pipeline(owner_email=settings.owner_email)
+    # One gate for every call this run makes (M17, D5).
+    meter = models.local_gate(settings)
+    blind = build_pipeline(owner_email=settings.owner_email, gate=meter)
     _show(
         "without search_context",
         blind.extract(email, now_utc=now, user_timezone=zone),
@@ -70,7 +73,8 @@ def main() -> None:
     with connect(settings.database_url) as conn:
         searching = build_pipeline(
             owner_email=settings.owner_email,
-            searcher=build_context_search(conn, settings),
+            searcher=build_context_search(conn, settings, gate=meter),
+            gate=meter,
         )
         _show(
             "with search_context",

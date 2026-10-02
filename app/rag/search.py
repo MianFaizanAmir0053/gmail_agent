@@ -327,12 +327,13 @@ def build_context_search(
     conn: psycopg.Connection, settings: Any, *, gate: Gate | None = None
 ) -> ContextSearch:
     """Wire a searcher from settings, metered like the pipeline (M17, D5): by
-    `gate`, or one on this connection."""
+    `gate`, or one on a connection of its own. Not on `conn`, which may be
+    inside a transaction: a rollback would take the spend rows with it."""
     from app.policy import models
 
     return ContextSearch(
         conn=conn,
-        client=models.client(settings, gate or models.gate(settings, conn)),
+        client=models.client(settings, gate or models.local_gate(settings)),
         embedding_model=settings.embedding_model,
         embedding_dimensions=settings.embedding_dimensions,
         mode=settings.retrieval_mode,

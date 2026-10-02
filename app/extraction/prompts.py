@@ -21,6 +21,10 @@ from zoneinfo import ZoneInfo
 
 from app.contracts import EmailMessage
 
+CUT_NOTE = "\n[Some of this text was cut to fit the agent's limit on one prompt.]\n"
+"""Marks where text was cut to the bound on one call (M17, D5), so the model
+knows it is reading part of it."""
+
 CONVENTIONS = """\
 Conventions, applied without exception:
 
@@ -141,7 +145,12 @@ def grounding_block(now_utc: datetime, user_timezone: str) -> str:
     )
 
 
-def email_block(email: EmailMessage) -> str:
+def email_block(email: EmailMessage, *, body_room: int | None = None) -> str:
+    """The email as the model reads it. With `body_room`, a longer body is cut
+    to that many characters, `CUT_NOTE` included."""
+    body = email.body_text
+    if body_room is not None and len(body) > body_room:
+        body = body[: max(body_room - len(CUT_NOTE), 0)] + CUT_NOTE
     recipients = ", ".join(email.recipients) or "(none)"
     return (
         "Email:\n"
@@ -150,9 +159,18 @@ def email_block(email: EmailMessage) -> str:
         f"Subject: {email.subject}\n"
         f"Received: {email.received_at:%Y-%m-%d %H:%M} UTC\n"
         "Body:\n"
-        f"{email.body_text}\n"
+        f"{body}\n"
     )
 
 
-def user_content(email: EmailMessage, *, now_utc: datetime, user_timezone: str) -> str:
-    return f"{grounding_block(now_utc, user_timezone)}\n{email_block(email)}"
+def user_content(
+    email: EmailMessage, *, now_utc: datetime, user_timezone: str, room: int | None = None
+) -> str:
+    """The grounding block and the email. With `room`, the whole fits in that
+    many characters (M17, D5): the email's body gives way first, so its
+    headers, and whatever a caller puts after it, are kept whole."""
+    grounding = grounding_block(now_utc, user_timezone)
+    if room is None:
+        return f"{grounding}\n{email_block(email)}"
+    fixed = len(grounding) + 1 + len(email_block(email.model_copy(update={"body_text": ""})))
+    return f"{grounding}\n{email_block(email, body_room=max(room - fixed, 0))}"

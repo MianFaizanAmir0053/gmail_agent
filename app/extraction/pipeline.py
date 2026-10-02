@@ -29,6 +29,7 @@ from app.extraction.payloads import (
     to_extraction_result,
 )
 from app.policy.budget import Gate
+from app.policy.models import MAX_PROMPT_CHARS
 from app.tools.search_context import (
     SEARCH_CONTEXT_TOOL,
     TOOL_NAME,
@@ -177,13 +178,16 @@ class ExtractionPipeline:
         return execute_search_context(self.searcher, args)
 
     def _user(self, email: EmailMessage, now_utc: datetime, user_timezone: str, extra: str) -> str:
-        content = prompts.user_content(email, now_utc=now_utc, user_timezone=user_timezone)
-        if extra:
-            # Appended verbatim. The caller labels it, because by M13 there are
-            # two possible sources -- a human and the reviewer agent -- and only
-            # the caller knows which one this is.
-            content = f"{content}\n{extra}\n"
-        return content
+        # `extra` is appended verbatim. The caller labels it, because by M13
+        # there are two possible sources -- a human and the reviewer agent --
+        # and only the caller knows which one this is. It is never cut: on a
+        # long email the body gives way, so an owner's correction still
+        # arrives whole (M17, D5).
+        tail = f"\n{extra}\n" if extra else ""
+        content = prompts.user_content(
+            email, now_utc=now_utc, user_timezone=user_timezone, room=MAX_PROMPT_CHARS - len(tail)
+        )
+        return f"{content}{tail}"
 
 
 def build_pipeline(

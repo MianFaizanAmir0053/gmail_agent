@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     classify_model: str = "gemini-3.5-flash-lite"
 
     ai_gateway_api_key: SecretStr | None = None
+    """Vercel AI Gateway key. Needed only when `classify_model` is an evaluation
+    model the gateway serves, such as `typesafe-ai/jev`, rather than a Gemini one."""
 
     monthly_budget_usd: float = 40.0
     """Model spending stops here each UTC month (M17, D5). Raising it means
@@ -64,8 +66,6 @@ class Settings(BaseSettings):
     message_ceiling_usd: float = 0.50
     """What one message may spend on model calls before it is skipped as too
     costly to read (M17, D5)."""
-    """Vercel AI Gateway key. Needed only when `classify_model` is an evaluation
-    model the gateway serves, such as `typesafe-ai/jev`, rather than a Gemini one."""
 
     # --- Retrieval (M10) ----------------------------------------------------
     embedding_model: str = "gemini-embedding-001"

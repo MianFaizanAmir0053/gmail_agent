@@ -14,6 +14,7 @@ eval run exhausts -- so probing costs a few tokens and saves a wasted quota day.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from typing import Any
 
 CANDIDATES = (
@@ -48,9 +49,9 @@ def _summarise(exc: Exception) -> str:
     return text[:90]
 
 
-def list_models(client: Any) -> None:
+def list_models(advertised: Iterable[Any]) -> None:
     rows: list[tuple[str, str]] = []
-    for model in client.models.list():
+    for model in advertised:
         name = str(getattr(model, "name", "")).removeprefix("models/")
         actions: Any = getattr(model, "supported_actions", None) or []
         if "generateContent" not in actions:
@@ -82,11 +83,13 @@ def main() -> None:
     parser.add_argument("--probe", action="store_true", help="Make one tiny call per candidate.")
     args = parser.parse_args()
 
-    client = _client()
     if args.probe:
-        probe(client)
+        probe(_client())
     else:
-        list_models(client)
+        from app.config import get_settings
+        from app.policy import models
+
+        list_models(models.advertised(get_settings()))
 
 
 if __name__ == "__main__":
