@@ -1,26 +1,38 @@
-# Deploying mailagent (M15: observe mode)
+# Deploying mailagent
 
-This deploys the existing pipeline to run **unattended, writing nothing**. It
-polls Gmail, classifies, and parks meeting proposals. It never touches a
-calendar, because `DRY_RUN` stays `true` until M17 binds approvals to the
-setting they were made under. The spec is
-[`plans/M15-go-live.md`](plans/M15-go-live.md).
+This deploys the whole agent at once, to run **unattended, writing nothing**:
+- M15's hardened backend on Fly;
+- M16's web app on Vercel, with push to the owner's phones;
+- M17's action policy;
+- M20's mail sync.
+
+It reads Gmail, parks meeting proposals, and lets the owner decide them from
+the phone. It never writes to a calendar while `DRY_RUN` is `true`:
+- `DRY_RUN` goes off on the test calendar only for M17's end tests (§11.8);
+- it goes off for real use only after M18.
+
+The specs are in [`plans/`](plans/).
+
+**One deploy, not two.** The plan was to run M15 alone for its eight days
+(from the tag `m15-day0`), then deploy M16 on top. On 2026-10-02 the owner
+chose one deploy of the branch head instead. M15's eight-day check, the
+token's seven-day question and the measurements run on the full system. The
+order of the day is in [§3](#3-deploy-day-in-order).
 
 The stack, chosen in M15 task 1 (prices and sources are in that module's
-running notes):
+running notes), with M16's parts in [§9](#9-m16-the-web-app-and-push):
 
 | Part | Choice | About |
 |---|---|---|
 | App | Fly.io, `sin` (Singapore), one shared-cpu-1x 512 MB machine with swap | $4 a month |
 | Database | Supabase Free, Singapore, **direct** connection | $0 |
+| Web app | Vercel Hobby (§9) | $0 |
 | Uptime | Better Stack Free, HTTP check on `/health` | $0 |
-| Models | Gemini API on the **paid** tier | measured in M15 |
+| Models | Gemini API on the **paid** tier | capped at $40 a month (§11.2) |
 
-One process: FastAPI serves `/health`, and APScheduler runs the poll, the
-hourly purge and the token check inside it.
-
-M16 adds the web app and web push on top of this stack, after M15 closes.
-Its steps are in [§9](#9-m16-the-web-app-and-push).
+One process on Fly: FastAPI serves `/health` and the web app's `/api/*`, and
+APScheduler runs every job inside it. The jobs are the poll, the decisions
+worker, the mail sync, the watch, the hourly purge and the token check.
 
 ---
 
@@ -45,10 +57,28 @@ ledger never offers it to the poller again. So billing comes first.
    - Copy the **direct** connection string: `db.<project>.supabase.co:5432`. It is IPv6-only on the free plan, and Fly machines reach it over IPv6. The session pooler on port 5432 also works.
    - **Never use port 6543**, the transaction pooler: the app refuses to start on it, because it breaks LangGraph's checkpointer.
 
-4. **Publish the OAuth app.** In Cloud console, open *OAuth consent screen →
-   Audience* and press **Publish app**. Keep the user type External and do
-   not submit for verification: this is personal use by fewer than 100 users.
-   This is the change M15 exists to test (see §7).
+4. **A production Gmail OAuth app, published.** A Cloud project of its own
+   is cleanest. The owner chose an existing one on 2026-10-02, already "In
+   production": one consent screen serves every app in a project, so its name
+   is what the Gmail grant shows, and Google may ask that project for
+   verification.
+   - enable the **Gmail API** and the **Google Calendar API**;
+   - in *Google Auth Platform*, the user type is External;
+   - under *Data Access*, the agent's two scopes may be listed,
+     `https://www.googleapis.com/auth/gmail.readonly` and
+     `https://www.googleapis.com/auth/calendar.events`. The justification
+     and video boxes there belong to a verification request, and stay
+     empty. For personal use the list is optional: the sign-in asks for both
+     scopes, and the owner continues past the "unverified app" warning;
+   - under *Audience*, the status must be **In production**: press **Publish
+     app** if it is not, and never **Back to testing**. Do not submit for
+     verification: this is personal use by fewer than 100 users. Publishing
+     is the change M15 exists to test (see §7);
+   - under *Clients*, create a client of type **Desktop app**, download its
+     JSON, and save it as `secrets/client_secret-prod.json`. Development keeps
+     `secrets/client_secret.json` and its own client.
+
+   The web app's sign-in (§9.1) needs a separate, new project all the same.
 
 5. **A production-only encryption key.** Never reuse your dev key:
 
@@ -61,12 +91,16 @@ ledger never offers it to the poller again. So billing comes first.
 
    ```powershell
    $env:FERNET_KEY = "<production key>"
+   $env:GOOGLE_CLIENT_SECRETS_PATH = "secrets/client_secret-prod.json"
    $env:GOOGLE_TOKEN_PATH = "secrets/token-prod.enc"
    .\tasks.ps1 reauth --minted-under production
    ```
 
-   `--minted-under` is required. Say what the console shows *right now*: the
-   status at the moment of consent decides whether the token lapses.
+   Run all four lines in one PowerShell window: the settings last only for
+   that window. `--minted-under` is required. Say what the console shows
+   *right now*: the status at the moment of consent decides whether the token
+   lapses. A token works only with the client it was minted with, so Fly gets
+   the production client's file too (§2).
 
 7. **Uptime monitor.** In Better Stack, create an HTTP monitor on
    `https://<app>.fly.dev/health` every 3 minutes, with email alerts. Any
@@ -86,7 +120,7 @@ through `fly ssh console` resolve them the same way the server does.
 | `DATABASE_URL` | Supabase direct connection string |
 | `GEMINI_API_KEY` | The paid project's key |
 | `FERNET_KEY` | The production key from §1.5 |
-| `GOOGLE_CLIENT_SECRETS_B64` | base64 of `secrets/client_secret.json` |
+| `GOOGLE_CLIENT_SECRETS_B64` | base64 of `secrets/client_secret-prod.json`, the client the token was minted with (§1.4) |
 | `GOOGLE_CLIENT_SECRETS_PATH` | `/app/secrets/client_secret.json` |
 | `GOOGLE_TOKEN_B64` | base64 of `secrets/token-prod.enc` |
 | `GOOGLE_TOKEN_PATH` | `/app/secrets/token.enc` |
@@ -94,12 +128,16 @@ through `fly ssh console` resolve them the same way the server does.
 | `TEST_CALENDAR_ID` | The throwaway calendar. `graph_session` refuses to start without it |
 | `OWNER_EMAIL` | Your address |
 | `USER_TIMEZONE` | e.g. `Asia/Karachi` |
-| `DRY_RUN` | `true`: **not** turned off in M15 |
+| `DRY_RUN` | `true`: it goes off only for the end tests (§11.8) |
 | `INGEST_ENABLED` | `false`, until M18 strips one-time codes |
 | `SEARCH_CONTEXT_ENABLED` | `false`: the production corpus is empty |
 | `REVIEWER_ENABLED` | `false` |
 | `ALLOWED_CHAT_IDS` | `[]` |
-| `TELEGRAM_*` | unset: the channel arrives in M16 |
+| `TELEGRAM_*` | unset: the web app replaces it (§9) |
+
+Staged with these: M16's three secrets, `WEB_API_SECRET`, `VAPID_PRIVATE_KEY`
+and `WEB_APP_URL` (§9.5), and, if the defaults do not suit, M17's two limits
+(§11.1).
 
 `fly.toml` already sets `APP_ENV=prod`, `RUN_SCHEDULER=true` and
 `MIGRATE_ON_BOOT=true`.
@@ -118,21 +156,30 @@ fly secrets set --stage DATABASE_URL="..." GEMINI_API_KEY="..." FERNET_KEY="..."
 
 ---
 
-## 3. Deploy
+## 3. Deploy day, in order
 
-**M15 deploys the tag `m15-day0`, not the branch head.** The branch has since
-gained M16's decision queue, and the measurement window must run the code M15
-specified. M16 deploys after M15 closes (M16 task 16.23). Deploy from a
-worktree of the tag, so the working copy is left alone:
+**Before the day:**
+- §1, in order;
+- the sign-in project, the keys and the Vercel project's day-1 variables (§9.1, §9.2, §9.4);
+- the phone sign-in test (M16 task 16.2).
 
-```bash
-git worktree add ../mailagent-m15 m15-day0
-cd ../mailagent-m15
-fly launch --no-deploy        # first time only; keeps the existing fly.toml
-fly deploy --ha=false
-fly scale count 1
-fly status                    # exactly one machine
-```
+**The day:** one deploy of the branch head (`v2-plan`), from this working copy.
+
+1. Stage the Fly secrets: §2's, M16's (§9.5), and M17's limits if the defaults do not suit (§11.1). `DRY_RUN=true`.
+2. Deploy one machine:
+
+   ```bash
+   fly launch --no-deploy        # first time only; keeps the existing fly.toml
+   fly deploy --ha=false
+   fly scale count 1
+   fly status                    # exactly one machine
+   ```
+
+   Boot applies every migration, the first time from 001.
+3. In Supabase, give `web_reader` its password, and download the CA certificate (§9.3).
+4. Set Vercel's deploy-day variables, then redeploy production (§9.4).
+5. On each phone, open the app, sign in, and turn on notifications (§9.6, step 4).
+6. Run the checks: §4, §9.6 step 5, §10.2 and §11's checklist.
 
 `--ha=false` matters. A second machine would run a second poller, and two boots
 would race to apply migrations. `fly.toml` also gives the poller 120 seconds to
@@ -179,6 +226,8 @@ Mint a second production token, the same way as the primary, into its own
 file:
 
 ```powershell
+$env:FERNET_KEY = "<production key>"
+$env:GOOGLE_CLIENT_SECRETS_PATH = "secrets/client_secret-prod.json"
 $env:GOOGLE_TOKEN_PATH = "secrets/token-standby-prod.enc"
 .\tasks.ps1 reauth --minted-under production
 ```
@@ -203,8 +252,10 @@ fly ssh console -C "sh -c 'cd /app && python -m app.jobs.approve --sweep-all'"
 ```
 
 `--sweep-all` ends every parked proposal with the reason "swept: observe mode
-ended". It is the last step of M15, and it must run before `DRY_RUN` is ever
-turned off.
+ended". It is no longer needed before `DRY_RUN` goes off: since M17, a
+restart with `DRY_RUN` off expires every proposal still waiting from dry-run
+days (§11.1). It stays for clearing proposals by hand, for instance at the end
+of M15's window (exit criterion 5).
 
 ---
 
@@ -226,10 +277,12 @@ with a weekly `reauth`, or a Workspace mailbox with an "Internal" app.
 
 ---
 
-## 8. What M15 does not do
+## 8. What this deploy does not do
 
-- **Turn off `DRY_RUN`.** A proposal records the `DRY_RUN` value it parked
-  under, and M17 makes `act` refuse a mismatch. Until then, writing is off.
+- **Turn off `DRY_RUN`.**
+  - It goes off on the test calendar for M17's end tests (§11.8), after the probe passes.
+  - It goes off for real use only after M18.
+  - A proposal records the `DRY_RUN` value it parked under, and M17 refuses a mismatch.
 - **Telegram.** The owner's network blocks it, and M16 replaces it with a web
   app.
 - **Ingestion.** Off until M18 strips one-time codes and reset links before
@@ -240,9 +293,8 @@ with a weekly `reauth`, or a Workspace mailbox with an "Internal" app.
 ## 9. M16: the web app and push
 
 M16 adds a web app on Vercel, where the owner sees and decides proposals, and
-web push to both phones. It deploys **after M15 closes** (M16 task 16.23),
-from the branch head in this working copy rather than from a tag. `DRY_RUN`
-stays `true`. The spec is
+web push to both phones. It deploys **with everything else**, in the one
+deploy of §3 (M16 task 16.23). `DRY_RUN` stays `true`. The spec is
 [`plans/M16-web-channel.md`](plans/M16-web-channel.md).
 
 | Part | Choice | About |
@@ -288,7 +340,7 @@ from a tap shows **Turn on notifications** again instead.
 
 ### 9.3 The database role (owner, deploy day)
 
-Fly's boot applies migrations 007 to 009 (`MIGRATE_ON_BOOT=true`). Migration
+Fly's first boot applies every migration (`MIGRATE_ON_BOOT=true`). Migration
 008 creates the role `web_reader`, which can read only what the web app shows
 and cannot log in yet. Migration 009 takes back what Supabase granted its
 Data API roles (§1.3).
@@ -352,7 +404,7 @@ setting or changing it. Pages that read the database fail until
 
 ### 9.5 Fly (deploy day)
 
-Three more secrets join §2's:
+Three more secrets, staged with §2's before the one deploy (§3):
 
 | Variable | Value |
 |---|---|
@@ -362,18 +414,11 @@ Three more secrets join §2's:
 
 `TELEGRAM_*` stays unset: the web app replaces it.
 
-### 9.6 Deploy day, in order (M16 task 16.23)
+### 9.6 Deploy day: the web app's part (M16 task 16.23)
 
-1. Stage the Fly secrets (§9.5) and deploy, from this working copy:
+The day's order is §3's. The web app's steps:
 
-   ```bash
-   fly secrets set --stage WEB_API_SECRET="..." VAPID_PRIVATE_KEY="..." WEB_APP_URL="https://..."
-   fly deploy --ha=false
-   fly status                    # exactly one machine
-   ```
-
-   Boot applies 007 to 009. Reconciliation then gives any proposal still
-   parked from M15 its row, so the timeline shows it.
+1. The Fly deploy is §3's, with §9.5's secrets staged alongside §2's.
 2. Set the `web_reader` password, and download the CA certificate (§9.3).
 3. Set Vercel's deploy-day variables (§9.4), then redeploy production.
 4. On each phone, open the app and sign in, then tap **Turn on
@@ -608,6 +653,9 @@ log. Spec: [`docs/plans/M17-action-policy.md`](plans/M17-action-policy.md).
   `MIGRATE_ON_BOOT=true`, before `011`. It is additive and can be re-run. It
   gives `web_reader` read access to `control`, `confirmed_contacts` and
   `audit_log`, for the web app's header, cards and Activity page.
+  `012_review_fixes.sql` follows `011`:
+  - it lets the budget's state say that a model has no price (11.2);
+  - it indexes the audit log by decision.
 - `FERNET_KEY` must be set on Fly: it keys the hash every approval binds,
   and the audit log's record of a contact. Without it, Allow answers 503.
 - Two optional settings: `MONTHLY_BUDGET_USD` (default 40) and
@@ -657,11 +705,14 @@ log. Spec: [`docs/plans/M17-action-policy.md`](plans/M17-action-policy.md).
   restarts the machine. The alerts re-arm for the new value, the header
   clears within five minutes, and held work moves on. A new month does the
   same by itself.
-- **A model in use with no price** makes `/health` a 503 ("a model in use
-  has no price"): the gate refuses every call to it, and new work waits as
-  it does at the cap. Add its rate to `app/obs/pricing.py`, or switch back to
-  a priced model. The embedding model counts only while search or ingestion
-  is on.
+- **A model in use with no price:**
+  - `/health` returns 503 ("a model in use has no price");
+  - the gate refuses every call to it, and new work waits as it does at the cap;
+  - the web app's header says new work has stopped, and a held Edit's card says why;
+  - no budget alert goes out: nothing was spent, and the 503 is what the uptime monitor sees.
+
+  Add its rate to `app/obs/pricing.py`, or switch back to a priced model. The
+  embedding model counts only while search or ingestion is on.
 
 ### 11.3 Pause and Resume
 
@@ -673,31 +724,72 @@ fly ssh console -C "sh -c 'cd /app && python -m app.jobs.control resume'"
 fly ssh console -C "sh -c 'cd /app && python -m app.jobs.control status'"
 ```
 
-Locally, `.\tasks.ps1 pause` and `.\tasks.ps1 resume`, against the database
-`.env` names. Every change is audited.
+Locally, `.\tasks.ps1 pause`, `.\tasks.ps1 resume` and `.\tasks.ps1 status`
+run against the database `.env` names. Each prints that database's host:
+check it before trusting a pause. Every change is audited, with where it came
+from: the Activity page says "from the web app" or "from the command line".
 
-- **While paused,** within one tick: poll claims nothing, the worker applies
-  no decision, ingestion claims nothing, and the registry refuses any action
-  already on its way. A decision held this way costs no attempt and applies
-  as soon as the agent resumes.
+- **Resume asks first in the web app.** The first tap shows the question,
+  "Keep paused" or "Resume now". "Resume now" answers only after a moment,
+  so a double tap on Resume changes nothing.
+
+  Resume releases every held decision at once, and a Confirm it sends cannot
+  be called back. A Resume from the command line does not wake the worker:
+  its next tick, within fifteen seconds, carries on.
+- **While paused,** within one tick:
+  - poll claims nothing;
+  - ingestion claims nothing;
+  - the worker applies no decision. It reads Pause before each decision, and
+    again just before it resumes a thread;
+  - the registry refuses any action already on its way.
+
+  A decision held this way costs no attempt and applies as soon as the agent
+  resumes.
 - **What carries on:** reads, reconciliation, the purge, the token check and
   the mail sync. None calls a model. Notifications still go out: a
   reconciled proposal is announced, and a token alert is sent.
-- **`/health`** stays 200. With the bearer it shows `paused`. Held decisions
-  do not count toward the one-hour clock for stuck ones.
+- **`/health`** stays 200. With the bearer it shows `paused`, as of the
+  decisions job's last tick (every fifteen seconds); the web app's header
+  reads it live. Held decisions do not count toward the one-hour clock for
+  stuck ones. Resume moves each held decision on by the length of the pause:
+  one that was already overdue before it stays overdue, and is still
+  reported.
 
 ### 11.4 Withdraw
 
 A card being applied ("Applying…") offers Withdraw. The worker carries the
-request out before anything else, even while paused:
+request out before anything else, even while paused. It reads the request as
+it takes the decision, so one made a moment after the worker began its pass
+is still seen first.
 
-- if nothing has run yet, the decision is withdrawn and the proposal comes
-  back, at a new generation, so the old card's Confirm is refused as stale;
-- if the decision is already being applied -- a calendar write begun, or an
-  Edit's re-extraction under way -- the request is declined, the card says
-  "Already being applied", and the decision goes on.
+- **If nothing has run yet,** the decision is withdrawn and the proposal
+  comes back at a new generation, so the old card's Confirm is refused as
+  stale.
+- **If a Pause caught a Confirm at its last step,** before its calendar write
+  began, Withdraw still stops it. The card cannot come back, because the
+  agent is past the point where it asked: the proposal ends as rejected,
+  "withdrawn by the owner". Nothing is sent.
+- **If the decision is already being applied** -- a calendar write begun, or
+  an Edit's re-extraction under way -- the request is declined, the card says
+  "Already being applied", and the decision goes on. A request made while
+  the decision is being applied is declined as it finishes. The Activity page
+  shows it.
+- **A withdraw that fails** is tried again every five minutes. The decision
+  is not applied meanwhile, and `/health` reports a request more than an
+  hour old as stuck.
 
 To stop a queued Confirm for certain: Pause, then Withdraw, then Resume.
+
+Accepted, as they are:
+- **The decisions job needs Google's token** to carry out a withdraw. During
+  a token outage the request waits, then runs before the decision could be
+  applied.
+- **After a restart in the middle of a pass,** the decision that pass held
+  waits up to thirty minutes for its lease to lapse. Its withdraw request
+  then runs first.
+- **A Confirm held at its last step** -- by a Pause, or by Gmail being down
+  -- whose guests change meanwhile fails when it runs ("guests outside the
+  thread"). Nothing is sent, but the owner must make the event again.
 
 ### 11.5 Guests outside the thread
 
@@ -717,16 +809,18 @@ fly ssh console -C "sh -c 'cd /app && python -m app.jobs.contacts --remove <addr
 ```
 
 - **Gmail down:** a Confirm waits up to an hour for the thread to be read,
-  costing no attempt. After that its guests count as outside, and the
-  proposal comes back. Cancel and Edit never wait.
+  costing no attempt. The hour runs from the later of the Confirm and the
+  last Resume, so a long pause does not use it up. After that its guests count
+  as outside, and the proposal comes back. Cancel and Edit never wait.
 
 ### 11.6 Watching it
 
 - **`/health`** with the bearer adds `budget` (state, the month's spend, the
   cap, and when the watch last read them), `unpriced_models`, `paused`, and
   `unconfirmed_writes`. Its stuck-queue check now reads "a decision has been
-  due for over an hour": a decision waiting for its next attempt, or held by
-  a pause, the cap or a model with no price, is not due.
+  due for over an hour". A decision waiting for its next attempt, or held by
+  a pause, the cap or a model with no price, is not due. A withdraw request
+  over an hour old counts, paused or not.
 - **A calendar write that could not be confirmed:** the write began, the
   attempts ran out, and Google could not be asked whether the event exists.
   Nothing is settled on a guess: the decision stays open and asks Google
@@ -791,7 +885,8 @@ still go out.
 
 - [ ] Billing enabled and budget alert set **before** the first deploy
 - [ ] Supabase direct connection string, `vector` extension enabled, Data API off, SSL enforced
-- [ ] OAuth app published; primary token minted with `--minted-under production` and the production key
+- [ ] Production OAuth project with the Gmail and Calendar APIs, In production; its Desktop client saved as `secrets/client_secret-prod.json`
+- [ ] Primary token minted with that client, `--minted-under production` and the production key
 - [ ] Secrets staged with absolute paths; `DRY_RUN=true`
 - [ ] `fly deploy --ha=false`; `fly status` shows one machine
 - [ ] `/health` returns 200 with `production-unconfirmed`, and `last_poll_ok_at` fills in
@@ -805,7 +900,7 @@ still go out.
 - [ ] Sign-in project separate from the Gmail one, published, `openid email profile` only
 - [ ] Vercel project: root `dashboard`, Node 24, day-1 variables; a second Google account is refused
 - [ ] VAPID pair, `WEB_API_SECRET` and `AUTH_SECRET` generated and pasted straight into Fly and Vercel
-- [ ] Fly secrets staged; `fly deploy --ha=false` from the branch head after M15 closes
+- [ ] M16's Fly secrets staged with §2's, before the one deploy (§3)
 - [ ] `web_reader` password set, and its SQL editor query deleted
 - [ ] Vercel deploy-day variables set, Supabase's CA certificate included, then redeployed
 - [ ] Both phones signed in with notifications on; `/health` with the bearer shows at least 2 subscriptions
@@ -813,14 +908,14 @@ still go out.
 **M20**
 
 - [ ] Migration 011 applied; `OWNER_EMAIL` and `OWNER_ALIASES` complete
-- [ ] First run: `--status` shows the cursor, `feed_from` at the old poller's last pass, the switch-over listed
+- [ ] First run: `--status` shows the cursor, `feed_from` at the mailbox's present (a fresh database, §10.2), the switch-over listed
 - [ ] `/health` 200, and with the bearer `mail_sync.cursor_age_seconds` under two minutes
 - [ ] No `measure` run while the backfill or a catch-up is in progress
 - [ ] The exit criterion (10.8), then seven clean days of recall
 
 **M17**
 
-- [ ] Migration 010 applied; `FERNET_KEY` set on Fly
+- [ ] Migrations 010 and 012 applied; `FERNET_KEY` set on Fly
 - [ ] Development runs on its own Gemini API key
 - [ ] `/health` 200, and with the bearer `budget.state` is `ok` and `paused` is false
 - [ ] Pause and Resume from the header; the Activity page shows both

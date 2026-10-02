@@ -1226,11 +1226,11 @@ The two reviews of 2026-10-02 (the spec's running notes, "Reviews of 17.12–17.
 - A withdraw that fails backs off, and shows on `/health`.
 
 **Acceptance criteria:**
-- [ ] A request made after the pass reads its decisions, but before the lease, is carried out. A request made while the decision is being applied is declined when the decision settles: `withdraw_declined` is audited in the same transaction.
-- [ ] A Pause pressed while a Confirm's guests are checked leaves its thread parked, and Withdraw then returns it. Later decisions in the same pass, Edits included, are not applied.
-- [ ] A Confirm stopped before its write, with its action `approved`, is withdrawn: rejected, "withdrawn by the owner", and nothing is sent. The action row is locked while it is checked.
-- [ ] A withdraw that raises is tried again five minutes later, and the rest of the pass goes on. A request more than an hour old counts on `/health`'s stuck clock, whether paused or not.
-- [ ] Withdrawing a proposal made under the other `DRY_RUN` is audited once, as an expiry.
+- [x] A request made after the pass reads its decisions, but before the lease, is carried out. A request made while the decision is being applied is declined when the decision settles: `withdraw_declined` is audited in the same transaction.
+- [x] A Pause pressed while a Confirm's guests are checked leaves its thread parked, and Withdraw then returns it. Later decisions in the same pass, Edits included, are not applied.
+- [x] A Confirm stopped before its write, with its action `approved`, is withdrawn: rejected, "withdrawn by the owner", and nothing is sent. The action row is locked while it is checked.
+- [x] A withdraw that raises is tried again five minutes later, and the rest of the pass goes on. A request more than an hour old counts on `/health`'s stuck clock, whether paused or not.
+- [x] Withdrawing a proposal made under the other `DRY_RUN` is audited once, as an expiry.
 
 **Verification:** `uv run pytest tests/test_worker.py tests/test_registry.py tests/test_scheduler.py`, and the same files on Neon with `-m integration`; `.\tasks.ps1 check`.
 
@@ -1248,9 +1248,9 @@ The two reviews of 2026-10-02 (the spec's running notes, "Reviews of 17.12–17.
 - The budget state gains `unpriced`, a model in use with no price. Migration 012 adds it, together with an index on `audit_log (decision_id)`.
 
 **Acceptance criteria:**
-- [ ] A decision due fifty minutes before a pause is still counted as stuck after Resume. A decision that fell due during the pause starts its clock at Resume.
-- [ ] With the `control` row missing, `is_paused` and `switch` raise. The audit's `paused` and `resumed` rows carry "from the web app" or "from the command line".
-- [ ] With a model in use that has no price, the watch records `unpriced`, and the header says that new work has stopped.
+- [x] A decision due fifty minutes before a pause is still counted as stuck after Resume. A decision that fell due during the pause starts its clock at Resume.
+- [x] With the `control` row missing, `is_paused` and `switch` raise. The audit's `paused` and `resumed` rows carry "from the web app" or "from the command line".
+- [x] With a model in use that has no price, the watch records `unpriced`, and the header says that new work has stopped.
 
 **Verification:** `uv run pytest tests/test_control.py tests/test_watch.py tests/test_budget.py tests/test_scheduler.py`, on Neon too; `.\tasks.ps1 check`.
 
@@ -1270,10 +1270,10 @@ The two reviews of 2026-10-02 (the spec's running notes, "Reviews of 17.12–17.
 - **An end time:** `_has_event` requires one.
 
 **Acceptance criteria:**
-- [ ] A resync or re-park whose payload was made under the other `DRY_RUN` expires: the proposal is not left failed, and is never announced.
-- [ ] After a two-hour pause, one Gmail error holds a Confirm for ten minutes and does not mark its guests outside.
-- [ ] A found event whose settle fails is left open as an error, not alerted as unconfirmed.
-- [ ] `approve --reconcile` writes no hash and announces nothing.
+- [x] A resync or re-park whose payload was made under the other `DRY_RUN` expires: the proposal is not left failed, and is never announced.
+- [x] After a two-hour pause, one Gmail error holds a Confirm for ten minutes and does not mark its guests outside.
+- [x] A found event whose settle fails is left open as an error, not alerted as unconfirmed.
+- [x] `approve --reconcile` writes no hash and announces nothing. (After the review it records no missing row at all: the scheduler's next pass records, binds and announces it.)
 
 **Verification:** `uv run pytest tests/test_worker.py tests/test_reconcile.py tests/test_graph.py`, on Neon too; `.\tasks.ps1 check`.
 
@@ -1294,9 +1294,9 @@ The two reviews of 2026-10-02 (the spec's running notes, "Reviews of 17.12–17.
   - times are given in the owner's zone.
 
 **Acceptance criteria:**
-- [ ] One tap on Resume changes nothing; the second tap, on a confirmation that appears in a different place, resumes.
-- [ ] With the switches unreadable, the timeline renders, and Pause is still shown.
-- [ ] With every open decision held, the page re-reads every thirty seconds, not three.
+- [x] One tap on Resume changes nothing. The second tap must be on "Resume now", which ignores taps for 600 ms after it appears: the review found that a narrow screen could put it where Resume was. (The browser check waits for the owner's end tests.)
+- [x] With the switches unreadable, the timeline renders, and Pause is still shown.
+- [x] With every open decision held, the page re-reads every thirty seconds, not three.
 
 **Verification:** `cd dashboard; npm test; npm run typecheck; npm run build`. The browser checks wait for the owner's end tests.
 
@@ -1306,7 +1306,7 @@ The two reviews of 2026-10-02 (the spec's running notes, "Reviews of 17.12–17.
 
 - [ ] Python and web checks green, locally and in CI.
 - [x] Fresh-context review of the whole module (2026-10-02): its findings, and those of 17.12–17.13's review, are tasks 17.15–17.18.
-- [ ] A fresh-context review of 17.15–17.18.
+- [x] A fresh-context review of 17.15–17.18: two reviews, all findings folded in (running notes).
 - [ ] The exit criterion waits for the owner's end tests.
 
 ---

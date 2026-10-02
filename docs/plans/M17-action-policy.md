@@ -808,3 +808,60 @@ Neither found a way to write twice, under the wrong `DRY_RUN`, or with arguments
 - `/health`'s `paused` comes from the last decisions tick, at most fifteen seconds old. The web app reads it live.
 - A Confirm whose guests change while it is held at `act` fails at execution ("guests outside the thread") instead of coming back. Nothing is sent.
 - A Resume from the command line does not wake the worker, which runs in another process. Its next tick, within fifteen seconds, carries on.
+
+### Tasks 17.15–17.18: the review fixes (2026-10-02)
+
+- **17.15, Withdraw and Pause at every step.**
+  - The lease is taken with the withdraw request read in the same statement.
+  - A request made while the checks run is read again just before the resume or re-drive, and carried out then: nothing has run.
+  - A settle that finds a request answers it in the same transaction:
+    - a decision that went back to the owner, or expired, has done what Withdraw asks;
+    - one that ran declines the request (`withdraw_declined`).
+  - Pause is read before each decision, and again just before a resume or re-drive. The registry checks it before reading Gmail.
+  - A Confirm stopped before its write is withdrawn by ending it: rejected, "withdrawn by the owner".
+  - A withdraw locks the decision, then its action, the order every settle takes them in, and re-reads the action before refusing it.
+  - A proposal from the other mode is recorded as its expiry, once.
+  - A withdraw that fails keeps the lease for five minutes. `/health` counts a request over an hour old as stuck, paused or not.
+- **17.16, the switches.**
+  - Resume moves each held decision on by the length of the pause.
+  - A missing `control` row raises.
+  - The audit log says where each switch came from.
+  - Autocommit connections time out after ten seconds.
+  - The command line names its database host and prints UTC, and `.\tasks.ps1 status` exists.
+  - The budget state gains `unpriced`. Migration 012 allows it, and also indexes the audit log by decision. M20's recall counts it as held time, from a row of any age.
+- **17.17, the seams.**
+  - The expiry of a re-shown proposal claims the row at the thread's revision, and a re-park's settle checks the mode.
+  - A sweep whose attempts run out ends failed, never handed back: handing it back made it expire itself again, for ever.
+  - The command line's reconcile records no missing row. It counts them, and the scheduler's next pass records, binds and announces each.
+  - The guest hold runs from the later of the Confirm and the last Resume, and never runs out while paused.
+  - A found event is recorded as done before its settle. An open decision whose write is done counts on the stuck clock even while leased.
+  - A return to the owner keeps the guests marked outside.
+  - A meeting with no end is skipped.
+- **17.18, the web app.**
+  - Resume asks again, and "Resume now" ignores taps for 600 ms.
+  - The header takes every fresh server read. It reads again after each navigation (`/api/switches`), and drops a read that a server render overtook.
+  - Held cards slow the re-read to thirty seconds.
+  - A failed switches read leaves Pause and the timeline standing.
+  - The Withdraw answer reads "That decision is no longer queued".
+  - The Activity page drops the false "(cleared)", and names the owner's zone.
+- **Two fresh-context reviews** read the fixes: one of 17.15, 17.16 and 17.18, and one of 17.17 with the first review's fixes. Between them they found one test left on the old Resume rule, and twelve gaps in the code. The gaps were:
+  - the header keeping a stale state;
+  - a Withdraw during the checks declined;
+  - the recall ignoring the new state, and dropping it after a month;
+  - a double tap on a narrow screen;
+  - inverted lock order;
+  - the sweep loop;
+  - the unannounced bare row;
+  - the hold while paused;
+  - a done write hidden by its lease;
+  - a stale header fetch;
+  - a missing control row read as "running" by the web app.
+
+  All are fixed above.
+- **Accepted:**
+  - the lock test runs on one connection, so it proves the re-read, not the lock itself;
+  - any Resume restarts the hour a Gmail outage may hold a Confirm: holding longer is safe, since nothing runs until Gmail answers;
+  - if recording a found event fails, Postgres is failing too, and the alert that follows may say "could not be confirmed".
+- **Tests:**
+  - 1,104 unit tests and 128 web tests pass. Lint, format and type checks are clean, and the production build succeeds.
+  - On Neon, every suite these tasks touch passes: worker 78, recall 27, registry 24, reconcile 20, budget 8, watch 7, approve 5, control 3, web API 3.
