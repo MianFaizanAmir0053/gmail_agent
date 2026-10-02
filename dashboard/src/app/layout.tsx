@@ -42,6 +42,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/failures" prefetch={false}>
               Failures
             </Link>
+            <Link href="/activity" prefetch={false}>
+              Activity
+            </Link>
             <ControlBar />
           </nav>
           {children}

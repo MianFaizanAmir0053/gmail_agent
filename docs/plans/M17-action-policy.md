@@ -696,3 +696,9 @@ and the owner's end tests.
 - **The web app:** Pause / Resume in the header on every page, with banners while paused, at 80% of the cap and at the cap. A queued card shows Withdraw, then "Withdrawing…", or "Already being applied" if the worker declined. A held decision says why it waits: paused, or an Edit at the cap. These were 17.11's leftovers too.
 - **The header reads the switches on every page,** so a failed read renders the page without them rather than failing it; the redirect to sign in still passes through.
 - **Not done here:** the browser check against a local API waits for the owner's end tests, with the rest of the web checks.
+
+### Task 17.13: the Activity page (2026-10-02)
+
+- **`/activity`** lists the latest 100 audit entries, newest first, read as `web_reader`, with each entry's proposal title while the proposal keeps it. The page is in the header's links.
+- **Every kind has words of its own** (`dashboard/src/lib/activity.ts`). A test reads `app/policy/audit.py`'s `Kind` and fails if the two lists differ, so a kind added on Fly must be given words here. A kind the page does not yet know is shown as it is rather than failing the page.
+- **No content:** the log holds none, and the page adds only the proposal's title, as the timeline does. The browser check waits for the owner's end tests.

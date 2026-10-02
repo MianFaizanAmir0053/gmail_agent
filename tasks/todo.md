@@ -1196,7 +1196,7 @@ Spec: [`docs/plans/M17-action-policy.md`](../docs/plans/M17-action-policy.md). E
 **Description:** `/activity`: the latest 100 audit entries, read as `web_reader`, behind the owner's sign-in.
 
 **Acceptance criteria:**
-- [ ] It renders every kind of entry.
+- [x] It renders every kind of entry. (Each kind's words are tested against `app/policy/audit.py`'s list; the browser check waits for the owner's end tests.)
 
 **Verification:** the web checks; the browser.
 
