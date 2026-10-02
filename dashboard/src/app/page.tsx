@@ -4,14 +4,15 @@ import { PushSetup } from "@/components/PushSetup";
 import { Refresher } from "@/components/Refresher";
 import { StableTaps } from "@/components/StableTaps";
 import { ago } from "@/lib/format";
-import { allowedContacts, openProposals, recentDecisions, switches } from "@/lib/proposals";
+import { allowedContacts, openProposals, recentDecisions, switchesOrNull } from "@/lib/proposals";
+import { NO_SWITCHES } from "@/lib/switches";
 import {
   cardView,
   footerKey,
   layoutKey,
   outsideGuestKeys,
   ownerZone,
-  shouldRefresh,
+  refreshEvery,
 } from "@/lib/timeline";
 
 export const dynamic = "force-dynamic";
@@ -26,16 +27,19 @@ export const dynamic = "force-dynamic";
  */
 export default async function TimelinePage() {
   const zone = ownerZone(process.env.OWNER_TIMEZONE);
-  const [{ rows: open, total }, decisions, state] = await Promise.all([
+  // The switches only explain why a card waits: unreadable, the timeline
+  // still shows, without those notes.
+  const [{ rows: open, total }, decisions, read] = await Promise.all([
     openProposals(),
     recentDecisions(),
-    switches(),
+    switchesOrNull(),
   ]);
+  const state = read ?? NO_SWITCHES;
   const allowed = await allowedContacts(outsideGuestKeys(open));
 
   return (
     <>
-      <Refresher active={shouldRefresh(open)} />
+      <Refresher every={refreshEvery(open, state)} />
 
       <h1>Waiting for you</h1>
       <p className="sub">Times are shown in {zone}.</p>

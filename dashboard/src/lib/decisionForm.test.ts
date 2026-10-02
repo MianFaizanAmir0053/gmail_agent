@@ -135,7 +135,9 @@ describe("Withdraw, and the switches (M17, D6)", () => {
 
   it("says what became of a withdraw, in words", () => {
     assert.equal(describeWithdraw("requested").message, "Withdrawing…");
-    assert.match(describeWithdraw("settled").message, /already been applied/);
+    // Settled can mean applied, withdrawn, returned or expired: the words
+    // claim none of them.
+    assert.equal(describeWithdraw("settled").message, "That decision is no longer queued.");
     assert.equal(describeWithdraw("error").tone, "error");
   });
 

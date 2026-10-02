@@ -91,6 +91,18 @@ def test_at_the_cap_the_owner_hears_processing_has_stopped(spent: psycopg.Connec
 
 
 @pytest.mark.integration
+def test_a_model_with_no_price_is_recorded_for_the_header(spent: psycopg.Connection) -> None:
+    """New work has stopped, so the header says so. No budget alert goes:
+    nothing was spent, and `/health`'s 503 names the model (D5)."""
+    settings = _settings().model_copy(update={"classify_model": "gemini-0-unpriced"})
+    channels = FakeChannels()
+
+    watched = watch(spent, settings, channels)
+
+    assert (watched.state, channels.asked, _state(spent)) == ("unpriced", [], "unpriced")
+
+
+@pytest.mark.integration
 def test_raising_the_cap_re_arms_the_alerts(spent: psycopg.Connection) -> None:
     _spend(spent, "0.85")
     channels = FakeChannels()

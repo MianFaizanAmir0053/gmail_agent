@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { banners, heldNote, NO_SWITCHES, readSwitches } from "./switches.ts";
+import {
+  banners,
+  heldNote,
+  NO_SWITCHES,
+  parseSwitches,
+  readSwitches,
+  switchStep,
+} from "./switches.ts";
 
 describe("readSwitches", () => {
   it("reads the control row", () => {
@@ -14,6 +21,37 @@ describe("readSwitches", () => {
   it("says nothing for a row it cannot read", () => {
     assert.deepEqual(readSwitches(undefined), NO_SWITCHES);
     assert.deepEqual(readSwitches({ paused: "yes", budget_state: "broke" }), NO_SWITCHES);
+  });
+
+  it("reads a model with no price as its own state", () => {
+    assert.equal(readSwitches({ paused: false, budget_state: "unpriced" }).budgetState, "unpriced");
+  });
+});
+
+describe("parseSwitches, for the header's re-read after a navigation", () => {
+  it("takes the route's answer", () => {
+    assert.deepEqual(parseSwitches({ paused: true, budgetState: "exhausted" }), {
+      paused: true,
+      budgetState: "exhausted",
+    });
+  });
+
+  it("refuses anything else, so the header keeps what it showed", () => {
+    assert.equal(parseSwitches(null), null);
+    assert.equal(parseSwitches({ paused: "yes", budgetState: "ok" }), null);
+    assert.equal(parseSwitches({ paused: false, budgetState: "broke" }), null);
+  });
+});
+
+describe("the Resume confirmation (M17, D6)", () => {
+  it("asks before it resumes: Resume releases held decisions at once", () => {
+    assert.equal(switchStep({ paused: false, asking: false }), "pause");
+    assert.equal(switchStep({ paused: true, asking: false }), "ask");
+    assert.equal(switchStep({ paused: true, asking: true }), "confirm");
+  });
+
+  it("forgets the question once the agent is no longer paused", () => {
+    assert.equal(switchStep({ paused: false, asking: true }), "pause");
   });
 });
 
@@ -41,6 +79,13 @@ describe("the header's banners (M17, D5 and D6)", () => {
     assert.equal(banner?.text, "Model spending is at 80% of this month's cap.");
     assert.doesNotMatch(banner?.text ?? "", /\$/);
   });
+
+  it("says new work has stopped while a model in use has no price", () => {
+    const [banner] = banners({ paused: false, budgetState: "unpriced" });
+    assert.equal(banner?.tone, "error");
+    assert.match(banner?.text ?? "", /no price/);
+    assert.match(banner?.text ?? "", /stopped/);
+  });
 });
 
 describe("why a queued decision waits", () => {
@@ -55,6 +100,12 @@ describe("why a queued decision waits", () => {
     assert.match(heldNote("edit", capped) ?? "", /spending cap/);
     assert.equal(heldNote("confirm", capped), null);
     assert.equal(heldNote("cancel", capped), null);
+  });
+
+  it("holds an Edit while a model in use has no price, and says why", () => {
+    const unpriced = { paused: false, budgetState: "unpriced" } as const;
+    assert.match(heldNote("edit", unpriced) ?? "", /no price/);
+    assert.equal(heldNote("confirm", unpriced), null);
   });
 
   it("says nothing when nothing holds it", () => {

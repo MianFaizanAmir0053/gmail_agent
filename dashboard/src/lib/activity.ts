@@ -18,7 +18,19 @@ export type ActivityRow = {
   reason: string | null;
   /** The proposal's title, while it is kept. */
   title: string | null;
+  /** Whether the message has a proposal row at all. */
+  has_proposal: boolean;
 };
+
+/**
+ * What an entry was about: its proposal's title while it is kept, and
+ * "(cleared)" once retention has removed it. A message that never had a
+ * proposal, such as one poll skipped as too costly to read, shows nothing.
+ */
+export function proposalLabel(row: Pick<ActivityRow, "message_id" | "title" | "has_proposal">): string {
+  if (!row.message_id || !row.has_proposal) return "";
+  return row.title ?? "(cleared)";
+}
 
 /** Every kind `app/policy/audit.py` may write. A test holds the two lists together. */
 export const KINDS = [
@@ -34,6 +46,7 @@ export const KINDS = [
   "budget_warning",
   "budget_exhausted",
   "budget_ok",
+  "budget_unpriced",
   "message_too_costly",
   "contact_allowed",
   "contact_removed",
@@ -73,15 +86,17 @@ export function activityLine(
     case "proposal_expired":
       return { what: `Proposal expired${why}`, tone: "warn" };
     case "paused":
-      return { what: "Paused", tone: "warn" };
+      return { what: `Paused${row.reason ? `, ${row.reason}` : ""}`, tone: "warn" };
     case "resumed":
-      return { what: "Resumed", tone: "ok" };
+      return { what: `Resumed${row.reason ? `, ${row.reason}` : ""}`, tone: "ok" };
     case "budget_warning":
       return { what: "Model spending reached 80% of the cap", tone: "warn" };
     case "budget_exhausted":
       return { what: "Spending cap reached: new work stopped", tone: "error" };
     case "budget_ok":
       return { what: "Model spending back under 80% of the cap", tone: "ok" };
+    case "budget_unpriced":
+      return { what: "A model in use has no price: new work stopped", tone: "error" };
     case "message_too_costly":
       return { what: "A message was too costly to read", tone: "warn" };
     case "contact_allowed":

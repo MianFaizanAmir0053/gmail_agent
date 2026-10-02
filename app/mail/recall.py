@@ -87,7 +87,11 @@ it in its own words (`app.channel.channels`, `app.channel.webpush`)."""
 _CAP_ENDS = ("budget_ok", "budget_warning")
 """Audit kinds that say spending has started again after a cap."""
 
-_HELD_KINDS = ("paused", "resumed", "budget_exhausted", *_CAP_ENDS)
+_UNPRICED_ENDS = (*_CAP_ENDS, "budget_exhausted")
+"""Audit kinds that end a stop for a model with no price (M17, 17.16): any
+state the watch records next. A cap that follows holds on by itself."""
+
+_HELD_KINDS = ("paused", "resumed", "budget_exhausted", "budget_unpriced", *_CAP_ENDS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,17 +312,20 @@ def held_for(
 def held_intervals(
     conn: psycopg.Connection, since: datetime, now: datetime
 ) -> list[tuple[datetime, datetime]]:
-    """When M17 had paused the agent, or its spending cap had stopped work.
+    """When M17 had paused the agent, or its spending had stopped work.
 
     Read from the audit log, if M17's migration has made one. A pause runs
     until the next resume. A cap runs until spending starts again: the next
-    `budget_ok` or warning (a raised cap), or the end of its UTC month.
+    `budget_ok` or warning (a raised cap), or the end of its UTC month. A
+    model with no price stops work until the watch records any other state:
+    a price does not come back with the month.
     """
     exists = conn.execute("SELECT to_regclass('audit_log') IS NOT NULL").fetchone()
     if not (exists and exists[0]):
         return []
-    # A month back covers any cap still running at `since`; the last pause or
-    # resume before that says whether the agent was paused all along.
+    # A month back covers any cap still running at `since`. Before that, the
+    # last pause or resume says whether the agent was paused all along, and
+    # the last budget state whether a model had no price all along.
     rows = conn.execute(
         """
         (SELECT kind, at FROM audit_log
@@ -326,10 +333,18 @@ def held_intervals(
           ORDER BY at DESC LIMIT 1)
         UNION ALL
         (SELECT kind, at FROM audit_log
+          WHERE kind = ANY(%(states)s) AND at < %(from)s
+          ORDER BY at DESC LIMIT 1)
+        UNION ALL
+        (SELECT kind, at FROM audit_log
           WHERE kind = ANY(%(kinds)s) AND at >= %(from)s)
         ORDER BY at
         """,
-        {"from": since - timedelta(days=32), "kinds": list(_HELD_KINDS)},
+        {
+            "from": since - timedelta(days=32),
+            "states": ["budget_unpriced", "budget_exhausted", *_CAP_ENDS],
+            "kinds": list(_HELD_KINDS),
+        },
     ).fetchall()
     intervals: list[tuple[datetime, datetime]] = []
     paused_at: datetime | None = None
@@ -342,6 +357,9 @@ def held_intervals(
         elif kind == "budget_exhausted":
             later = [t for k, t in rows[index + 1 :] if k in _CAP_ENDS]
             intervals.append((at, min([_next_month(at), now, *later])))
+        elif kind == "budget_unpriced":
+            later = [t for k, t in rows[index + 1 :] if k in _UNPRICED_ENDS]
+            intervals.append((at, min([now, *later])))
     if paused_at is not None:
         intervals.append((paused_at, now))
     return intervals

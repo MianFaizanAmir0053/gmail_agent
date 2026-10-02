@@ -207,9 +207,32 @@ export function ownerZone(configured: string | undefined): string {
   }
 }
 
-/** True while a decision is open, so the page re-reads until it settles. */
-export function shouldRefresh(rows: Pick<ProposalRow, "status">[]): boolean {
-  return rows.some((row) => row.status === "deciding");
+/** How often the page re-reads while a decision is being applied. */
+export const REFRESH_EVERY_MS = 3_000;
+
+/** How often it re-reads while every open decision is held (M17, D6). */
+export const HELD_REFRESH_EVERY_MS = 30_000;
+
+/**
+ * How often the page re-reads, in milliseconds, or null for not at all.
+ *
+ * It re-reads every few seconds while a decision is open, so "Applying…"
+ * turns into its outcome. A pause, or the spending cap on an Edit, can hold
+ * every open decision for days, and each read costs the database. So when
+ * all of them are held, it re-reads every thirty seconds instead. A withdraw
+ * still waiting for the worker's answer keeps the faster pace: the worker
+ * answers within a tick, paused or not.
+ */
+export function refreshEvery(
+  rows: Pick<ProposalRow, "status" | "decision_action" | "withdraw_requested">[],
+  switches: Switches,
+): number | null {
+  const open = rows.filter((row) => row.status === "deciding");
+  if (open.length === 0) return null;
+  const moving = open.some(
+    (row) => row.withdraw_requested === true || heldNote(row.decision_action, switches) === null,
+  );
+  return moving ? REFRESH_EVERY_MS : HELD_REFRESH_EVERY_MS;
 }
 
 function text(value: unknown): string | null {

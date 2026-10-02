@@ -129,7 +129,8 @@ export function describeWithdraw(answer: WithdrawAnswer): Notice {
     case "requested":
       return { tone: "ok", message: "Withdrawing…" };
     case "settled":
-      return { tone: "warn", message: "Too late: that decision has already been applied." };
+      // Applied, withdrawn, returned or expired: the card shows which.
+      return { tone: "warn", message: "That decision is no longer queued." };
     case "not_found":
       return { tone: "warn", message: "That decision no longer exists." };
     default:

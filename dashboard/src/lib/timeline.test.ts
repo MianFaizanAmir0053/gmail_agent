@@ -8,8 +8,10 @@ import {
   formatWindow,
   layoutKey,
   outsideGuestKeys,
+  HELD_REFRESH_EVERY_MS,
   ownerZone,
-  shouldRefresh,
+  REFRESH_EVERY_MS,
+  refreshEvery,
   type CardPayload,
   type ProposalRow,
 } from "./timeline.ts";
@@ -190,11 +192,44 @@ describe("ownerZone", () => {
   });
 });
 
-describe("shouldRefresh", () => {
+describe("refreshEvery", () => {
+  const live = { paused: false, budgetState: "ok" } as const;
+
   it("re-reads only while a decision is open", () => {
-    assert.equal(shouldRefresh([{ status: "pending" }, { status: "decided" }]), false);
-    assert.equal(shouldRefresh([{ status: "pending" }, { status: "deciding" }]), true);
-    assert.equal(shouldRefresh([]), false);
+    assert.equal(refreshEvery([{ status: "pending" }, { status: "decided" }], live), null);
+    assert.equal(refreshEvery([], live), null);
+    assert.equal(
+      refreshEvery([{ status: "pending" }, { status: "deciding", decision_action: "confirm" }], live),
+      REFRESH_EVERY_MS,
+    );
+  });
+
+  it("slows down while every open decision is held (M17, D6)", () => {
+    const paused = { paused: true, budgetState: "ok" } as const;
+    assert.equal(
+      refreshEvery([{ status: "deciding", decision_action: "confirm" }], paused),
+      HELD_REFRESH_EVERY_MS,
+    );
+    const capped = { paused: false, budgetState: "exhausted" } as const;
+    assert.equal(refreshEvery([{ status: "deciding", decision_action: "edit" }], capped), HELD_REFRESH_EVERY_MS);
+    assert.equal(
+      refreshEvery(
+        [
+          { status: "deciding", decision_action: "edit" },
+          { status: "deciding", decision_action: "confirm" },
+        ],
+        capped,
+      ),
+      REFRESH_EVERY_MS,
+    );
+  });
+
+  it("keeps up while a withdraw waits for its answer, held or not", () => {
+    const paused = { paused: true, budgetState: "ok" } as const;
+    assert.equal(
+      refreshEvery([{ status: "deciding", decision_action: "confirm", withdraw_requested: true }], paused),
+      REFRESH_EVERY_MS,
+    );
   });
 });
 

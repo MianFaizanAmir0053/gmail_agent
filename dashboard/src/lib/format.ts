@@ -21,7 +21,11 @@ export function tokens(value: number | null): string {
   return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
 }
 
-export function when(value: Date | string | null): string {
+/**
+ * A date and time. With `timeZone`, it is shown in that zone, and the zone is
+ * named. Without one it uses the server's zone: UTC on Vercel.
+ */
+export function when(value: Date | string | null, timeZone?: string): string {
   if (!value) return "—";
   const date = typeof value === "string" ? new Date(value) : value;
   return date.toLocaleString(undefined, {
@@ -29,6 +33,7 @@ export function when(value: Date | string | null): string {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    ...(timeZone ? { timeZone, timeZoneName: "short" } : {}),
   });
 }
 

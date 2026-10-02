@@ -56,12 +56,13 @@ WARNING_SHARE = Decimal("0.8")
 
 Refusal = Literal["unpriced", "exhausted", "too_costly"]
 
-BudgetState = Literal["ok", "warning", "exhausted"]
+BudgetState = Literal["ok", "warning", "exhausted", "unpriced"]
 
 _STATE_KINDS: dict[BudgetState, audit.Kind] = {
     "ok": "budget_ok",
     "warning": "budget_warning",
     "exhausted": "budget_exhausted",
+    "unpriced": "budget_unpriced",
 }
 
 
@@ -129,12 +130,17 @@ class Gate:
         return self.message_spend(message_id) < self.ceiling_usd
 
     def state(self, now: datetime | None = None) -> BudgetState:
-        """Where this month's spending stands (D5): `exhausted` once new work
-        has stopped for want of budget, `warning` from 80% of the cap, `ok`
-        below that. A model with no price stops new work too, but spends
-        nothing: `/health` reports it."""
+        """Where spending stands (D5), most pressing first:
+        - `exhausted`: new work has stopped for want of budget;
+        - `unpriced`: a model in use has no price, which stops new work as
+          the cap does, though nothing is spent; `/health` names the model;
+        - `warning`: from 80% of the cap;
+        - `ok`: below that.
+        """
         if not self._under_cap(now):
             return "exhausted"
+        if self.unpriced(now):
+            return "unpriced"
         if self.month_spend(now) >= self.cap_usd * WARNING_SHARE:
             return "warning"
         return "ok"

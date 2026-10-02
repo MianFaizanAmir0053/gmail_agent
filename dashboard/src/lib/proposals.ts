@@ -1,3 +1,5 @@
+import { unstable_rethrow } from "next/navigation";
+
 import { query } from "@/lib/db";
 import { readSwitches, type Switches } from "@/lib/switches";
 import type { ProposalRow } from "@/lib/timeline";
@@ -94,5 +96,23 @@ export async function switches(): Promise<Switches> {
   const rows = await query<{ paused: boolean; budget_state: string }>(
     "SELECT paused, budget_state FROM control WHERE id = 1",
   );
+  // Fly refuses to run without the row. Read as "running", the header would
+  // say nothing was wrong.
+  if (rows.length === 0) throw new Error("the control row is missing: run the migrations");
   return readSwitches(rows[0]);
+}
+
+/**
+ * `switches()`, or null when they cannot be read. The header and the
+ * timeline both read them, and neither may fail because of them. Next's own
+ * signals, such as the redirect to sign in, still pass through.
+ */
+export async function switchesOrNull(): Promise<Switches | null> {
+  try {
+    return await switches();
+  } catch (error) {
+    unstable_rethrow(error);
+    console.error("switches not read:", error instanceof Error ? error.name : "unknown error");
+    return null;
+  }
 }

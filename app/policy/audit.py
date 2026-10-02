@@ -29,6 +29,7 @@ Kind = Literal[
     "budget_warning",
     "budget_exhausted",
     "budget_ok",
+    "budget_unpriced",
     "message_too_costly",
     "contact_allowed",
     "contact_removed",
@@ -60,6 +61,8 @@ REASONS: dict[str, str] = {
     "exhausted": "attempts exhausted",
     "naive": "a time without a zone",
     "settled": "settled without running",
+    "via_web": "from the web app",
+    "via_cli": "from the command line",
 }
 """The only reasons a row can give. Fixed phrases, so a statistic can count
 them and no email can hide in one."""

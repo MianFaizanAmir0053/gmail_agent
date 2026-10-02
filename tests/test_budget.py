@@ -152,17 +152,26 @@ def test_the_subject_is_the_month_of_the_moment_given(monkeypatch: pytest.Monkey
     assert gate.alert_subject(datetime(2026, 10, 31, 23, 59, 59, tzinfo=UTC)) == "2026-10:40.00"
 
 
-def test_a_model_with_no_price_stops_new_work_but_spends_nothing(
+def test_a_model_with_no_price_stops_new_work_and_says_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A run that reached it would be refused part way, and run again from the
-    start. The state stays where spending is: `/health` reports the model."""
+    start. The state says so, for the web app's header and a held Edit's card;
+    `/health` names the model."""
     gate = _spent(monkeypatch, "0")
     gate.models_in_use = ("gemini-3.6-flash", "gemini-0-unpriced")
 
     assert gate.allows_new_work() is False
     assert gate.unpriced() == ["gemini-0-unpriced"]
-    assert gate.state() == "ok"
+    assert gate.state() == "unpriced"
+
+
+def test_the_cap_reached_outranks_a_model_with_no_price(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both stop new work. The cap is the one its alerts are about."""
+    gate = _spent(monkeypatch, "45")
+    gate.models_in_use = ("gemini-0-unpriced",)
+
+    assert gate.state() == "exhausted"
 
 
 def test_a_message_under_its_ceiling_may_spend(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,3 +196,15 @@ def test_a_change_of_state_is_written_and_audited_once(conn: psycopg.Connection)
     assert conn.execute("SELECT budget_state FROM control").fetchone() == ("ok",)
     kinds = conn.execute("SELECT kind FROM audit_log WHERE id > %s ORDER BY id", (row[0],))
     assert kinds.fetchall() == [("budget_warning",), ("budget_ok",)]
+
+
+@pytest.mark.integration
+def test_a_model_with_no_price_is_a_state_of_its_own(conn: psycopg.Connection) -> None:
+    """Migration 012 lets `control` hold it, and the change is audited."""
+    conn.execute("UPDATE control SET budget_state = 'ok'")
+
+    assert record_state(conn, "unpriced") is True
+
+    assert conn.execute("SELECT budget_state FROM control").fetchone() == ("unpriced",)
+    last = conn.execute("SELECT kind FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
+    assert last == ("budget_unpriced",)

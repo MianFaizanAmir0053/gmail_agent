@@ -402,6 +402,40 @@ def test_a_cap_ends_when_spending_starts_again(mail: psycopg.Connection, kind: s
     ]
 
 
+def test_a_model_with_no_price_holds_the_feed_until_the_state_changes(
+    mail: psycopg.Connection,
+) -> None:
+    """New work stops while a model in use has no price (M17, 17.16), until a
+    deploy prices it: the next state the watch records, whatever it is. Not
+    the month's end: a price does not come back on the 1st."""
+    unpriced = NOW - timedelta(hours=6)
+    _audit(mail, "budget_unpriced", unpriced)
+    _audit(mail, "budget_ok", unpriced + timedelta(hours=2))
+
+    assert held_intervals(mail, NOW - timedelta(days=1), NOW) == [
+        (unpriced, unpriced + timedelta(hours=2))
+    ]
+
+
+def test_a_model_still_without_a_price_holds_the_feed_until_now(
+    mail: psycopg.Connection,
+) -> None:
+    unpriced = datetime(2020, 2, 25, tzinfo=UTC)
+    _audit(mail, "budget_unpriced", unpriced)
+
+    assert held_intervals(mail, NOW - timedelta(days=30), NOW) == [(unpriced, NOW)]
+
+
+def test_a_model_without_a_price_for_over_a_month_still_holds_the_feed(
+    mail: psycopg.Connection,
+) -> None:
+    """Its stop began before the month the recall reads back: still in force."""
+    unpriced = NOW - timedelta(days=40)
+    _audit(mail, "budget_unpriced", unpriced)
+
+    assert held_intervals(mail, NOW - timedelta(days=1), NOW) == [(unpriced, NOW)]
+
+
 def test_a_too_old_record_for_day_old_mail_raises_the_feed_alert(
     mail: psycopg.Connection,
 ) -> None:

@@ -37,14 +37,23 @@ def connect(
             yield conn
 
 
-def connect_autocommit(database_url: str) -> psycopg.Connection:
+CONNECT_TIMEOUT = 10
+"""Seconds an autocommit connection waits for the database to answer. These
+serve the web API's requests and the command line, Pause and Withdraw among
+them: a database that never answers must cost a request seconds, not hold a
+thread for minutes."""
+
+
+def connect_autocommit(
+    database_url: str, *, connect_timeout: int = CONNECT_TIMEOUT
+) -> psycopg.Connection:
     """A connection on which each statement commits as it runs.
 
     For recording decisions: the worker, often in another process, must see
     one the moment it is recorded. A caller holding a transaction open while
     it waits would hide its own decision from the worker it is waiting for.
     """
-    return psycopg.connect(database_url, autocommit=True)
+    return psycopg.connect(database_url, autocommit=True, connect_timeout=connect_timeout)
 
 
 def _ensure_registry(conn: psycopg.Connection) -> None:

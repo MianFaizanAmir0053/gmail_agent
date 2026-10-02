@@ -1,6 +1,7 @@
-import { activityLine, type ActivityRow } from "@/lib/activity";
+import { activityLine, proposalLabel, type ActivityRow } from "@/lib/activity";
 import { query } from "@/lib/db";
 import { ago, when } from "@/lib/format";
+import { ownerZone } from "@/lib/timeline";
 
 export const dynamic = "force-dynamic";
 
@@ -13,10 +14,12 @@ const SHOWN = 100;
  * may read `audit_log` and write nothing.
  */
 export default async function ActivityPage() {
+  const zone = ownerZone(process.env.OWNER_TIMEZONE);
   const rows = await query<ActivityRow>(
     `
     SELECT a.id::text, a.at, a.kind, a.tool, a.dry_run, a.decision_id::text,
-           a.message_id, a.reason, p.payload->>'title' AS title
+           a.message_id, a.reason, p.payload->>'title' AS title,
+           p.message_id IS NOT NULL AS has_proposal
       FROM audit_log a
       LEFT JOIN proposals p ON p.message_id = a.message_id
      ORDER BY a.at DESC, a.id DESC
@@ -51,11 +54,11 @@ export default async function ActivityPage() {
               const line = activityLine(row);
               return (
                 <tr key={row.id}>
-                  <td title={when(row.at)}>{ago(row.at)}</td>
+                  <td title={when(row.at, zone)}>{ago(row.at)}</td>
                   <td>
                     <span className={line.tone ? `note ${line.tone}` : undefined}>{line.what}</span>
                   </td>
-                  <td>{row.message_id ? (row.title ?? "(cleared)") : ""}</td>
+                  <td>{proposalLabel(row)}</td>
                   <td className="mono muted">{row.decision_id ?? ""}</td>
                 </tr>
               );

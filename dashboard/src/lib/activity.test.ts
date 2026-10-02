@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
-import { activityLine, KINDS } from "./activity.ts";
+import { activityLine, KINDS, proposalLabel } from "./activity.ts";
+import { when } from "./format.ts";
 
 const BARE = { tool: null, dry_run: null, reason: null };
 
@@ -46,5 +47,32 @@ describe("the Activity page (M17, D7)", () => {
 
   it("falls back to words for a tool it does not know", () => {
     assert.equal(activityLine({ ...BARE, kind: "action_approved", tool: "mail.send" }).what, "Approved an action");
+  });
+});
+
+describe("what an entry was about", () => {
+  it("names the proposal by its title while it is kept", () => {
+    assert.equal(proposalLabel({ message_id: "m1", title: "Design review", has_proposal: true }), "Design review");
+  });
+
+  it("says the title was cleared only for a proposal that had one", () => {
+    assert.equal(proposalLabel({ message_id: "m1", title: null, has_proposal: true }), "(cleared)");
+    // A message poll skipped as too costly never had a proposal.
+    assert.equal(proposalLabel({ message_id: "m1", title: null, has_proposal: false }), "");
+  });
+
+  it("is blank for an entry about no message", () => {
+    assert.equal(proposalLabel({ message_id: null, title: null, has_proposal: false }), "");
+  });
+});
+
+describe("when, in the owner's zone", () => {
+  it("shows the time in the zone it is given", () => {
+    const at = new Date("2026-10-02T09:00:00Z");
+    assert.notEqual(when(at, "Asia/Karachi"), when(at, "America/New_York"));
+  });
+
+  it("names the zone, so the time cannot be read as another zone's", () => {
+    assert.match(when(new Date("2026-10-02T09:00:00Z"), "UTC"), /UTC/);
   });
 });
