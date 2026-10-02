@@ -80,7 +80,8 @@ export default async function TimelinePage() {
         </p>
       )}
 
-      <PushSetup publicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? null} />
+      {/* Trimmed: Vercel keeps a line break pasted with the value. */}
+      <PushSetup publicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY?.trim() || null} />
 
       <h1 className="section">Recent decisions</h1>
       {decisions.length === 0 ? (

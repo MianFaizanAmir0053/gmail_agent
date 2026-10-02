@@ -1,6 +1,7 @@
 import "server-only";
 
 import { isPairingCode } from "@/lib/access";
+import { failureKind, flyConfig } from "@/lib/flyConfig";
 import type {
   Allow,
   AllowAnswer,
@@ -37,12 +38,12 @@ export function deleteSubscription(endpoint: string): Promise<number> {
 }
 
 async function sendSubscription(method: "POST" | "DELETE", body: unknown): Promise<number> {
-  const base = process.env.FLY_API_URL;
-  const secret = process.env.WEB_API_SECRET;
-  if (!base || !secret) {
+  const fly = flyConfig(process.env);
+  if (fly === null) {
     console.error("FLY_API_URL or WEB_API_SECRET is not configured");
     return 502;
   }
+  const { base, secret } = fly;
   try {
     const response = await fetch(new URL("/api/push-subscriptions", base), {
       method,
@@ -57,18 +58,18 @@ async function sendSubscription(method: "POST" | "DELETE", body: unknown): Promi
     }
     return [204, 409, 422].includes(response.status) ? response.status : 502;
   } catch (error) {
-    console.error("subscription not sent:", error instanceof Error ? error.name : "unknown error");
+    console.error("subscription not sent:", failureKind(error));
     return 502;
   }
 }
 
 export async function postDecision(decision: Decision): Promise<Answer> {
-  const base = process.env.FLY_API_URL;
-  const secret = process.env.WEB_API_SECRET;
-  if (!base || !secret) {
+  const fly = flyConfig(process.env);
+  if (fly === null) {
     console.error("FLY_API_URL or WEB_API_SECRET is not configured");
     return { status: "error" };
   }
+  const { base, secret } = fly;
 
   let response: Response;
   try {
@@ -80,8 +81,8 @@ export async function postDecision(decision: Decision): Promise<Answer> {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (error) {
-    // The kind of failure only: a message can carry the URL.
-    console.error("decision not sent:", error instanceof Error ? error.name : "unknown error");
+    // The kind of failure and its code only: a message can carry the URL.
+    console.error("decision not sent:", failureKind(error));
     return { status: "error" };
   }
 
@@ -184,23 +185,22 @@ export async function redeemPairingCode(code: string): Promise<boolean> {
 
 /** POST a JSON body to Fly with the secret. Null when it could not be sent. */
 async function postToFly(path: string, body: unknown): Promise<Response | null> {
-  const base = process.env.FLY_API_URL;
-  const secret = process.env.WEB_API_SECRET;
-  if (!base || !secret) {
+  const fly = flyConfig(process.env);
+  if (fly === null) {
     console.error("FLY_API_URL or WEB_API_SECRET is not configured");
     return null;
   }
   try {
-    return await fetch(new URL(path, base), {
+    return await fetch(new URL(path, fly.base), {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${fly.secret}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
       cache: "no-store",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (error) {
-    // The kind of failure only: a message can carry the URL.
-    console.error(path, "not sent:", error instanceof Error ? error.name : "unknown error");
+    // The kind of failure and its code only: a message can carry the URL.
+    console.error(path, "not sent:", failureKind(error));
     return null;
   }
 }
