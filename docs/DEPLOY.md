@@ -34,6 +34,13 @@ One process on Fly: FastAPI serves `/health` and the web app's `/api/*`, and
 APScheduler runs every job inside it. The jobs are the poll, the decisions
 worker, the mail sync, the watch, the hourly purge and the token check.
 
+**Where it actually runs (2026-10-02).** Fly asks for a payment card before it
+creates an app, and the owner wants free hosting. So the backend runs **on the
+owner's laptop** for now, and is to move to a free Google Cloud VM before
+M15's eight-day window. §12 covers the laptop. Everything else in this file
+still holds: what reads "Fly" below is the laptop's agent, reached through
+the tunnel's address.
+
 ---
 
 ## 1. Before the first deploy (owner)
@@ -878,6 +885,45 @@ calendar, and whether an invite should email its guests. Events go to
 `TEST_CALENDAR_ID`, and the insert does not set `sendUpdates`, so Google
 sends guests no invitation, though its documentation warns some emails may
 still go out.
+
+---
+
+## 12. On the owner's laptop
+
+The backend runs as the image would, `uvicorn app.api:app`, from a separate
+working copy of the code. That copy has no `.env`, so development settings
+never mix in, and later edits to the main working copy never touch it.
+
+| Part | Where |
+|---|---|
+| The code | `..\mailagent-prod`, a git worktree detached at the deployed commit (`git worktree add --detach ..\mailagent-prod v2-plan`, then `uv sync --frozen` in it) |
+| Settings | `secrets\prod.env`: §2's variables, with absolute file paths for the client and the tokens |
+| The agent | `secrets\start-prod.ps1` runs `uv run --env-file <settings> uvicorn app.api:app --host 127.0.0.1 --port 8000` in the worktree |
+| The public address | `secrets\start-tunnel.ps1`: a free Cloudflare quick tunnel to `127.0.0.1:8000` |
+
+**Settings that differ from Fly's:**
+- **`DATABASE_URL`** is Supabase's **session pooler**, `postgres.<project-ref>@aws-0-<region>.pooler.supabase.com:5432`. The direct host has only IPv6, and the laptop has none. Never port 6543.
+- **Paths:** each `--env-file` path is written with forward slashes. `uv` drops the backslashes from a Windows path, and then cannot find the file.
+
+**The first start** applies every migration, so the `web_reader` role exists only after it. Set its password then (§9.3).
+
+**The public address.** Vercel calls the agent at `FLY_API_URL`.
+- **Tailscale Funnel was tried first and dropped.** Its relays reset every connection from Vercel (`ECONNRESET` in Vercel's logs), though some other callers got through.
+- **The Cloudflare quick tunnel works.** It needs no account. Its address, `https://<words>.trycloudflare.com`, **changes every time the tunnel starts**. After any restart:
+  1. find the new address in `secrets\tunnel.log`;
+  2. set it as Vercel's `FLY_API_URL`;
+  3. redeploy.
+- A permanent address comes with the free VM.
+
+**Keeping it up:**
+- Two windows stay open: the agent, and the tunnel.
+- The laptop stays plugged in, and never sleeps while plugged in.
+- While the laptop is off or asleep, mail waits. The sync catches up when it is back, but mail older than seven days is skipped (§10).
+- Only one copy of the agent may run, or Gmail is polled twice.
+
+**Vercel values** are pasted with nothing around them. The value box keeps a pasted line break. Since `a244d0d` the web app trims `FLY_API_URL`, `WEB_API_SECRET` and the push key itself. A failed call to the agent is logged with its code, for example `TypeError (ECONNRESET)`, never with the address.
+
+**The web app's address** is the production domain, `https://<project>.vercel.app`. A deployment's own address (Vercel's **Visit** button) has no session, and Google sign-in refuses it.
 
 ---
 
