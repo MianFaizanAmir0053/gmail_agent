@@ -366,18 +366,30 @@ Data API roles (§1.3).
    Run it as a new query, then delete that query: the editor keeps what it
    ran.
 
-2. The web app connects through the **session pooler**, because the direct
-   host is IPv6-only and Vercel has no IPv6 egress. Copy the pooler host from
-   *Connect → Session pooler* in the Supabase dashboard:
+2. The web app connects through the **transaction pooler**, port 6543,
+   because the direct host is IPv6-only and Vercel has no IPv6 egress. Copy
+   the pooler host from *Connect → Transaction pooler* in the Supabase
+   dashboard:
 
    ```text
-   postgresql://web_reader.<project-ref>:<password>@<pooler host>:5432/postgres
+   postgresql://web_reader.<project-ref>:<password>@<pooler host>:6543/postgres
    ```
 
    The user name is `web_reader.<project-ref>`, not `web_reader`: that is how
-   the shared pooler finds the project. **Never port 6543.** Add no
-   `sslmode` to it: the web app sets up the encryption itself, and an
-   `sslmode` would override that.
+   the shared pooler finds the project. Add no `sslmode` to it: the web app
+   sets up the encryption itself, and an `sslmode` would override that.
+
+   **Not the session pooler, port 5432.** It holds a database connection for
+   as long as a client stays connected, and it allows a role only 15
+   connections on the free plan. Vercel runs the web app as many short-lived
+   copies; a frozen copy keeps its idle connections, and a redeploy adds new
+   copies while the old ones still hold theirs. On 2026-10-03, `web_reader`
+   reached 15 idle connections, and every page then failed with "This page
+   couldn't load". The transaction pooler lends a connection per query, so
+   idle copies hold nothing. The web app's reads are single parameterized
+   queries, which it supports. The agent is the opposite: it must stay on the
+   session pooler (§1.3, §12), because LangGraph's checkpointer breaks on
+   port 6543.
 
 3. Download Supabase's CA certificate (*Database → Settings → SSL
    Configuration → Download certificate*). Its contents go to Vercel as
