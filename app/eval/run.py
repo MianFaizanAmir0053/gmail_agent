@@ -25,12 +25,6 @@ def _gemini() -> Extractor:
     return build_pipeline(owner_email="me@example.com")
 
 
-def _gemini_reviewed() -> Extractor:
-    from app.eval.reviewed import build_reviewed
-
-    return build_reviewed(owner_email="me@example.com")
-
-
 def _jev() -> Extractor:
     """`gemini` with triage moved to TypeSafe's Jev on Vercel AI Gateway.
 
@@ -52,7 +46,6 @@ EXTRACTORS: dict[str, Callable[[], Extractor]] = {
     "always_no": lambda: baselines.always_no,
     "always_yes": lambda: baselines.always_yes,
     "gemini": _gemini,
-    "gemini_reviewed": _gemini_reviewed,
     "jev": _jev,
 }
 

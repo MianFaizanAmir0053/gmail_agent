@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.google.calendar import BusyInterval, CalendarClient
 
@@ -85,60 +85,6 @@ CALENDAR_TOOL: dict[str, Any] = {
         "required": ["title", "start_utc", "end_utc", "timezone", "attendees"],
     },
 }
-
-
-FREEBUSY_TOOL: dict[str, Any] = {
-    "name": "freebusy_check",
-    "description": (
-        "Check whether a time range is already busy on the calendar. Call this before "
-        "approving a proposed meeting time, to confirm the slot is actually free. "
-        "Read-only: it books nothing."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "start_utc": {"type": "string", "description": "ISO 8601 with offset or Z."},
-            "end_utc": {"type": "string", "description": "ISO 8601 with offset or Z."},
-        },
-        "required": ["start_utc", "end_utc"],
-    },
-}
-
-
-class FreeBusyInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    start_utc: datetime
-    end_utc: datetime
-
-
-def execute_freebusy(calendar: CalendarClient, raw_args: dict[str, Any]) -> dict[str, Any]:
-    """Run a `freebusy_check` call. Never raises.
-
-    A reviewer that asked a malformed question should get an answer it can read
-    and retry, not an exception that ends the extraction it was checking.
-    """
-    try:
-        args = FreeBusyInput.model_validate(raw_args)
-    except ValidationError as exc:
-        return {"error": f"Invalid arguments: {exc.errors()[0]['msg']}", "busy": []}
-
-    try:
-        busy = calendar.freebusy(args.start_utc, args.end_utc)
-    except Exception as exc:
-        # The model gets the message, not a traceback. A calendar outage should
-        # cost the reviewer one check, not the whole extraction.
-        return {"error": f"{type(exc).__name__}: {exc}", "busy": []}
-
-    if not busy:
-        return {"busy": [], "note": "The slot is free."}
-
-    return {
-        "busy": [
-            {"start": interval.start.isoformat(), "end": interval.end.isoformat()}
-            for interval in busy
-        ]
-    }
 
 
 def overlaps(start: datetime, end: datetime, busy: list[BusyInterval]) -> list[BusyInterval]:

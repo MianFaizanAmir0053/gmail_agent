@@ -34,15 +34,12 @@ out an email for the model (`app/extraction/prompts.py`, `user_content`).
 def pipeline_version(settings: Settings) -> str:
     """Twelve hex characters naming what shaped a proposal.
 
-    The reviewer's model and prompt count only while the reviewer runs, and
-    the search prompt only while search does: a setting that cannot affect a
-    proposal must not reset M24's evidence.
+    The search prompt counts only while search runs: a setting that cannot
+    affect a proposal must not reset M24's evidence.
     """
-    # Imported here: the reviewer and the search tool pull in model and
-    # database clients that nothing else in this module needs.
-    from app.agents import reviewer
+    # Imported here: the search tool pulls in model and database clients that
+    # nothing else in this module needs.
     from app.extraction import payloads, prompts
-    from app.tools.calendar_tool import FREEBUSY_TOOL
     from app.tools.search_context import SEARCH_CONTEXT_TOOL
 
     parts: dict[str, Any] = {
@@ -62,16 +59,6 @@ def pipeline_version(settings: Settings) -> str:
         "search": (
             {"suffix": prompts.SEARCH_SUFFIX, "tool": SEARCH_CONTEXT_TOOL}
             if settings.search_context_enabled
-            else None
-        ),
-        "reviewer": (
-            {
-                "model": settings.reviewer_model,
-                "system": reviewer.REVIEWER_SYSTEM,
-                "schema": reviewer.ReviewVerdict.model_json_schema(),
-                "freebusy": FREEBUSY_TOOL,
-            }
-            if settings.reviewer_enabled
             else None
         ),
     }

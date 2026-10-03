@@ -6,7 +6,7 @@ component actually under test in the durability case.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -178,26 +178,6 @@ def _interrupt_payload(graph: Any, config: dict[str, Any]) -> dict[str, Any] | N
             payload: dict[str, Any] = interrupt_.value
             return payload
     return None
-
-
-@dataclass
-class FakeReviewer:
-    """Returns a fixed sequence of verdicts, then approves."""
-
-    verdicts: list[str] = field(default_factory=list)
-    seen: list[ExtractionResult] = field(default_factory=list)
-
-    def __call__(self, email: EmailMessage, extraction: ExtractionResult, **kwargs: Any) -> Any:
-        from app.agents.reviewer import ReviewVerdict
-
-        self.seen.append(extraction)
-        decision = self.verdicts.pop(0) if self.verdicts else "approve"
-        return ReviewVerdict(
-            decision=decision,
-            issues=[] if decision == "approve" else ["the stated zone was ignored"],
-            confidence=0.8,
-            reasoning="checked",
-        )
 
 
 # --- routing ---------------------------------------------------------------
@@ -536,74 +516,31 @@ def test_revision_loop_is_bounded_by_state_not_by_the_prompt() -> None:
     assert _interrupt_payload(graph, config) is None
 
 
-# --- the reviewer (M13) ----------------------------------------------------
+# --- no reviewer (M18, decision 4) ------------------------------------------------
 
 
-def test_without_a_reviewer_the_graph_is_unchanged() -> None:
-    graph, config, state = _run(_deps())
+def test_the_graph_has_no_review_node() -> None:
+    graph = build_graph(_deps(), InMemorySaver())
+    assert "review" not in graph.nodes
+    assert set(graph.nodes) >= {"fetch", "classify", "extract", "conflicts", "await_approval"}
 
-    assert state.get("review_decision") == "approve"
+
+def test_the_dependencies_hold_no_reviewer() -> None:
+    assert "reviewer" not in {field.name for field in fields(Deps)}
+
+
+def test_an_extraction_goes_straight_to_the_conflict_check() -> None:
+    calls: list[str] = []
+
+    class RecordingCalendar(FakeCalendar):
+        def freebusy(self, start: datetime, end: datetime) -> list[Any]:
+            calls.append("freebusy")
+            return []
+
+    graph, config, _ = _run(_deps(calendar=RecordingCalendar()))
+
+    assert calls == ["freebusy"]
     assert _interrupt_payload(graph, config) is not None
-
-
-def test_an_approving_reviewer_lets_the_proposal_through() -> None:
-    reviewer = FakeReviewer()
-    graph, config, _ = _run(_deps(reviewer=reviewer))
-
-    assert len(reviewer.seen) == 1
-    assert _interrupt_payload(graph, config) is not None
-
-
-def test_a_revision_sends_the_extraction_round_again() -> None:
-    pipeline = FakePipeline(extractions=[_meeting(), _meeting("Design review (PT)")])
-    reviewer = FakeReviewer(verdicts=["revise"])
-
-    graph, config, _ = _run(_deps(pipeline=pipeline, reviewer=reviewer))
-
-    assert len(pipeline.corrections) == 2
-    assert "reviewer" in pipeline.corrections[1].lower()
-    payload = _interrupt_payload(graph, config)
-    assert payload is not None
-    assert payload["proposed"]["title"] == "Design review (PT)"
-
-
-def test_the_reviewer_loop_terminates_however_stubborn_it_is() -> None:
-    """The cap is compared in the router, so no verdict sequence can outlast it."""
-    reviewer = FakeReviewer(verdicts=["revise"] * 10)
-    graph, config, _ = _run(_deps(reviewer=reviewer))
-
-    # It parked at approval rather than looping, which is the whole claim.
-    assert _interrupt_payload(graph, config) is not None
-    # Three verdicts, two re-extractions: the budget is on revisions, not on
-    # opinions. The eval wrapper in app/eval/reviewed.py spends exactly the same.
-    assert len(reviewer.seen) == 3
-
-
-def test_a_rejecting_reviewer_stops_before_a_human_is_asked() -> None:
-    ledger = FakeLedger()
-    reviewer = FakeReviewer(verdicts=["reject"])
-
-    graph, config, state = _run(_deps(ledger=ledger, reviewer=reviewer))
-
-    assert _interrupt_payload(graph, config) is None
-    assert ledger.statuses[-1] is MessageStatus.REJECTED
-    assert state["action"].status == "rejected"
-
-
-def test_a_reviewer_rejection_is_not_recorded_as_a_human_decision() -> None:
-    """The failures view must not report an agent's call as a person's."""
-    ledger = FakeLedger()
-    _, _, state = _run(_deps(ledger=ledger, reviewer=FakeReviewer(verdicts=["reject"])))
-
-    assert "declined by user" not in (state["action"].error or "")
-    assert "zone" in (state["action"].error or "")
-
-
-def test_a_non_meeting_never_reaches_the_reviewer() -> None:
-    reviewer = FakeReviewer()
-    _run(_deps(pipeline=FakePipeline(is_meeting=False), reviewer=reviewer))
-
-    assert reviewer.seen == []
 
 
 def test_conflicts_reach_the_approval_card() -> None:
@@ -638,23 +575,22 @@ def _hold() -> ExtractionResult:
 
 def test_a_parked_proposal_carries_what_m24_counts_by() -> None:
     """The payload is the single source for what a proposal is (M16, D2)."""
-    reviewer = FakeReviewer(verdicts=["revise"] * 3)
-    graph, config, _ = _run(_deps(reviewer=reviewer, pipeline_version="v-test"))
+    graph, config, _ = _run(_deps(pipeline_version="v-test"))
 
     payload = _interrupt_payload(graph, config)
     assert payload is not None
     assert payload["action_type"] == "calendar_invite"
     assert payload["pipeline_version"] == "v-test"
-    # The reviewer's last objections travel with the proposal onto the card.
-    assert payload["review_issues"] == ["the stated zone was ignored"]
 
 
-def test_a_proposal_without_reviewer_objections_carries_none() -> None:
+def test_a_new_proposal_carries_no_reviewer_objections() -> None:
+    """Payloads parked before M18 may hold `review_issues`, and cards still
+    show them; no new one does."""
     graph, config, _ = _run(_deps())
 
     payload = _interrupt_payload(graph, config)
     assert payload is not None
-    assert payload["review_issues"] == []
+    assert "review_issues" not in payload
 
 
 def test_an_edit_that_adds_a_guest_turns_a_hold_into_an_invite() -> None:

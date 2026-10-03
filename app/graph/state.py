@@ -60,25 +60,5 @@ class GraphState(TypedDict, total=False):
     revisions: int
     """Human edit rounds so far. Bounded in the graph, never in the prompt."""
 
-    review_decision: str
-    """`approve`, `revise` or `reject` from the M13 reviewer."""
-
-    review_issues: list[str]
-    """What the reviewer objected to. Shown on the approval card, so a human
-    sees the second opinion rather than only its effect."""
-
-    review_feedback: str
-    """The reviewer's issues, phrased for a re-extraction.
-
-    Kept separate from `correction` rather than reusing it. They can both be
-    live at once -- a human edits, the reviewer then objects to the result --
-    and merging them would lose which came from whom on the next round.
-    """
-
-    review_rounds: int
-    """Reviewer-driven re-extractions so far. Counted apart from `revisions`
-    because a human asking for a change twice and an agent doing so twice are
-    different budgets."""
-
     action: ActionResult
     error: str

@@ -6,7 +6,6 @@ modules be replaced without touching their neighbours:
     M02 eval harness  scores  ExtractionResult
     M05 graph         passes  EmailMessage -> ExtractionResult -> ActionResult
     M09 dashboard     renders all three
-    M13 reviewer      amends  ExtractionResult
 
 Change these deliberately, not casually.
 """

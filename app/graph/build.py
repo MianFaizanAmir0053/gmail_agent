@@ -1,9 +1,14 @@
 """Graph construction.
 
-    fetch -> classify -> extract -> review -> conflicts -> await_approval -> act
-                  |                              ^              |
-                  v                              |              +-> reject
-                 skip                            +-- edit ------+
+    fetch -> classify -> extract -> conflicts -> await_approval -> act
+      |          |          |            ^              |
+      +----------+----------+-> skip     |              +-> reject
+                                         +-- edit ------+
+
+Credential mail goes from `fetch` straight to `skip` (M18, decision 2). The
+reviewer that sat between `extract` and `conflicts` was removed in M18
+(decision 4): with no tools, it was a second opinion from the same evidence,
+and its notes turned the email's text into instructions.
 
 Two things here are load-bearing:
 
@@ -26,7 +31,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy
 
 from app.graph import nodes
-from app.graph.nodes import MAX_REVIEW_ROUNDS, MAX_REVISIONS, Deps
+from app.graph.nodes import MAX_REVISIONS, Deps
 from app.graph.state import GraphState
 from app.obs.trace import Tracer, traced
 
@@ -67,24 +72,6 @@ def _has_event(state: GraphState) -> Literal["conflicts", "skip"]:
     return "conflicts"
 
 
-def _after_review(state: GraphState) -> Literal["extract", "conflicts", "skip", "reject"]:
-    """Where the reviewer's verdict sends the graph.
-
-    The cap lives here rather than in the reviewer's prompt. "Only revise twice"
-    is a request; a counter compared in the router is the reason the loop
-    terminates. Once the budget is spent the graph carries on with whatever the
-    last extraction produced -- a human is about to see it either way, and the
-    reviewer's objections travel with it onto the approval card.
-    """
-    decision = state.get("review_decision", "approve")
-
-    if decision == "reject":
-        return "reject"
-    if decision == "revise" and state.get("review_rounds", 0) <= MAX_REVIEW_ROUNDS:
-        return "extract"
-    return _has_event(state)
-
-
 def _decision(state: GraphState) -> Literal["act", "reject", "extract"]:
     if state.get("correction") and state.get("revisions", 0) <= MAX_REVISIONS:
         return "extract"
@@ -114,7 +101,6 @@ def build_graph(
     builder.add_node("fetch", node("fetch", nodes.fetch))
     builder.add_node("classify", node("classify", nodes.classify), retry_policy=NETWORK_RETRY)
     builder.add_node("extract", node("extract", nodes.extract), retry_policy=NETWORK_RETRY)
-    builder.add_node("review", node("review", nodes.review))
     builder.add_node(
         "conflicts", node("conflicts", nodes.detect_conflicts), retry_policy=NETWORK_RETRY
     )
@@ -126,10 +112,7 @@ def build_graph(
     builder.add_edge(START, "fetch")
     builder.add_conditional_edges("fetch", _set_aside, ["classify", "skip"])
     builder.add_conditional_edges("classify", _is_meeting, ["extract", "skip"])
-    builder.add_edge("extract", "review")
-    builder.add_conditional_edges(
-        "review", _after_review, ["extract", "conflicts", "skip", "reject"]
-    )
+    builder.add_conditional_edges("extract", _has_event, ["conflicts", "skip"])
     builder.add_edge("conflicts", "await_approval")
     builder.add_conditional_edges("await_approval", _decision, ["act", "reject", "extract"])
     builder.add_edge("act", END)

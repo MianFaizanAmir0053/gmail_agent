@@ -1504,7 +1504,7 @@ Known wrappers are unwrapped first. Links are handled before codes, and counts a
 
 ### Checkpoint: mail enters clean
 
-- [ ] Checks green; Neon.
+- [x] Checks green; Neon. (2026-10-03: 1303 unit tests, and the graph, poll and purge suites on Neon, 16 passed.)
 
 ## Phase 2 · Readers without tools, and the owner's own channel
 
@@ -1518,8 +1518,8 @@ Known wrappers are unwrapped first. Links are handled before codes, and counts a
 Cards keep rendering the `review_issues` of payloads parked before M18.
 
 **Acceptance criteria:**
-- [ ] The graph has no review node, and `Deps` holds no reviewer.
-- [ ] A payload parked before M18, `review_issues` included, still renders on the web card and in Telegram.
+- [x] The graph has no review node, and `Deps` holds no reviewer.
+- [x] A payload parked before M18, `review_issues` included, still renders on the web card and in Telegram.
 
 **Verification:** `uv run pytest tests/test_graph.py tests/test_versioning.py tests/test_config.py tests/test_telegram.py`; `.\tasks.ps1 check`; the graph tests on Neon.
 

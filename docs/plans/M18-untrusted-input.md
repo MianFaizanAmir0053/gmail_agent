@@ -302,3 +302,19 @@ column; they are logged instead.
 - **Built.** A conditional edge after `fetch` (`_set_aside` in `app/graph/build.py`) sends a flagged message to `skip`, which records SKIPPED with `CARRIED_A_CODE`, "carried a sign-in code". The classifier is never reached, so no model is called and the gate records no spend. The phrase joins the purge's fixed reasons (D10).
 - **Tests.** A pipeline that fails the test on any call proves no model runs. The checkpoint holds only the notice, and no extraction. Unflagged mail still reaches the classifier.
 - **The topology gains an edge** (`fetch` to `skip`) and loses none. Threads parked before it resume as they were. The review node's removal in 18.4 is the change that needs parked threads drained first (D9).
+
+### Task 18.4, the reviewer removed (2026-10-03)
+
+- **Removed:**
+  - `app/agents/` (the reviewer was all of it), `app/eval/reviewed.py` with the `gemini_reviewed` extractor, and `tests/test_reviewer.py`;
+  - the reviewer-only `freebusy_check` tool in `app/tools/calendar_tool.py`;
+  - the review node, `_after_review` and `MAX_REVIEW_ROUNDS`;
+  - `Deps.reviewer`, the four `review_*` keys of the graph state, and the reviewer's branch in `reject`;
+  - `REVIEWER_ENABLED` and `REVIEWER_MODEL` from the settings and `.env.example`;
+  - the reviewer from the pipeline version's inputs and from the models in use.
+- **The graph now reads:** extract, then `_has_event` (conflicts or skip). The conflict check itself is code, and stays.
+- **Kept:**
+  - "rejected by reviewer" stays a fixed reason in the purge, for old ledger rows;
+  - `park.py` still copies a parked payload's `review_issues`, and the web card and Telegram still render them, for payloads parked before M18. New payloads carry no such key.
+- **Settings ignore unknown variables** (`extra="ignore"`), so a `REVIEWER_ENABLED` left in an environment file breaks nothing.
+- **Before deploying this,** drain the threads parked before it, since the topology lost a node (D9).

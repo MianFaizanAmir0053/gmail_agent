@@ -125,11 +125,8 @@ def advertised(settings: Settings) -> list[Any]:
 
 def in_use(settings: Settings) -> list[str]:
     """The models the running app calls. A feature that is off calls none:
-    the reviewer's model only with the reviewer on, the embedding model only
-    with search or ingestion on (D5)."""
+    the embedding model only with search or ingestion on (D5)."""
     used = [settings.classify_model, settings.extraction_model]
-    if settings.reviewer_enabled:
-        used.append(settings.reviewer_model)
     if settings.search_context_enabled or settings.ingest_enabled:
         used.append(settings.embedding_model)
     return used

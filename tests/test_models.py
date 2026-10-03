@@ -13,8 +13,7 @@ from typing import Any
 import pytest
 from google.genai import types
 
-from app.agents.reviewer import Reviewer
-from app.contracts import EmailMessage, ExtractionResult
+from app.contracts import EmailMessage
 from app.extraction.pipeline import ExtractionPipeline
 from app.policy import models
 from app.policy.budget import Spend, UnpricedModelError
@@ -429,21 +428,6 @@ def test_an_owners_correction_survives_a_long_email() -> None:
 
     assert sent.rstrip().endswith("move it to 3pm")
     assert "Can we meet Thursday at 10?" in sent and "Subject: Design review" in sent
-    assert models.CUT_NOTE in sent and len(sent) <= models.MAX_PROMPT_CHARS
-
-
-def test_the_proposal_under_review_survives_a_long_email() -> None:
-    """Cut from the end, the reviewer read no proposal, and a sender could pad
-    an email to switch the review off."""
-    reviewer = Reviewer(client=object(), model="m")  # type: ignore[arg-type]
-    extraction = ExtractionResult(
-        is_meeting=True, title="Design review", confidence=0.9, reasoning="Thursday at 10."
-    )
-
-    sent = models.bounded(reviewer._user(_long_email(), extraction, NOW, "UTC"))
-
-    assert "The extractor proposed:" in sent
-    assert sent.rstrip().endswith("Its stated reasoning: Thursday at 10.")
     assert models.CUT_NOTE in sent and len(sent) <= models.MAX_PROMPT_CHARS
 
 

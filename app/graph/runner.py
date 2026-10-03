@@ -169,7 +169,6 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
     if settings.fernet_key is None:
         raise RuntimeError("FERNET_KEY must be set: it keys the hash every approval binds (M17).")
 
-    from app.agents.reviewer import build_reviewer
     from app.extraction.pipeline import build_pipeline
     from app.rag.search import build_context_search
 
@@ -211,14 +210,6 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
             user_timezone=settings.user_timezone,
             registry=Registry(
                 conn, calendar, key=key, outsiders=partial(unconfirmed_outsiders, conn, gmail)
-            ),
-            # The reviewer gets the calendar even when DRY_RUN is set: freebusy
-            # is a read, and a reviewer that cannot see the calendar loses the
-            # one check the extractor genuinely could not make.
-            reviewer=(
-                build_reviewer(searcher=searcher, calendar=calendar, gate=meter)
-                if settings.reviewer_enabled
-                else None
             ),
             pipeline_version=pipeline_version(settings),
             args_key=key,
