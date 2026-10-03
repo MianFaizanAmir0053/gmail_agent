@@ -17,8 +17,7 @@ from app.contracts import EmailMessage
 from app.extraction.llm import LlmError, structured_call
 from app.extraction.payloads import ClassifyPayload
 from app.extraction.pipeline import ExtractionPipeline
-from app.extraction.prompts import EXTRACT_SYSTEM, SEARCH_SUFFIX
-from app.rag.search import Hit
+from app.extraction.prompts import EXTRACT_SYSTEM
 from app.tools.search_context import SEARCH_CONTEXT_TOOL
 
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -239,31 +238,18 @@ def _email() -> EmailMessage:
     )
 
 
-def _hit() -> Hit:
-    return Hit(
-        chunk_id=1,
-        thread_id="t1",
-        message_id="m9",
-        subject="Re: platform",
-        content="Ahmed Raza here, copying the platform team.",
-        participants=("ahmed.raza@northwind.example",),
-        sent_at=datetime(2026, 8, 1, tzinfo=UTC),
-        score=0.03,
-    )
-
-
-def _pipeline(client: FakeClient, searcher: Any = None) -> ExtractionPipeline:
+def _pipeline(client: FakeClient) -> ExtractionPipeline:
     return ExtractionPipeline(
         client=client,
         classify_model="c",
         extraction_model="e",
         owner_email="me@example.com",
-        searcher=searcher,
     )
 
 
-def test_without_a_searcher_the_request_is_unchanged() -> None:
-    """The frozen baseline must not move because an unrelated feature exists."""
+def test_the_extraction_request_holds_no_tools() -> None:
+    """No model that reads mail holds a tool (M18, decision 3): the request
+    declares none, and the system instruction offers none."""
     client = _client(_Response(EXTRACTION))
     _pipeline(client).extract(_email(), now_utc=NOW, user_timezone="Asia/Karachi")
 
@@ -271,37 +257,3 @@ def test_without_a_searcher_the_request_is_unchanged() -> None:
     assert request["config"].tools is None
     assert request["config"].system_instruction == EXTRACT_SYSTEM
     assert isinstance(request["contents"], str)
-
-
-def test_with_a_searcher_the_tool_and_its_instructions_appear() -> None:
-    client = _client(_Response(EXTRACTION))
-    _pipeline(client, searcher=lambda *a, **k: []).extract(
-        _email(), now_utc=NOW, user_timezone="Asia/Karachi"
-    )
-
-    request = client.models.calls[0]
-    assert request["config"].tools is not None
-    assert SEARCH_SUFFIX in request["config"].system_instruction
-
-
-def test_a_resolved_address_reaches_the_extraction() -> None:
-    """M11's exit criterion in one assertion."""
-    client = _client(_Response(calls=[_search_call()]), _Response(EXTRACTION))
-    pipeline = _pipeline(client, searcher=lambda *a, **k: [_hit()])
-
-    result = pipeline.extract(_email(), now_utc=NOW, user_timezone="Asia/Karachi")
-
-    assert result.attendees == ["ahmed.raza@northwind.example"]
-    assert pipeline.stats.search_calls == 1
-
-
-def test_a_hallucinated_tool_name_is_answered_not_raised() -> None:
-    client = _client(
-        _Response(calls=[_FunctionCall("lookup_person", {"name": "Ahmed"})]),
-        _Response(EXTRACTION),
-    )
-    pipeline = _pipeline(client, searcher=lambda *a, **k: [_hit()])
-
-    pipeline.extract(_email(), now_utc=NOW, user_timezone="Asia/Karachi")
-
-    assert pipeline.stats.search_calls == 0

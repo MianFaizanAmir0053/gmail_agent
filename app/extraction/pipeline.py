@@ -6,13 +6,18 @@ the classify prompt is smaller and runs with thinking switched off entirely.
 
 The pipeline satisfies `app.eval.dataset.Extractor`, so the eval harness scores
 it exactly like a baseline.
+
+**Neither call holds a tool** (M18, decision 3). Both read mail, and a model
+that reads mail must not reach anything beyond its answer: searching past
+threads returns with M19's planner, which reads the owner's request instead.
+`tests/test_no_tools.py` checks that structurally.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, cast
+from typing import cast
 
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction import prompts
@@ -30,12 +35,6 @@ from app.extraction.payloads import (
 )
 from app.policy.budget import Gate
 from app.policy.models import MAX_PROMPT_CHARS
-from app.tools.search_context import (
-    SEARCH_CONTEXT_TOOL,
-    TOOL_NAME,
-    Searcher,
-    execute_search_context,
-)
 
 MINIMAL_THINKING = "MINIMAL"
 """Triage is a yes/no call on text sitting right in front of the model.
@@ -48,7 +47,6 @@ class RunStats:
 
     classify_calls: int = 0
     extract_calls: int = 0
-    search_calls: int = 0
     cache_hits: int = 0
     usages: list[Usage] = field(default_factory=list)
 
@@ -83,14 +81,6 @@ class ExtractionPipeline:
     owner_aliases: tuple[str, ...] = ()
     """The owner's other addresses, stripped from guests like `owner_email`."""
     classify_thinking_level: str | None = MINIMAL_THINKING
-    searcher: Searcher | None = None
-    """Optional retrieval over past threads (M11).
-
-    Left unset the pipeline behaves exactly as it did when the baseline was
-    frozen -- no tool declaration, no extra system text, no extra turns. That is
-    what makes "before retrieval" and "after retrieval" comparable numbers
-    rather than two different systems.
-    """
     evaluator: Evaluator | None = None
     """Answers `classify` when `classify_model` is an evaluation model served by
     Vercel AI Gateway, such as `typesafe-ai/jev`. Unused for a Gemini model."""
@@ -129,20 +119,13 @@ class ExtractionPipeline:
         self, email: EmailMessage, *, now_utc: datetime, user_timezone: str, extra: str = ""
     ) -> ExtractionResult:
         """Full extraction. `extra` carries a human correction on a re-run."""
-        searching = self.searcher is not None
         detail = structured_call(
             self.client,
             model=self.extraction_model,
-            system=(
-                f"{prompts.EXTRACT_SYSTEM}\n{prompts.SEARCH_SUFFIX}"
-                if searching
-                else prompts.EXTRACT_SYSTEM
-            ),
+            system=prompts.EXTRACT_SYSTEM,
             user=self._user(email, now_utc, user_timezone, extra),
             schema=ExtractionPayload,
             max_output_tokens=4096,
-            tools=[SEARCH_CONTEXT_TOOL] if searching else None,
-            dispatch=self._dispatch if searching else None,
         )
         self.stats.extract_calls += 1
         self.stats.record(detail.usage)
@@ -165,18 +148,6 @@ class ExtractionPipeline:
             return _rejected(triage.reasoning, confidence=triage.confidence)
         return self.extract(email, now_utc=now_utc, user_timezone=user_timezone)
 
-    def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Run a tool call the model asked for.
-
-        An unknown name is answered rather than raised. The model can read the
-        error and move on; aborting a whole extraction because it hallucinated a
-        function name would be a far worse trade.
-        """
-        if name != TOOL_NAME or self.searcher is None:
-            return {"error": f"No such tool: {name}", "results": []}
-        self.stats.search_calls += 1
-        return execute_search_context(self.searcher, args)
-
     def _user(self, email: EmailMessage, now_utc: datetime, user_timezone: str, extra: str) -> str:
         # `extra` is the owner's correction, labelled by the graph, appended
         # verbatim. It is never cut: on a long email the body gives way, so a
@@ -190,7 +161,6 @@ class ExtractionPipeline:
 
 def build_pipeline(
     owner_email: str = "",
-    searcher: Searcher | None = None,
     *,
     owner_aliases: tuple[str, ...] = (),
     gate: Gate | None = None,
@@ -212,7 +182,6 @@ def build_pipeline(
         extraction_model=settings.extraction_model,
         owner_email=owner_email,
         owner_aliases=owner_aliases,
-        searcher=searcher,
         evaluator=models.evaluator(settings, meter),
     )
 

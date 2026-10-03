@@ -1,17 +1,18 @@
-"""Before/after evidence for M11.
+"""What retrieval finds for a text, beside what extraction makes of it.
 
     python -m app.rag.demo "Ahmed suggested we do the review Thursday at 3pm"
 
-Runs the same extraction twice over the same text -- once with `search_context`
-withheld and once with it wired in -- and prints what changed. The exit criterion
-for this module is a case the extractor demonstrably could not resolve before,
-and a claim like that is worth being able to re-run rather than remember.
+Once (M11) this ran the same extraction twice, with and without the
+`search_context` tool. Since M18 no model that reads mail holds a tool
+(decision 3): the extraction runs as production runs it, and the search runs
+on its own, showing what M19's planner -- which reads the owner's request,
+not the mail -- will have to work with.
 
-The email text is an argument rather than a fixture because a convincing example
-names a real person from your own mailbox, and a real address does not belong in
-a committed file.
+The text is an argument rather than a fixture because a convincing example
+names a real person from your own mailbox, and a real address does not belong
+in a committed file.
 
-Costs two extraction calls plus a turn for each search the model chooses to make.
+Costs one classify call, one extraction call and one embedding.
 """
 
 from __future__ import annotations
@@ -39,19 +40,18 @@ def _email(body: str, sender: str, subject: str, now: datetime) -> EmailMessage:
     )
 
 
-def _show(label: str, result: ExtractionResult, searches: int) -> None:
-    print(f"\n--- {label} ---")
+def _show(result: ExtractionResult) -> None:
+    print("\n--- extraction, no tools ---")
     print(f"  is_meeting  {result.is_meeting}")
     print(f"  title       {result.title}")
     print(f"  start_utc   {result.start_utc}")
     print(f"  attendees   {result.attendees or '(none)'}")
-    print(f"  searches    {searches}")
     print(f"  reasoning   {result.reasoning}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Show what retrieval adds to extraction.")
-    parser.add_argument("body", help="The email body to extract from.")
+    parser = argparse.ArgumentParser(description="Show what retrieval finds beside extraction.")
+    parser.add_argument("body", help="The email body to extract from and search for.")
     parser.add_argument("--subject", default="Quick follow-up")
     parser.add_argument("--sender", default="someone@example.com")
     args = parser.parse_args()
@@ -59,28 +59,17 @@ def main() -> None:
     settings = get_settings()
     now = datetime.now(UTC)
     email = _email(args.body, args.sender, args.subject, now)
-    zone = settings.user_timezone
 
     # One gate for every call this run makes (M17, D5).
     meter = models.local_gate(settings)
-    blind = build_pipeline(owner_email=settings.owner_email, gate=meter)
-    _show(
-        "without search_context",
-        blind.extract(email, now_utc=now, user_timezone=zone),
-        blind.stats.search_calls,
-    )
+    pipeline = build_pipeline(owner_email=settings.owner_email, gate=meter)
+    _show(pipeline(email, now_utc=now, user_timezone=settings.user_timezone))
 
     with connect(settings.database_url) as conn:
-        searching = build_pipeline(
-            owner_email=settings.owner_email,
-            searcher=build_context_search(conn, settings, gate=meter),
-            gate=meter,
-        )
-        _show(
-            "with search_context",
-            searching.extract(email, now_utc=now, user_timezone=zone),
-            searching.stats.search_calls,
-        )
+        search = build_context_search(conn, settings, gate=meter)
+        print("\n--- search_context, on its own ---")
+        for hit in search(args.body):
+            print(f"  {hit}")
 
 
 if __name__ == "__main__":

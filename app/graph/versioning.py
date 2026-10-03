@@ -32,15 +32,11 @@ out an email for the model (`app/extraction/prompts.py`, `user_content`).
 
 
 def pipeline_version(settings: Settings) -> str:
-    """Twelve hex characters naming what shaped a proposal.
-
-    The search prompt counts only while search runs: a setting that cannot
-    affect a proposal must not reset M24's evidence.
+    """Twelve hex characters naming what shaped a proposal: each call's model,
+    prompt and schema. A setting that cannot affect a proposal must not reset
+    M24's evidence, so nothing else counts.
     """
-    # Imported here: the search tool pulls in model and database clients that
-    # nothing else in this module needs.
     from app.extraction import payloads, prompts
-    from app.tools.search_context import SEARCH_CONTEXT_TOOL
 
     parts: dict[str, Any] = {
         "revision": PIPELINE_REVISION,
@@ -56,11 +52,6 @@ def pipeline_version(settings: Settings) -> str:
             "system": prompts.EXTRACT_SYSTEM,
             "schema": payloads.ExtractionPayload.model_json_schema(),
         },
-        "search": (
-            {"suffix": prompts.SEARCH_SUFFIX, "tool": SEARCH_CONTEXT_TOOL}
-            if settings.search_context_enabled
-            else None
-        ),
     }
     canonical = json.dumps(parts, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]

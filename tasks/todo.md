@@ -1536,8 +1536,8 @@ Cards keep rendering the `review_issues` of payloads parked before M18.
 The search code stays, for M19. A structural test checks that `ExtractionPipeline` takes no searcher, and that no `tools` argument reaches `structured_call` from `app/extraction/` (D4).
 
 **Acceptance criteria:**
-- [ ] The structural test fails on the code before the change, and passes after it.
-- [ ] Ingestion and the retrieval eval still run.
+- [x] The structural test fails on the code before the change, and passes after it.
+- [x] Ingestion and the retrieval eval still run.
 
 **Verification:** `uv run pytest tests/test_pipeline.py tests/test_no_tools.py tests/test_rag_search.py tests/test_config.py`; `.\tasks.ps1 check`.
 

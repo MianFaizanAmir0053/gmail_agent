@@ -170,7 +170,6 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
         raise RuntimeError("FERNET_KEY must be set: it keys the hash every approval binds (M17).")
 
     from app.extraction.pipeline import build_pipeline
-    from app.rag.search import build_context_search
 
     credentials = load_credentials(settings)
 
@@ -178,16 +177,8 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
         psycopg.connect(settings.database_url, autocommit=True) as conn,
         postgres_checkpointer(settings.database_url) as checkpointer,
     ):
-        # Shares the graph's connection. Retrieval is read-only and runs inside
-        # an extraction that is already holding it, so a second pool would buy
-        # nothing but another thing to close.
         # One gate meters every model call this session makes (M17, D5).
         meter = models.gate(settings, conn)
-        searcher = (
-            build_context_search(conn, settings, gate=meter)
-            if settings.search_context_enabled
-            else None
-        )
 
         calendar = CalendarClient(
             build_service("calendar", "v3", credentials),
@@ -201,7 +192,6 @@ def graph_session(settings: Settings) -> Iterator[GraphSession]:
             gmail=gmail,
             pipeline=build_pipeline(
                 owner_email=settings.owner_email,
-                searcher=searcher,
                 owner_aliases=tuple(settings.owner_aliases),
                 gate=meter,
             ),

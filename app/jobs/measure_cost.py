@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 
 import psycopg
 
-from app.extraction.prompts import CLASSIFY_SYSTEM, EXTRACT_SYSTEM, SEARCH_SUFFIX
+from app.extraction.prompts import CLASSIFY_SYSTEM, EXTRACT_SYSTEM
 from app.obs.pricing import PRICING_CHECKED_ON, cost_usd
 from app.rag.chunk import MAX_CHARS
 from app.rag.search import DEFAULT_LIMIT, SNIPPET_CHARS
@@ -166,10 +166,8 @@ def cost_report(
     # in place of the classify prompt, and the whole output cap spent.
     mean_classify_input = _mean(s.input_tokens for s in classify) or 0.0
     bound_input = max(
-        mean_classify_input
-        - _prompt_tokens(CLASSIFY_SYSTEM)
-        + _prompt_tokens(EXTRACT_SYSTEM + SEARCH_SUFFIX),
-        _prompt_tokens(EXTRACT_SYSTEM + SEARCH_SUFFIX),
+        mean_classify_input - _prompt_tokens(CLASSIFY_SYSTEM) + _prompt_tokens(EXTRACT_SYSTEM),
+        _prompt_tokens(EXTRACT_SYSTEM),
     )
     mean_extract_input = _mean(s.input_tokens for s in extract) if measured else bound_input
     search_extra_input = (mean_extract_input or 0.0) + DEFAULT_LIMIT * (
@@ -248,7 +246,10 @@ def cost_report(
         "labels": {
             "v1_observe_mode": "projection: measured per-message costs x measured volume x 30",
             "m18_embeddings": f"estimate: at ${EMBEDDING_RATE_PER_MTOK}/M tokens (see module doc)",
-            "m18_search_context": "estimate: one search per extraction, prompt re-sent",
+            "m18_search_context": (
+                "estimate: one search per extraction, prompt re-sent; "
+                "returns with M19's planner, not M18"
+            ),
             "v2_planner": "unknown until M19; not included",
         },
         "reconciliation": reconciliation,
@@ -304,7 +305,7 @@ def to_markdown(report: dict[str, Any], *, since: datetime, until: datetime) -> 
         f"| + embeddings when M18 re-enables ingestion | "
         f"{money(projection['m18_embeddings']['2026'])} | "
         f"{money(projection['m18_embeddings']['2027'])} | estimate |",
-        f"| + search_context when M18 re-enables it | "
+        f"| + search_context when M19's planner brings it back | "
         f"{money(projection['m18_search_context']['2026'])} | "
         f"{money(projection['m18_search_context']['2027'])} | estimate |",
         f"| **v1 total per month** | **{money(projection['v1_total']['2026'])}** | "

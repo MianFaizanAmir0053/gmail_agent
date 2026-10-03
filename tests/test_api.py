@@ -359,19 +359,18 @@ def test_a_model_in_use_with_no_price_is_a_503(
     assert response.json()["unpriced_models"] == ["gemini-0-unpriced"]
 
 
-def test_the_embedding_model_counts_only_with_search_or_ingestion_on(
+def test_the_embedding_model_counts_only_with_ingestion_on(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Extraction searches nothing since M18 (decision 3): only ingestion
+    calls the embedding model."""
     _scheduler_on(monkeypatch, booted_ago=timedelta(minutes=1))
     unpriced = {"embedding_model": "embedding-0-unpriced"}
 
-    _with(monkeypatch, search_context_enabled=False, ingest_enabled=False, **unpriced)
+    _with(monkeypatch, ingest_enabled=False, **unpriced)
     assert client.get("/health").status_code == 200
 
-    _with(monkeypatch, search_context_enabled=False, ingest_enabled=True, **unpriced)
-    assert client.get("/health").status_code == 503
-
-    _with(monkeypatch, search_context_enabled=True, ingest_enabled=False, **unpriced)
+    _with(monkeypatch, ingest_enabled=True, **unpriced)
     assert client.get("/health").status_code == 503
 
 

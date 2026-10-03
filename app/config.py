@@ -92,16 +92,6 @@ class Settings(BaseSettings):
     `results/retrieval-comparison.md` has the table.
     """
 
-    search_context_enabled: bool = True
-    """Give the extractor the `search_context` tool (M11).
-
-    Not free: a message the model decides to research costs an extra round trip
-    plus the retrieved text as input tokens. Worth it when the mailbox has
-    history to draw on, and switchable off both to save quota and to measure the
-    difference -- the eval harness runs with it off by default, so the frozen
-    baseline stays a like-for-like comparison.
-    """
-
     user_timezone: str = "UTC"
     """IANA zone used to ground relative dates and render approval cards."""
 

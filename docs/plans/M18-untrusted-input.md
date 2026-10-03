@@ -318,3 +318,16 @@ column; they are logged instead.
   - `park.py` still copies a parked payload's `review_issues`, and the web card and Telegram still render them, for payloads parked before M18. New payloads carry no such key.
 - **Settings ignore unknown variables** (`extra="ignore"`), so a `REVIEWER_ENABLED` left in an environment file breaks nothing.
 - **Before deploying this,** drain the threads parked before it, since the topology lost a node (D9).
+
+### Task 18.5, search removed from extraction (2026-10-03)
+
+- **The structural test, `tests/test_no_tools.py`**, was written first. It failed on the old code in two places: the searcher field, and `tools` and `dispatch` passed at `pipeline.py`. It passes now. It reads every `structured_call(...)` in `app/extraction/` from the AST, and it checks that `tools` and `dispatch` are keyword-only in `structured_call`, so no positional argument can carry them. A guard keeps it from passing because it found no calls.
+- **Removed:**
+  - `ExtractionPipeline.searcher`, `_dispatch`, `RunStats.search_calls` and `build_pipeline`'s `searcher`;
+  - `SEARCH_SUFFIX`;
+  - `SEARCH_CONTEXT_ENABLED`;
+  - `graph_session`'s searcher;
+  - the search part of the pipeline version.
+- **Kept, for M19:** `structured_call`'s tool loop with its tests, `app/tools/search_context.py`, `app/rag/search.py`, ingestion and the retrieval eval. The embedding model counts as in use only with ingestion on.
+- **`app/rag/demo.py`** now prints the extraction as production runs it, without tools, and beside it the search results on their own, for M19.
+- **The M15 cost report** no longer says M18 re-enables search: it returns with M19's planner.
