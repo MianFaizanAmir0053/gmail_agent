@@ -119,15 +119,25 @@ class ExtractionPipeline:
         return verdict
 
     def extract(
-        self, email: EmailMessage, *, now_utc: datetime, user_timezone: str, correction: str = ""
+        self,
+        email: EmailMessage,
+        *,
+        now_utc: datetime,
+        user_timezone: str,
+        correction: str = "",
+        current: ExtractionResult | None = None,
     ) -> ExtractionResult:
         """Full extraction. `correction` is the owner's, from an Edit: it goes
-        in the system instruction, a channel no email can write to (M18, D3)."""
+        in the system instruction, a channel no email can write to (M18, D3).
+        `current` is the proposal that Edit corrects. It rides in the user turn
+        as data, so the correction changes it rather than a fresh reading of
+        the email, and is read only with a correction."""
+        proposal = current if correction and current is not None and current.is_meeting else None
         detail = structured_call(
             self.client,
             model=self.extraction_model,
-            system=prompts.extract_system(correction),
-            user=self._user(email, now_utc, user_timezone),
+            system=prompts.extract_system(correction, proposal=proposal is not None),
+            user=self._user(email, now_utc, user_timezone, current=proposal),
             schema=ExtractionPayload,
             max_output_tokens=4096,
         )
@@ -159,12 +169,18 @@ class ExtractionPipeline:
         user_timezone: str,
         *,
         room: int = MAX_PROMPT_CHARS,
+        current: ExtractionResult | None = None,
     ) -> str:
-        """The user turn: the grounding block and the email between fresh
-        markers, within `room` (M17, D5). Nothing follows the closing marker:
-        the owner's correction travels in the system instruction instead."""
+        """The user turn: the grounding block, the proposal an Edit corrects,
+        and the email between fresh markers, within `room` (M17, D5). Nothing
+        follows the closing marker: the owner's correction travels in the
+        system instruction instead."""
         return prompts.user_content(
-            email, now_utc=now_utc, user_timezone=user_timezone, room=min(room, MAX_PROMPT_CHARS)
+            email,
+            now_utc=now_utc,
+            user_timezone=user_timezone,
+            room=min(room, MAX_PROMPT_CHARS),
+            current=current,
         )
 
 

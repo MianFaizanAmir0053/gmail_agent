@@ -418,3 +418,13 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
 - **A payload parked before M18** records no sources and renders as before: one line of guests, and a line per outside guest.
 - **The words are shared.** `tests/test_participants.py` checks that the web card's words and note are the ones in `SOURCE_WORDS` and `QUOTED_SECTION`.
 - **Checks.** 144 web tests, typecheck and build; 1919 Python tests on a local Postgres 16, with lint and mypy clean. The browser check waits for the owner's end tests.
+
+### Fix: an Edit keeps what the owner did not change (2026-10-04)
+
+- **The bug.** At the first end test, a re-extraction after an Edit renamed the meeting. The Edit re-read the email with only the latest correction, so each field the owner did not mention was a fresh guess, the title most visibly. A second Edit also lost what the first had changed, since only the latest correction was passed.
+- **The fix.** The `extract` node hands the pipeline the proposal the checkpoint still holds, the one on the card. The re-extraction's user turn carries it before the email, between `<proposal-…>` markers that share the email's eight characters (`prompts.proposal_block`). The fields are in the model's own terms, local wall-clock times in the proposal's zone. The title and the location are scrubbed onto one line, as the card shows them, and every field is defused. The system instruction says what that block is, and to change only what the owner asks, the title word for word (`KEEP_THE_PROPOSAL`).
+- **Why the user turn, not the system instruction.** The model wrote the proposal from the email, so it is no more trusted than the email. Only the owner's own words go in the system instruction (D3). Defusing now covers both marker names, in the email and in the proposal.
+- **Nothing follows the email's closing marker,** as before, and the proposal counts toward the prompt's room, so the body still gives way first.
+- **`PIPELINE_REVISION` 4.**
+- **Tests.** Seven new tests, in `tests/test_pipeline.py` and `tests/test_graph.py`. A two-Edit chain checks that the second Edit is handed what the first one produced. Five deliberate breaks were each caught: the node passing no proposal, no defusing in the proposal, the proposal left out of the room, defusing blind to the proposal's markers, and the keep instruction dropped. 1926 tests pass on a local Postgres 16, with lint and mypy clean.
+- **Not yet checked against the real model.** `.env` holds a placeholder Gemini key, so the one-off check could not run. The production key was not used for development. The check is to Edit a synthetic meeting's time three times, against the old path, and see the title kept. It waits for a development key, as 18.13 and 18.14 do.

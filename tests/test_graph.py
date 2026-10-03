@@ -84,6 +84,7 @@ class FakePipeline:
     is_meeting: bool = True
     extractions: list[ExtractionResult] = field(default_factory=list)
     corrections: list[str] = field(default_factory=list)
+    currents: list[ExtractionResult | None] = field(default_factory=list)
 
     def classify(self, email: EmailMessage, **kwargs: Any) -> ClassifyPayload:
         return ClassifyPayload(
@@ -93,9 +94,15 @@ class FakePipeline:
         )
 
     def extract(
-        self, email: EmailMessage, *, correction: str = "", **kwargs: Any
+        self,
+        email: EmailMessage,
+        *,
+        correction: str = "",
+        current: ExtractionResult | None = None,
+        **kwargs: Any,
     ) -> ExtractionResult:
         self.corrections.append(correction)
+        self.currents.append(current)
         if self.extractions:
             return self.extractions.pop(0)
         return _meeting()
@@ -438,6 +445,26 @@ def test_edit_re_extracts_with_the_correction() -> None:
     payload = _interrupt_payload(graph, config)
     assert payload is not None
     assert payload["proposed"]["title"] == "Corrected review"
+
+
+def test_each_edit_corrects_the_proposal_the_owner_saw() -> None:
+    """An Edit's re-extraction is handed the proposal on the card, so a field
+    the owner did not mention, the title among them, is not drawn again from
+    the email, and a second Edit keeps what the first one changed."""
+    from langgraph.types import Command
+
+    first = _meeting()
+    moved = _meeting().model_copy(
+        update={"start_utc": START + timedelta(hours=1), "end_utc": START + timedelta(hours=2)}
+    )
+    pipeline = FakePipeline(extractions=[first, moved, _meeting()])
+    graph, config, _ = _run(_deps(pipeline=pipeline))
+
+    graph.invoke(Command(resume={"action": "edit", "correction": "4pm not 3pm"}), config)
+    graph.invoke(Command(resume={"action": "edit", "correction": "invite Ali too"}), config)
+
+    assert pipeline.corrections == ["", "4pm not 3pm", "invite Ali too"]
+    assert pipeline.currents == [None, first, moved]
 
 
 def test_cancel_after_an_edit_ends_the_proposal() -> None:

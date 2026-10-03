@@ -23,7 +23,7 @@ ActionType = Literal["calendar_hold", "calendar_invite"]
 LEGACY_PIPELINE_VERSION = "pre-m16"
 """For proposals parked before M16 recorded a version. M24 excludes them."""
 
-PIPELINE_REVISION = 3
+PIPELINE_REVISION = 4
 """Bump by hand for a change the hash cannot see, such as the code that lays
 out an email for the model (`app/extraction/prompts.py`, `user_content`).
 
@@ -32,7 +32,10 @@ out an email for the model (`app/extraction/prompts.py`, `user_content`).
 
 3: M18. The email sits between per-call markers, scrubbed again at assembly;
 the owner's correction moved to the system instruction; the body is the HTML
-the owner sees, with hidden content removed; no reader holds a tool."""
+the owner sees, with hidden content removed; no reader holds a tool.
+
+4: an Edit's re-extraction reads the proposal it corrects, between markers of
+its own before the email, and keeps what the owner did not ask to change."""
 
 
 def pipeline_version(settings: Settings) -> str:

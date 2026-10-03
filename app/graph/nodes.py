@@ -110,12 +110,16 @@ def classify(deps: Deps, state: GraphState) -> GraphState:
 def extract(deps: Deps, state: GraphState) -> GraphState:
     # The owner's correction, from an Edit, goes to the pipeline as it is: the
     # pipeline puts it in the system instruction, where no email can write
-    # (M18, D3).
+    # (M18, D3). With it goes the proposal on the card, which the checkpoint
+    # still holds, so the Edit changes that proposal: what the owner did not
+    # mention, the title among it, is kept rather than guessed again.
+    correction = state.get("correction", "")
     extraction = deps.pipeline.extract(
         state["email"],
         now_utc=deps.now(),
         user_timezone=deps.user_timezone,
-        correction=state.get("correction", ""),
+        correction=correction,
+        current=state.get("extraction") if correction else None,
     )
     return {"extraction": extraction}
 

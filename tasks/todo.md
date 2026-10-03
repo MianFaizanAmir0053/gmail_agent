@@ -1614,6 +1614,19 @@ The payload stores them, and notes when the email has a quoted or forwarded sect
 
 **Dependencies:** 18.8 · **Files:** `dashboard/src/components/ProposalCard.tsx`, `dashboard/src/lib/timeline.ts`, tests · **Scope:** S
 
+### Fix: an Edit keeps what the owner did not change (2026-10-04)
+
+**Description:** Found at the first end test on 2026-10-03: a re-extraction after an Edit renamed the meeting. An Edit re-read the email with only the latest correction, so every field the owner did not mention was guessed again, and a second Edit lost what the first had changed. The re-extraction now reads the proposal on the card, as data between markers of its own before the email, and keeps every field the correction does not ask to change. Fixed before 18.10, at the owner's choice.
+
+**Acceptance criteria:**
+- [x] Each Edit's re-extraction is handed the proposal the owner saw; a second Edit is handed what the first one produced.
+- [x] The proposal sits in the user turn between its own markers, scrubbed and defused, before the email; the correction alone is in the system instruction.
+- [ ] Against the real extraction model, an Edit that moves the time keeps the title. *Waits for a development Gemini key: `.env` holds a placeholder.*
+
+**Verification:** `uv run pytest tests/test_pipeline.py tests/test_graph.py`; the model check in the running notes.
+
+**Files:** `app/extraction/prompts.py`, `app/extraction/pipeline.py`, `app/graph/nodes.py`, `app/graph/versioning.py`, tests · **Scope:** S
+
 ### Task 18.10: Stored text
 
 **Description:** D7:
