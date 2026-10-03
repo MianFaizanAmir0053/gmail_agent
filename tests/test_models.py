@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -418,27 +419,31 @@ def _pipeline() -> ExtractionPipeline:
     )
 
 
-def test_an_owners_correction_survives_a_long_email() -> None:
-    """The prompt is one string, the correction at its end. Cut from the end,
-    the correction went and the Edit silently did nothing."""
+def test_a_long_email_keeps_its_headers_and_its_closing_marker() -> None:
+    """The body gives way first, cut before the markers are added, so the
+    closing marker is never what is lost (M18, D3)."""
     pipeline = _pipeline()
-    correction = "Correction from the user, which takes precedence:\nmove it to 3pm"
 
-    sent = models.bounded(pipeline._user(_long_email(), NOW, "UTC", correction))
+    sent = models.bounded(pipeline._user(_long_email(), NOW, "UTC"))
 
-    assert sent.rstrip().endswith("move it to 3pm")
+    marker = re.search(r"<email-([0-9a-f]{8})>", sent)
+    assert marker is not None
+    assert sent.rstrip().endswith(f"</email-{marker.group(1)}>")
     assert "Can we meet Thursday at 10?" in sent and "Subject: Design review" in sent
     assert models.CUT_NOTE in sent and len(sent) <= models.MAX_PROMPT_CHARS
 
 
-def test_a_short_email_is_sent_exactly_as_before() -> None:
-    """The frozen extraction baseline was measured on these exact bytes."""
+def test_a_short_email_is_laid_out_between_its_markers() -> None:
     pipeline = _pipeline()
     email = _long_email().model_copy(update={"body_text": "Thursday at 10?"})
 
     from app.extraction import prompts
 
+    sent = pipeline._user(email, NOW, "UTC")
+    marker = re.search(r"<email-([0-9a-f]{8})>", sent)
+    assert marker is not None
     expected = (
-        f"{prompts.grounding_block(NOW, 'UTC')}\n{prompts.email_block(email)}\nfix the time\n"
+        f"{prompts.grounding_block(NOW, 'UTC')}\n"
+        f"{prompts.email_block(email, marker=marker.group(1))}"
     )
-    assert pipeline._user(email, NOW, "UTC", "fix the time") == expected
+    assert sent == expected

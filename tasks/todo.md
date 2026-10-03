@@ -1556,9 +1556,9 @@ The search code stays, for M19. A structural test checks that `ExtractionPipelin
 - `PIPELINE_REVISION` goes up.
 
 **Acceptance criteria:**
-- [ ] The correction appears only in the system instruction. All sender text sits between the call's markers, and each forged-structure fixture stays inside them.
-- [ ] A body cut to fit keeps its closing marker.
-- [ ] A checkpoint made before M18 is scrubbed when its prompt is assembled.
+- [x] The correction appears only in the system instruction. All sender text sits between the call's markers, and each forged-structure fixture stays inside them.
+- [x] A body cut to fit keeps its closing marker.
+- [x] A checkpoint made before M18 is scrubbed when its prompt is assembled.
 
 **Verification:** `uv run pytest tests/test_pipeline.py tests/test_evaluation.py tests/test_models.py`; `.\tasks.ps1 check`.
 

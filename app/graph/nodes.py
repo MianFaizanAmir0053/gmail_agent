@@ -108,20 +108,16 @@ def classify(deps: Deps, state: GraphState) -> GraphState:
 
 
 def extract(deps: Deps, state: GraphState) -> GraphState:
+    # The owner's correction, from an Edit, goes to the pipeline as it is: the
+    # pipeline puts it in the system instruction, where no email can write
+    # (M18, D3).
     extraction = deps.pipeline.extract(
         state["email"],
         now_utc=deps.now(),
         user_timezone=deps.user_timezone,
-        extra=_guidance(state),
+        correction=state.get("correction", ""),
     )
     return {"extraction": extraction}
-
-
-def _guidance(state: GraphState) -> str:
-    """The owner's correction, labelled, for an Edit's re-extraction."""
-    if correction := state.get("correction", ""):
-        return f"Correction from the user, which takes precedence:\n{correction}"
-    return ""
 
 
 def detect_conflicts(deps: Deps, state: GraphState) -> GraphState:

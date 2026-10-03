@@ -23,6 +23,7 @@ from app.contracts import EmailMessage, ExtractionResult
 from app.extraction import prompts
 from app.extraction.evaluation import (
     EVALUATION_MODELS,
+    STATE_CHAR_LIMIT,
     Evaluator,
     classify_by_evaluation,
 )
@@ -87,25 +88,27 @@ class ExtractionPipeline:
     stats: RunStats = field(default_factory=RunStats)
 
     def classify(
-        self, email: EmailMessage, *, now_utc: datetime, user_timezone: str, extra: str = ""
+        self, email: EmailMessage, *, now_utc: datetime, user_timezone: str
     ) -> ClassifyPayload:
         """Cheap triage. Exposed separately so M05's graph can make it its own
         node, which M08 then gets per-stage timings and costs for."""
-        user = self._user(email, now_utc, user_timezone, extra)
         if self.classify_model in EVALUATION_MODELS:
             if self.evaluator is None:
                 raise RuntimeError(
                     f"{self.classify_model} runs on Vercel AI Gateway; set AI_GATEWAY_API_KEY"
                 )
+            # Built to the Gateway's own limit, so its body is cut before the
+            # markers are added and the closing marker survives (M18, D3).
+            state = self._user(email, now_utc, user_timezone, room=STATE_CHAR_LIMIT)
             verdict, usage = classify_by_evaluation(
-                self.evaluator, model=self.classify_model, state=user
+                self.evaluator, model=self.classify_model, state=state
             )
         else:
             triage = structured_call(
                 self.client,
                 model=self.classify_model,
                 system=prompts.CLASSIFY_SYSTEM,
-                user=user,
+                user=self._user(email, now_utc, user_timezone),
                 schema=ClassifyPayload,
                 thinking_level=self.classify_thinking_level,
                 max_output_tokens=1024,
@@ -116,14 +119,15 @@ class ExtractionPipeline:
         return verdict
 
     def extract(
-        self, email: EmailMessage, *, now_utc: datetime, user_timezone: str, extra: str = ""
+        self, email: EmailMessage, *, now_utc: datetime, user_timezone: str, correction: str = ""
     ) -> ExtractionResult:
-        """Full extraction. `extra` carries a human correction on a re-run."""
+        """Full extraction. `correction` is the owner's, from an Edit: it goes
+        in the system instruction, a channel no email can write to (M18, D3)."""
         detail = structured_call(
             self.client,
             model=self.extraction_model,
-            system=prompts.EXTRACT_SYSTEM,
-            user=self._user(email, now_utc, user_timezone, extra),
+            system=prompts.extract_system(correction),
+            user=self._user(email, now_utc, user_timezone),
             schema=ExtractionPayload,
             max_output_tokens=4096,
         )
@@ -148,15 +152,20 @@ class ExtractionPipeline:
             return _rejected(triage.reasoning, confidence=triage.confidence)
         return self.extract(email, now_utc=now_utc, user_timezone=user_timezone)
 
-    def _user(self, email: EmailMessage, now_utc: datetime, user_timezone: str, extra: str) -> str:
-        # `extra` is the owner's correction, labelled by the graph, appended
-        # verbatim. It is never cut: on a long email the body gives way, so a
-        # correction still arrives whole (M17, D5).
-        tail = f"\n{extra}\n" if extra else ""
-        content = prompts.user_content(
-            email, now_utc=now_utc, user_timezone=user_timezone, room=MAX_PROMPT_CHARS - len(tail)
+    def _user(
+        self,
+        email: EmailMessage,
+        now_utc: datetime,
+        user_timezone: str,
+        *,
+        room: int = MAX_PROMPT_CHARS,
+    ) -> str:
+        """The user turn: the grounding block and the email between fresh
+        markers, within `room` (M17, D5). Nothing follows the closing marker:
+        the owner's correction travels in the system instruction instead."""
+        return prompts.user_content(
+            email, now_utc=now_utc, user_timezone=user_timezone, room=min(room, MAX_PROMPT_CHARS)
         )
-        return f"{content}{tail}"
 
 
 def build_pipeline(

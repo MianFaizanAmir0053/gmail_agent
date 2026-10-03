@@ -90,8 +90,10 @@ class FakePipeline:
             reasoning="explicit time" if self.is_meeting else "job alert",
         )
 
-    def extract(self, email: EmailMessage, *, extra: str = "", **kwargs: Any) -> ExtractionResult:
-        self.corrections.append(extra)
+    def extract(
+        self, email: EmailMessage, *, correction: str = "", **kwargs: Any
+    ) -> ExtractionResult:
+        self.corrections.append(correction)
         if self.extractions:
             return self.extractions.pop(0)
         return _meeting()
@@ -426,11 +428,10 @@ def test_edit_re_extracts_with_the_correction() -> None:
 
     graph.invoke(Command(resume={"action": "edit", "correction": "4pm not 3pm"}), config)
 
-    # Labelled by the node rather than the pipeline: by M13 there are two
-    # possible sources of guidance, and the extractor is told which is which.
+    # The owner's words reach the pipeline as they are; the pipeline puts
+    # them in the system instruction (M18, D3).
     assert pipeline.corrections[0] == ""
-    assert "4pm not 3pm" in pipeline.corrections[1]
-    assert "from the user" in pipeline.corrections[1]
+    assert pipeline.corrections[1] == "4pm not 3pm"
 
     payload = _interrupt_payload(graph, config)
     assert payload is not None
@@ -677,13 +678,15 @@ class FlakyPipeline(FakePipeline):
     failing_calls: set[int] = field(default_factory=set)
     calls: int = 0
 
-    def extract(self, email: EmailMessage, *, extra: str = "", **kwargs: Any) -> ExtractionResult:
+    def extract(
+        self, email: EmailMessage, *, correction: str = "", **kwargs: Any
+    ) -> ExtractionResult:
         self.calls += 1
         if self.calls in self.failing_calls:
             # Not retried by the node's policy, so the test does not sleep
             # through its back-off.
             raise RuntimeError("model unavailable")
-        return super().extract(email, extra=extra, **kwargs)
+        return super().extract(email, correction=correction, **kwargs)
 
 
 def test_redrive_finishes_an_edit_whose_extraction_failed() -> None:

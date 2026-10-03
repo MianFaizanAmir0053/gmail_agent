@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -184,14 +185,30 @@ def test_a_rejected_request_is_not_retried() -> None:
     assert len(evaluator.requests) == 1
 
 
-def test_an_oversized_email_is_cut_and_the_verdict_says_so() -> None:
-    """Jev reads at most 32k tokens of state. Cutting quietly would make a
-    miss on a long thread impossible to explain later."""
+def test_a_state_that_does_not_fit_is_refused_not_sliced() -> None:
+    """Slicing here could drop the email's closing marker (M18, D3): the
+    caller cuts the body before the markers go on, so an oversized state is a
+    caller's mistake."""
     evaluator = FakeEvaluator([_answer(0.2)])
-    verdict, _ = _classify(evaluator, state="x" * (STATE_CHAR_LIMIT + 500))
+    with pytest.raises(ValueError, match="build it to fit"):
+        _classify(evaluator, state="x" * (STATE_CHAR_LIMIT + 500))
+    assert evaluator.requests == []
 
-    assert len(evaluator.requests[0]["state"]) == STATE_CHAR_LIMIT
-    assert "cut" in verdict.reasoning
+
+def test_a_long_email_reaches_jev_cut_with_its_closing_marker() -> None:
+    """Jev reads at most 32k tokens of state. The body gives way, the closing
+    marker survives, and the verdict says the email was cut."""
+    evaluator = FakeEvaluator([_answer(0.2)])
+    long_email = _email().model_copy(update={"body_text": "Thursday at 10? " + "pad " * 8_000})
+
+    result = _pipeline([], evaluator)(long_email, now_utc=NOW, user_timezone="Asia/Karachi")
+
+    state = evaluator.requests[0]["state"]
+    marker = re.search(r"<email-([0-9a-f]{8})>", state)
+    assert marker is not None
+    assert len(state) <= STATE_CHAR_LIMIT
+    assert state.rstrip().endswith(f"</email-{marker.group(1)}>")
+    assert "cut" in result.reasoning
 
 
 # --- the HTTP layer --------------------------------------------------------
@@ -321,7 +338,12 @@ def test_jev_sees_what_the_gemini_classifier_would_have_seen() -> None:
     _pipeline([], evaluator)(_email(), now_utc=NOW, user_timezone="Asia/Karachi")
 
     state = evaluator.requests[0]["state"]
-    assert prompts.user_content(_email(), now_utc=NOW, user_timezone="Asia/Karachi") in state
+    marker = re.search(r"<email-([0-9a-f]{8})>", state)
+    assert marker is not None
+    expected = prompts.user_content(
+        _email(), now_utc=NOW, user_timezone="Asia/Karachi", marker=marker.group(1)
+    )
+    assert state == expected
 
 
 def test_a_jev_meeting_still_goes_to_gemini_for_extraction() -> None:

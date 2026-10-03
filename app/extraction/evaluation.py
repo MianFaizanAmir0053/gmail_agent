@@ -95,13 +95,20 @@ def classify_by_evaluation(
     """Ask `model` whether the email in `state` should create a calendar event.
 
     `state` is the same text the Gemini classifier reads -- grounding block plus
-    email -- so an eval difference between the two is the model's, not the
-    prompt's.
+    the email between its markers -- so an eval difference between the two is
+    the model's, not the prompt's. The caller builds it to fit
+    `STATE_CHAR_LIMIT`, cutting the body before the markers are added (M18,
+    D3). Slicing it here could drop the closing marker, so a state that does
+    not fit is refused rather than cut.
     """
-    cut = len(state) > STATE_CHAR_LIMIT
+    if len(state) > STATE_CHAR_LIMIT:
+        raise ValueError(
+            f"state is {len(state):,} characters; build it to fit {STATE_CHAR_LIMIT:,}"
+        )
+    cut = prompts.CUT_NOTE in state
     request = {
         "model": model,
-        "state": state[:STATE_CHAR_LIMIT],
+        "state": state,
         "questions": {
             _QUESTION_ID: {
                 "type": "boolean",
@@ -125,7 +132,7 @@ def classify_by_evaluation(
 
     probability = _probability(body)
     is_meeting = probability >= MEETING_THRESHOLD
-    note = f"; the email was cut to its first {STATE_CHAR_LIMIT:,} characters" if cut else ""
+    note = f"; the email was cut to fit {STATE_CHAR_LIMIT:,} characters" if cut else ""
     verdict = ClassifyPayload(
         is_meeting=is_meeting,
         confidence=probability if is_meeting else 1.0 - probability,

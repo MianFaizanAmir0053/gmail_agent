@@ -23,12 +23,16 @@ ActionType = Literal["calendar_hold", "calendar_invite"]
 LEGACY_PIPELINE_VERSION = "pre-m16"
 """For proposals parked before M16 recorded a version. M24 excludes them."""
 
-PIPELINE_REVISION = 2
+PIPELINE_REVISION = 3
 """Bump by hand for a change the hash cannot see, such as the code that lays
 out an email for the model (`app/extraction/prompts.py`, `user_content`).
 
 2: the owner's aliases are stripped from guests as well as `OWNER_EMAIL`
-(M17), so a proposal whose only guest was an alias is now a hold."""
+(M17), so a proposal whose only guest was an alias is now a hold.
+
+3: M18. The email sits between per-call markers, scrubbed again at assembly;
+the owner's correction moved to the system instruction; the body is the HTML
+the owner sees, with hidden content removed; no reader holds a tool."""
 
 
 def pipeline_version(settings: Settings) -> str:
