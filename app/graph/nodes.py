@@ -43,6 +43,10 @@ Enforced here rather than in the prompt: an instruction to "only revise twice"
 is a suggestion, a counter in graph state is a guarantee.
 """
 
+CARRIED_A_CODE = "carried a sign-in code"
+"""Ledger reason for credential mail (M18, decision 2), recorded before any
+model reads it. Fixed: it quotes nothing of the message."""
+
 NOT_A_MEETING = "not a meeting"
 """Ledger reason when the model finds no meeting (M20, D4).
 
@@ -284,8 +288,12 @@ def act(deps: Deps, state: GraphState) -> GraphState:
 
 
 def skip(deps: Deps, state: GraphState) -> GraphState:
+    email = state.get("email")
     extraction = state.get("extraction")
-    if extraction is None or not extraction.is_meeting:
+    if email is not None and email.credential:
+        # Set aside straight after the fetch: no model has read it.
+        reason = CARRIED_A_CODE
+    elif extraction is None or not extraction.is_meeting:
         # The model's reasoning stays out of the ledger: it can quote the email.
         reason = NOT_A_MEETING
     else:

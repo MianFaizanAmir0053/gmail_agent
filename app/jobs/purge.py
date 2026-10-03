@@ -35,7 +35,7 @@ from datetime import timedelta
 import psycopg
 
 from app.graph.checkpointer import postgres_checkpointer
-from app.graph.nodes import NOT_A_MEETING, SWEEP_REASON
+from app.graph.nodes import CARRIED_A_CODE, NOT_A_MEETING, SWEEP_REASON
 from app.jobs.poll import CLAIMED_NOT_RUN
 from app.mail.feed import GONE, TOO_OLD
 from app.policy import audit
@@ -63,6 +63,8 @@ FIXED_REASONS = (
     TOO_OLD,
     GONE,
     NOT_A_MEETING,
+    # Untrusted input's (M18, D10): credential mail, set aside unread.
+    CARRIED_A_CODE,
     # The action policy's (M17, D7): a refusal or an expiry, in its fixed words.
     *audit.REASONS.values(),
 )

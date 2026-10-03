@@ -41,6 +41,13 @@ would spend those attempts in seconds.
 """
 
 
+def _set_aside(state: GraphState) -> Literal["classify", "skip"]:
+    """Credential mail goes no further than the fetch (M18, decision 2): it is
+    recorded SKIPPED, and no model reads it."""
+    email = state.get("email")
+    return "skip" if email is not None and email.credential else "classify"
+
+
 def _is_meeting(state: GraphState) -> Literal["extract", "skip"]:
     extraction = state.get("extraction")
     return "skip" if extraction is not None and not extraction.is_meeting else "extract"
@@ -117,7 +124,7 @@ def build_graph(
     builder.add_node("reject", node("reject", nodes.reject))
 
     builder.add_edge(START, "fetch")
-    builder.add_edge("fetch", "classify")
+    builder.add_conditional_edges("fetch", _set_aside, ["classify", "skip"])
     builder.add_conditional_edges("classify", _is_meeting, ["extract", "skip"])
     builder.add_edge("extract", "review")
     builder.add_conditional_edges(

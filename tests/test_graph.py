@@ -16,8 +16,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.payloads import ClassifyPayload
 from app.graph.build import build_graph
-from app.graph.nodes import Deps
+from app.graph.nodes import CARRIED_A_CODE, NOT_A_MEETING, Deps
 from app.policy.registry import Approval, Outcome
+from app.policy.scrub import CREDENTIAL_NOTICE
 from app.store.ledger import MessageStatus
 
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -241,6 +242,58 @@ def test_a_classification_skip_records_a_fixed_phrase_not_the_models_reasoning()
     _run(_deps(pipeline=FakePipeline(is_meeting=False), ledger=ledger))
 
     assert ledger.errors == ["not a meeting"]
+
+
+# --- credential mail (M18, decision 2) ------------------------------------------------
+
+
+class CredentialGmail(FakeGmail):
+    """Serves the message as the client leaves credential mail: flagged, its
+    body the fixed notice."""
+
+    def get_message(self, message_id: str) -> EmailMessage:
+        return EMAIL.model_copy(
+            update={
+                "subject": "Your Acme verification code",
+                "body_text": CREDENTIAL_NOTICE,
+                "credential": True,
+            }
+        )
+
+
+class NoModel:
+    """A pipeline whose every call fails the test: no model may read the mail."""
+
+    def classify(self, email: EmailMessage, **kwargs: Any) -> ClassifyPayload:
+        raise AssertionError("credential mail reached the classifier")
+
+    def extract(self, email: EmailMessage, **kwargs: Any) -> ExtractionResult:
+        raise AssertionError("credential mail reached the extractor")
+
+
+def test_credential_mail_is_skipped_with_the_fixed_reason_before_any_model() -> None:
+    ledger = FakeLedger()
+    graph, config, _ = _run(_deps(gmail=CredentialGmail(), pipeline=NoModel(), ledger=ledger))
+
+    assert ledger.statuses == [MessageStatus.SKIPPED]
+    assert ledger.errors == [CARRIED_A_CODE]
+    assert _interrupt_payload(graph, config) is None
+
+
+def test_credential_mails_checkpoint_holds_only_the_notice() -> None:
+    graph, config, _ = _run(_deps(gmail=CredentialGmail(), pipeline=NoModel()))
+
+    values = graph.get_state(config).values
+    assert values["email"].body_text == CREDENTIAL_NOTICE
+    assert "extraction" not in values
+
+
+def test_mail_without_the_flag_still_reaches_the_classifier() -> None:
+    pipeline = FakePipeline(is_meeting=False)
+    ledger = FakeLedger()
+    _run(_deps(pipeline=pipeline, ledger=ledger))
+
+    assert ledger.errors == [NOT_A_MEETING]
 
 
 @dataclass

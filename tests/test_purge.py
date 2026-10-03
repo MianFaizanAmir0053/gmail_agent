@@ -20,7 +20,7 @@ from app.channel.decide import decide
 from app.channel.park import proposal_from, write_park
 from app.channel.worker import ATTEMPTS_EXHAUSTED, settle_decided, settle_failed
 from app.graph.checkpointer import postgres_checkpointer
-from app.graph.nodes import NOT_A_MEETING, SWEEP_REASON
+from app.graph.nodes import CARRIED_A_CODE, NOT_A_MEETING, SWEEP_REASON
 from app.jobs.purge import purge
 from app.mail.feed import GONE, TOO_OLD
 from app.store.ledger import STRANDED_REASON, MessageLedger, MessageStatus
@@ -143,12 +143,12 @@ def test_fixed_operator_reasons_survive(
 def test_the_mail_feeds_fixed_reasons_survive(
     conn: psycopg.Connection, migrated_database: str
 ) -> None:
-    """Too old, gone before its turn, and the classifier's no (M20, D4): code
-    wrote them, they quote nothing, and `/health` and the failures view count
-    them."""
+    """Too old, gone before its turn, the classifier's no (M20, D4), and mail
+    set aside for carrying a code (M18, D10): code wrote them, they quote
+    nothing, and `/health` and the failures view count them."""
     ledger = MessageLedger(conn)
     kept = {}
-    for reason in (TOO_OLD, GONE, NOT_A_MEETING):
+    for reason in (TOO_OLD, GONE, NOT_A_MEETING, CARRIED_A_CODE):
         message_id = f"kept-{uuid.uuid4().hex[:8]}"
         ledger.claim(message_id, message_id)
         ledger.mark(message_id, MessageStatus.SKIPPED, error=reason)

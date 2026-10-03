@@ -1495,8 +1495,8 @@ Known wrappers are unwrapped first. Links are handled before codes, and counts a
 **Description:** The graph's first node records a flagged message as SKIPPED ("carried a sign-in code"), before classify runs. "carried a sign-in code" joins the purge's fixed reasons (D10).
 
 **Acceptance criteria:**
-- [ ] A credential message ends SKIPPED with the fixed reason, and no model is called: the gate records no spend.
-- [ ] Its checkpoint and its ledger row hold no code, no link and no body text.
+- [x] A credential message ends SKIPPED with the fixed reason, and no model is called: the gate records no spend.
+- [x] Its checkpoint and its ledger row hold no code, no link and no body text.
 
 **Verification:** `uv run pytest tests/test_graph.py tests/test_poll.py tests/test_purge.py`, and the same on Neon.
 

@@ -296,3 +296,9 @@ column; they are logged instead.
   - A link behind anchor text (`<a href>`) is still not read, as before. A meeting link shown only as "Join" is therefore lost to the extractor. Reading allowlisted hrefs could come later.
   - Text hidden by a stylesheet class, like white-on-white text, stays: both are beyond inline markup.
 - **The old rule reversed.** `test_prefers_plain_text_over_html` became `test_prefers_html_over_plain_text`.
+
+### Task 18.3, credential mail set aside (2026-10-03)
+
+- **Built.** A conditional edge after `fetch` (`_set_aside` in `app/graph/build.py`) sends a flagged message to `skip`, which records SKIPPED with `CARRIED_A_CODE`, "carried a sign-in code". The classifier is never reached, so no model is called and the gate records no spend. The phrase joins the purge's fixed reasons (D10).
+- **Tests.** A pipeline that fails the test on any call proves no model runs. The checkpoint holds only the notice, and no extraction. Unflagged mail still reaches the classifier.
+- **The topology gains an edge** (`fetch` to `skip`) and loses none. Threads parked before it resume as they were. The review node's removal in 18.4 is the change that needs parked threads drained first (D9).
