@@ -916,7 +916,7 @@ never mix in, and later edits to the main working copy never touch it.
 | The code | `..\mailagent-prod`, a git worktree detached at the deployed commit (`git worktree add --detach ..\mailagent-prod v2-plan`, then `uv sync --frozen` in it) |
 | Settings | `secrets\prod.env`: §2's variables, with absolute file paths for the client and the tokens |
 | The agent | `secrets\start-prod.ps1` runs `uv run --env-file <settings> uvicorn app.api:app --host 127.0.0.1 --port 8000` in the worktree |
-| The public address | `secrets\start-tunnel.ps1`: a free Cloudflare quick tunnel to `127.0.0.1:8000` |
+| The public address | `secrets\start-ngrok.ps1`: ngrok's free fixed domain in front of `127.0.0.1:8000` |
 
 **Settings that differ from Fly's:**
 - **`DATABASE_URL`** is Supabase's **session pooler**, `postgres.<project-ref>@aws-0-<region>.pooler.supabase.com:5432`. The direct host has only IPv6, and the laptop has none. Never port 6543.
@@ -925,16 +925,18 @@ never mix in, and later edits to the main working copy never touch it.
 **The first start** applies every migration, so the `web_reader` role exists only after it. Set its password then (§9.3).
 
 **The public address.** Vercel calls the agent at `FLY_API_URL`.
+- **ngrok, since 2026-10-03.** A free account comes with one fixed domain (`<words>.ngrok-free.dev`). It survives a restart, a sleep and a dropped connection: the agent reconnects to the same address by itself, so `FLY_API_URL` is set once.
+  - Setup: ngrok's own zip from ngrok.com/download, unpacked to `C:\Users\Faizan\Desktop\hobby\tools\ngrok`. Then the owner, in their own terminal, saves the authtoken there: `ngrok.exe config add-authtoken --config <that folder>\ngrok.yml <token>`. The token never goes in chat or in the repository.
+  - Not in `AppData`: Claude's sandboxed shell keeps a private copy of it, so a file put there by one side is invisible to the other.
+  - The free plan allows 20,000 requests and 1 GB a month. The web app uses a fraction of that. An uptime monitor on this address checks at most every 10 minutes, or it uses the requests up.
+  - ngrok shows browsers a warning page first. The web app's server calls send JSON with no browser user agent, and never see it.
+  - `secrets\ngrok.log` records each connection and every reconnect.
 - **Tailscale Funnel was tried first and dropped.** Its relays reset every connection from Vercel (`ECONNRESET` in Vercel's logs), though some other callers got through.
-- **The Cloudflare quick tunnel works.** It needs no account. Its address, `https://<words>.trycloudflare.com`, **changes every time the tunnel starts**. After any restart:
-  1. find the new address in `secrets\tunnel.log`;
-  2. set it as Vercel's `FLY_API_URL`;
-  3. redeploy.
-- A permanent address comes with the free VM.
+- **The Cloudflare quick tunnel was dropped too** (`secrets\start-tunnel.ps1`). It needs no account, but Cloudflare deletes its address the moment the connection breaks: a sleep, or a few seconds without Wi-Fi. Then it logs "Tunnel not found" forever, and every new address had to go to Vercel with a redeploy. It died twice on 2026-10-03.
 
 **Keeping it up:**
-- Two windows stay open: the agent, and the tunnel.
-- The laptop stays plugged in, and never sleeps while plugged in.
+- Two windows stay open: the agent, and ngrok.
+- The laptop stays plugged in, and never sleeps while plugged in. A sleep stops the agent itself, not only its address: on 2026-10-03 one sleep cost 40 minutes with no poll (13:29 to 14:08 UTC).
 - While the laptop is off or asleep, mail waits. The sync catches up when it is back, but mail older than seven days is skipped (§10).
 - Only one copy of the agent may run, or Gmail is polled twice.
 
