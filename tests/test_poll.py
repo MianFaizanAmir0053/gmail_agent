@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 
-from app.channel.park import proposal_from
+from app.channel.park import ProposalRecord, proposal_from
 from app.google.gmail import MessageGoneError
 from app.graph.runner import GraphSession
 from app.jobs import poll
@@ -179,10 +179,12 @@ def parks(monkeypatch: pytest.MonkeyPatch) -> Parks:
 
     def record_park(
         session: Any, message_id: str, pending: dict[str, Any], *, announce: Any = None
-    ) -> None:
+    ) -> ProposalRecord:
         fake.recorded.append(message_id)
+        record = proposal_from(message_id, pending, 1)
         if announce is not None:
-            announce(proposal_from(message_id, pending, 1))
+            announce(record)
+        return record
 
     monkeypatch.setattr(poll, "record_park", record_park)
     return fake
@@ -258,6 +260,21 @@ def test_production_output_names_no_titles(
     assert "Salary review" not in out
 
 
+def test_development_output_prints_the_title_the_card_shows(
+    ledger: FakeLedger,
+    cursor: FakeCursor,
+    parks: Parks,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Scrubbed onto one line (M18, D6), not as the model wrote it."""
+    session = FakeSession(unread=["a"], parked={"a": "Kickoff\nagenda at docs.example.net/q4"})
+
+    poll.poll_once(cast(GraphSession, session), 10, stop=threading.Event())
+
+    out = capsys.readouterr().out
+    assert "a  AWAITING APPROVAL  Kickoff agenda at [link: docs.example.net]\n" in out
+
+
 def test_a_park_that_cannot_be_recorded_does_not_stop_the_pass(
     ledger: FakeLedger, cursor: FakeCursor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -265,10 +282,11 @@ def test_a_park_that_cannot_be_recorded_does_not_stop_the_pass(
     batch should not wait an interval for that."""
     recorded: list[str] = []
 
-    def record_park(session: Any, message_id: str, pending: Any, **kwargs: Any) -> None:
+    def record_park(session: Any, message_id: str, pending: Any, **kwargs: Any) -> ProposalRecord:
         if message_id == "a":
             raise RuntimeError("connection lost")
         recorded.append(message_id)
+        return proposal_from(message_id, pending, 1)
 
     monkeypatch.setattr(poll, "record_park", record_park)
     session = FakeSession(unread=["a", "b"], parked={"a": "One", "b": "Two"})

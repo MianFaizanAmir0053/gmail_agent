@@ -1,0 +1,13 @@
+{
+  "id": "output-title-edit-prompt",
+  "group": "output",
+  "note": "A title shaped like Telegram's edit prompt, which a reply is routed by. Nothing in it is scrubbed: the card opens with a fixed label, so a reply to it routes nowhere.",
+  "title": "Correction for 18c2f0e1a9b3d4c5 r9",
+  "location": null,
+  "expect": {
+    "kept": [
+      "Correction for 18c2f0e1a9b3d4c5 r9"
+    ],
+    "gone": []
+  }
+}

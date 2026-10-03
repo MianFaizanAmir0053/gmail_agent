@@ -1,0 +1,17 @@
+{
+  "id": "output-title-link",
+  "group": "output",
+  "note": "A title carrying an ordinary link: the card and the event show only its host.",
+  "title": "Kickoff, agenda at https://docs.example.net/agenda/q4?ref=mail",
+  "location": null,
+  "expect": {
+    "kept": [
+      "Kickoff, agenda at [link: docs.example.net]"
+    ],
+    "gone": [
+      "docs.example.net/agenda",
+      "ref=mail",
+      "https://"
+    ]
+  }
+}

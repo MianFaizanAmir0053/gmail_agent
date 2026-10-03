@@ -1,0 +1,15 @@
+{
+  "id": "output-location-link",
+  "group": "output",
+  "note": "A location carrying an ordinary link: only its host is left.",
+  "title": "Coffee",
+  "location": "Cafe Lumen, map at maps.example.org/place/cafe-lumen",
+  "expect": {
+    "kept": [
+      "Cafe Lumen, map at [link: maps.example.org]"
+    ],
+    "gone": [
+      "/place/cafe-lumen"
+    ]
+  }
+}

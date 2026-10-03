@@ -1569,9 +1569,9 @@ The search code stays, for M19. A structural test checks that `ExtractionPipelin
 **Description:** D6. The title and the location are scrubbed before park and inside `event_args`, so the card and the hash see the same text. Telegram disables link previews on every send and every edit. The card's first line is a fixed label.
 
 **Acceptance criteria:**
-- [ ] A title or location carrying a link, a code or a line shaped like an instruction is scrubbed on the card, in Telegram and in the event's arguments. An allowlisted meeting link stays.
-- [ ] Every Telegram call that sends text disables previews.
-- [ ] A pending proposal hashed before the change comes back to the owner ("the proposal changed") rather than failing.
+- [x] A title or location carrying a link, a code or a line shaped like an instruction is scrubbed on the card, in Telegram and in the event's arguments. An allowlisted meeting link stays.
+- [x] Every Telegram call that sends text disables previews.
+- [x] A pending proposal hashed before the change comes back to the owner ("the proposal changed") rather than failing.
 
 **Verification:** `uv run pytest tests/test_hashing.py tests/test_park.py tests/test_telegram.py tests/test_worker.py`; Neon for the worker.
 

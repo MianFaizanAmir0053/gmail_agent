@@ -1,0 +1,15 @@
+{
+  "id": "output-location-door-code",
+  "group": "output",
+  "note": "A code in a location goes, the room stays.",
+  "title": "Design review",
+  "location": "Room 4B, door code 7731",
+  "expect": {
+    "kept": [
+      "Room 4B, door code [code removed]"
+    ],
+    "gone": [
+      "7731"
+    ]
+  }
+}

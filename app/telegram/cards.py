@@ -36,6 +36,12 @@ Correlating the user's free-text reply back to a proposal that way keeps the
 handler stateless -- no pending-edit table, nothing to expire or leak.
 """
 
+CARD_LABEL = "📅 Proposed event"
+"""Every card's first line (M18, D6). A reply is routed by the first words of
+the message it answers, so a card that opened with its title would let a
+title shaped like an edit prompt send the owner's reply to another proposal.
+The title is also scrubbed onto one line (`app/policy/hashing.py`, `shown`)."""
+
 QUEUED = "⏳ Queued. The outcome shows in the web app."
 STALE = "This card is out of date. The latest version is in the web app."
 GONE = "That proposal is no longer waiting for a decision."
@@ -114,8 +120,11 @@ def keyboard(message_id: str, revision: int, token: str | None) -> list[list[dic
 
 
 def approval_card(record: ProposalRecord, *, zone: str) -> str:
+    """The card's text. It opens with `CARD_LABEL`, never the title, so no
+    title can make a card read as an edit prompt (M18, D6)."""
     card = record.payload
     lines = [
+        CARD_LABEL,
         f"<b>{_escape(card.get('title') or '(untitled)')}</b>",
         f"🕒 {_escape(_local(card.get('start_utc'), zone))}"
         f" - {_escape(_local(card.get('end_utc'), zone))}",

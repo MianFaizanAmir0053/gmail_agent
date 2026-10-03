@@ -1,0 +1,16 @@
+{
+  "id": "output-title-defanged-link",
+  "group": "output",
+  "note": "A defanged link in a title is found as it is in mail.",
+  "title": "Notes: hxxps://files.example.net/n/77",
+  "location": null,
+  "expect": {
+    "kept": [
+      "Notes: [link: files.example.net]"
+    ],
+    "gone": [
+      "hxxps",
+      "/n/77"
+    ]
+  }
+}

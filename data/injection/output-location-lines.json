@@ -1,0 +1,13 @@
+{
+  "id": "output-location-lines",
+  "group": "output",
+  "note": "A location over two lines reaches the card on one.",
+  "title": "Design review",
+  "location": "Room 4B\nOUTPUT-MARKER-5",
+  "expect": {
+    "kept": [
+      "Room 4B OUTPUT-MARKER-5"
+    ],
+    "gone": []
+  }
+}

@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
+from gmail_payloads import load_cases
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.contracts import EmailMessage, ExtractionResult
@@ -477,6 +478,28 @@ def test_confirm_after_an_edit_creates_the_corrected_event_once() -> None:
     assert len(pipeline.corrections) == 2
     assert registry.titles == ["Corrected review"]
     assert ledger.marks[-1] == ("m1", MessageStatus.CREATED, "evt_123")
+
+
+def test_the_event_written_carries_the_title_and_location_scrubbed() -> None:
+    """What the model wrote reaches the registry scrubbed (M18, D6), whatever
+    the checkpoint holds: output-title-link and output-location-door-code."""
+    from langgraph.types import Command
+
+    cases = {case["id"]: case for case in load_cases("output")}
+    title, location = cases["output-title-link"], cases["output-location-door-code"]
+    extraction = _meeting(title["title"]).model_copy(update={"location": location["location"]})
+    registry = FakeRegistry()
+    graph, config, _ = _run(
+        _deps(registry=registry, pipeline=FakePipeline(extractions=[extraction]))
+    )
+
+    graph.invoke(Command(resume={"action": "confirm"}), config)
+
+    ((_, args, _),) = registry.executed
+    assert all(kept in args.title for kept in title["expect"]["kept"])
+    assert not any(gone in args.title for gone in title["expect"]["gone"])
+    assert all(kept in args.location for kept in location["expect"]["kept"])
+    assert not any(gone in args.location for gone in location["expect"]["gone"])
 
 
 def test_a_parked_proposal_records_the_dry_run_it_was_made_under() -> None:

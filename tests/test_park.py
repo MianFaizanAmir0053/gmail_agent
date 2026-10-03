@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import psycopg
 import pytest
+from gmail_payloads import load_cases
 
 from app.channel import park
 from app.channel.park import (
@@ -17,8 +18,9 @@ from app.channel.park import (
     record_park,
     write_park,
 )
+from app.contracts import ExtractionResult
 from app.graph.runner import GraphSession
-from app.policy.hashing import INVITE, Binding, args_key
+from app.policy.hashing import INVITE, Binding, args_key, event_args
 from app.store.ledger import MessageLedger, MessageStatus
 
 MIGRATION = Path(__file__).resolve().parent.parent / "migrations" / "007_proposals.sql"
@@ -101,6 +103,23 @@ def test_without_a_binding_nothing_can_be_confirmed() -> None:
     record = proposal_from("m1", PENDING, revision=1)
 
     assert (record.tool, record.args_hash) == (None, None)
+
+
+@pytest.mark.parametrize("case", load_cases("output"), ids=lambda case: case["id"])
+def test_the_card_shows_the_title_and_location_the_event_carries(case: dict[str, Any]) -> None:
+    """Both scrubbed in one place (M18, D6), so the card shows what the hash
+    binds. A failure names the case and the expectation's index, never the text."""
+    proposed = {**PENDING["proposed"], "title": case["title"], "location": case["location"]}
+    card = proposal_from("m1", {**PENDING, "proposed": proposed}, revision=1).payload
+    args = event_args(ExtractionResult.model_validate(proposed), "m1")
+
+    text = f"{card['title']}\n{card['location']}"
+    lost = [index for index, kept in enumerate(case["expect"]["kept"]) if kept not in text]
+    left = [index for index, gone in enumerate(case["expect"]["gone"]) if gone in text]
+    assert not lost, f"{case['id']}: kept {lost} lost"
+    assert not left, f"{case['id']}: gone {left} left"
+    as_bound = (card["title"], card["location"]) == (args.title, args.location)
+    assert as_bound, case["id"]
 
 
 # --- writing it (Postgres) ---------------------------------------------------

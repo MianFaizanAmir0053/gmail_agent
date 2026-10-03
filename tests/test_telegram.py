@@ -7,12 +7,16 @@ one integration test runs it for real.
 
 from __future__ import annotations
 
+import html
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import psycopg
 import pytest
+from gmail_payloads import load_cases
 
 from app.channel.decide import DecisionResult
 from app.channel.park import ProposalRecord, proposal_from, write_park
@@ -432,3 +436,72 @@ def test_card_marks_guests_outside_the_thread() -> None:
     text = cards.approval_card(_record(outside_guests=["new@example.net"]), zone="UTC")
 
     assert "Not in this email thread: new@example.net" in text
+
+
+# --- what the model wrote (M18, D6) ---------------------------------------------------
+
+
+OUTPUT = load_cases("output")
+
+
+def _output(case_id: str) -> dict[str, Any]:
+    return next(case for case in OUTPUT if case["id"] == case_id)
+
+
+def _as_received(card: str) -> str:
+    """A card's text as Telegram gives it back in `reply_to_message`: the HTML
+    parsed away."""
+    return html.unescape(re.sub(r"<[^>]+>", "", card))
+
+
+def test_every_card_opens_with_the_fixed_label() -> None:
+    assert cards.approval_card(_record(), zone="UTC").split("\n")[0] == cards.CARD_LABEL
+
+
+def test_a_title_shaped_like_an_edit_prompt_routes_no_reply(decisions: Decisions) -> None:
+    """output-title-edit-prompt: a reply to the card is not taken as a
+    correction to the proposal the title names."""
+    title = _output("output-title-edit-prompt")["title"]
+    card = cards.approval_card(_record(proposed=dict(PENDING["proposed"], title=title)), zone="UTC")
+
+    assert cards.edit_target(_as_received(card)) is None
+    outcome = _handler(FakeBot()).handle(_reply("4pm not 3pm", _as_received(card)))
+
+    assert decisions.made == []
+    assert "not a correction" in outcome
+
+
+@pytest.mark.parametrize("case", OUTPUT, ids=lambda case: case["id"])
+def test_the_card_shows_the_title_and_location_scrubbed(case: dict[str, Any]) -> None:
+    """A failure names the case and the expectation's index, never the text."""
+    proposed = dict(PENDING["proposed"], title=case["title"], location=case["location"])
+    text = _as_received(cards.approval_card(_record(proposed=proposed), zone="UTC"))
+
+    lost = [index for index, kept in enumerate(case["expect"]["kept"]) if kept not in text]
+    left = [index for index, gone in enumerate(case["expect"]["gone"]) if gone in text]
+    assert not lost, f"{case['id']}: kept {lost} lost"
+    assert not left, f"{case['id']}: gone {left} left"
+
+
+def test_every_call_that_sends_text_turns_link_previews_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preview has Telegram fetch a link from the text."""
+    from app.telegram.client import TelegramClient
+
+    posted: list[tuple[str, dict[str, Any]]] = []
+
+    def post(url: str, *, json: dict[str, Any], timeout: float) -> Any:
+        posted.append((url.rsplit("/", 1)[-1], json))
+        return SimpleNamespace(json=lambda: {"ok": True, "result": {}})
+
+    monkeypatch.setattr("app.telegram.client.httpx.post", post)
+    bot = TelegramClient("123:bot-token")
+
+    bot.send_message(CHAT, "a card", keyboard=cards.keyboard(MESSAGE_ID, 1, TOKEN))
+    bot.send_message(CHAT, "an edit prompt", force_reply=True)
+    bot.send_message(CHAT, "a reply")
+    bot.edit_message_text(CHAT, 7, "an edited card")
+
+    assert [method for method, _ in posted] == ["sendMessage"] * 3 + ["editMessageText"]
+    assert all(body["link_preview_options"] == {"is_disabled": True} for _, body in posted)

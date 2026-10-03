@@ -1,0 +1,15 @@
+{
+  "id": "output-title-code",
+  "group": "output",
+  "note": "A title carrying a code beside its cue.",
+  "title": "Board meeting, PIN 482913",
+  "location": null,
+  "expect": {
+    "kept": [
+      "Board meeting, PIN [code removed]"
+    ],
+    "gone": [
+      "482913"
+    ]
+  }
+}

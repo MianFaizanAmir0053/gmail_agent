@@ -1,0 +1,13 @@
+{
+  "id": "output-title-lines",
+  "group": "output",
+  "note": "A title written over several lines, each break a different character, with a NUL: it reaches the card on one line, so no part of it stands as a line of its own.",
+  "title": "Weekly sync\r\nOUTPUT-MARKER-1\u2028OUTPUT-MARKER-2\u000bOUTPUT-MARKER-3\u0085OUT\u0000PUT-MARKER-4",
+  "location": null,
+  "expect": {
+    "kept": [
+      "Weekly sync OUTPUT-MARKER-1 OUTPUT-MARKER-2 OUTPUT-MARKER-3 OUTPUT-MARKER-4"
+    ],
+    "gone": []
+  }
+}

@@ -45,6 +45,10 @@ in it. It becomes `[code removed]`. These are not codes:
   reference;
 - email addresses, and what is already a placeholder.
 
+**What the model writes** (D6): an event's title and location, scrubbed the
+same way and folded onto one line (`scrub_line`) before a card shows them or
+an event's arguments are hashed.
+
 **Logged** as counts by kind, never the removed text.
 """
 
@@ -235,6 +239,23 @@ def scrub(text: str, *, every_line: bool = False) -> str:
     `every_line` reads every line as near a cue: for the subject of mail
     already known to carry a code, which need not name it."""
     return scrub_counted(text, every_line=every_line).text
+
+
+def scrub_line(text: str) -> str:
+    """A title or a location the model wrote, made as safe as the mail it was
+    read from (M18, D6): links and codes removed as `scrub` removes them, all
+    of it on one line. Each run of line breaks and spaces becomes one space,
+    and other control characters go, so nothing copied from an email stands
+    as a line of its own on a card: a forged status line, or the "Correction
+    for" line a Telegram reply is routed by. Folded before the scrub, so a cue
+    anywhere in it covers all of it, and again after, since normalising can
+    add a space. Idempotent."""
+    return _one_line(scrub(_one_line(text)))
+
+
+def _one_line(text: str) -> str:
+    kept = "".join(char for char in text if char.isspace() or unicodedata.category(char) != "Cc")
+    return " ".join(kept.split())
 
 
 def redact_secrets(text: str) -> str:

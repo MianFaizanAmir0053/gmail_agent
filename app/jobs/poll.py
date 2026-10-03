@@ -155,15 +155,15 @@ def poll_once(
         else:
             # The ledger mark and the proposal row, together.
             try:
-                record_park(session, message_id, pending, announce=announce)
+                record = record_park(session, message_id, pending, announce=announce)
             except Exception as exc:
                 # The thread is still parked, and reconciliation records it.
                 # The rest of the batch should not wait an interval for that.
                 print(f"  {message_id}  PARKED, NOT RECORDED  {type(exc).__name__}")
                 failed += 1
                 continue
-            proposed = pending["proposed"]
-            title = proposed.get("title") if show_titles else ""
+            # The card's title, scrubbed (M18, D6), not the model's as written.
+            title = (record.payload.get("title") or "") if show_titles else ""
             print(f"  {message_id}  AWAITING APPROVAL  {title}".rstrip())
 
     if not stopped and not from_feed:

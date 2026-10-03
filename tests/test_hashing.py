@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 
 import pytest
+from gmail_payloads import load_cases
 
 from app.contracts import ExtractionResult
 from app.policy.hashing import (
@@ -15,6 +17,7 @@ from app.policy.hashing import (
     args_key,
     bound,
     event_args,
+    shown,
     tool_for,
 )
 from app.tools.calendar_tool import CreateEventInput
@@ -144,6 +147,56 @@ def test_the_arguments_come_from_the_extraction_and_the_message() -> None:
     assert args.timezone == "UTC"
     assert args.description == "Created by mailagent from message m7."
     assert args.attendees == ["sara@example.com"]
+
+
+def _extraction(title: str | None, location: str | None) -> ExtractionResult:
+    return ExtractionResult(
+        is_meeting=True,
+        title=title,
+        start_utc=START,
+        end_utc=START + timedelta(hours=1),
+        timezone="Asia/Karachi",
+        attendees=["sara@example.com"],
+        location=location,
+        confidence=0.9,
+        reasoning="r",
+    )
+
+
+@pytest.mark.parametrize("case", load_cases("output"), ids=lambda case: case["id"])
+def test_the_event_carries_the_title_and_location_scrubbed(case: dict[str, Any]) -> None:
+    """What the model wrote, as the card shows it (M18, D6). A failure names
+    the case and the expectation's index, never the text."""
+    args = event_args(_extraction(case["title"], case["location"]), "m1")
+    text = f"{args.title}\n{args.location}"
+    lost = [index for index, kept in enumerate(case["expect"]["kept"]) if kept not in text]
+    left = [index for index, gone in enumerate(case["expect"]["gone"]) if gone in text]
+    assert not lost, f"{case['id']}: kept {lost} lost"
+    assert not left, f"{case['id']}: gone {left} left"
+    as_shown = (args.title, args.location) == (
+        shown(case["title"]) or "(untitled)",
+        shown(case["location"]),
+    )
+    assert as_shown, case["id"]
+
+
+def test_a_payload_binds_the_same_hash_scrubbed_or_not() -> None:
+    """A checkpoint made before titles were scrubbed binds the arguments its
+    card shows now: the card and the hash cannot disagree (M18, D6)."""
+    binding = Binding(calendar_id=CALENDAR, key=KEY)
+    raw = {**PROPOSED, "title": "Kickoff, agenda at docs.example.net/q4", "location": "Room 4B\n"}
+    clean = {**raw, "title": shown(raw["title"]), "location": shown(raw["location"])}
+
+    assert clean["title"] == "Kickoff, agenda at [link: docs.example.net]"
+    assert bound("m1", raw, binding) == bound("m1", clean, binding)
+
+
+def test_a_field_with_nothing_left_is_none() -> None:
+    assert shown(None) is None
+    assert shown(" \n\t ") is None
+    assert shown(42) is None
+    args = event_args(_extraction(" \n ", " "), "m1")
+    assert (args.title, args.location) == ("(untitled)", None)
 
 
 def test_an_event_id_is_one_google_accepts_and_the_same_every_time() -> None:

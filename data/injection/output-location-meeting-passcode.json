@@ -1,0 +1,16 @@
+{
+  "id": "output-location-meeting-passcode",
+  "group": "output",
+  "note": "A Zoom link as the location keeps its meeting id and loses its passcode.",
+  "title": "Vendor call",
+  "location": "https://zoom.us/j/81234567890?pwd=abc123",
+  "expect": {
+    "kept": [
+      "https://zoom.us/j/81234567890"
+    ],
+    "gone": [
+      "pwd",
+      "abc123"
+    ]
+  }
+}

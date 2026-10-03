@@ -1,0 +1,14 @@
+{
+  "id": "output-survives",
+  "group": "output",
+  "note": "Times, years, rooms, suites and street numbers survive: there is no cue.",
+  "title": "Q4 planning 2026, call at 14:30",
+  "location": "Suite 1200, Floor 3, 1600 Example Avenue",
+  "expect": {
+    "kept": [
+      "Q4 planning 2026, call at 14:30",
+      "Suite 1200, Floor 3, 1600 Example Avenue"
+    ],
+    "gone": []
+  }
+}

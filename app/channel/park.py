@@ -23,7 +23,7 @@ from psycopg.types.json import Jsonb
 
 from app.graph.runner import GraphSession
 from app.graph.versioning import LEGACY_PIPELINE_VERSION, ActionType, action_type
-from app.policy.hashing import Binding, bound
+from app.policy.hashing import Binding, bound, shown
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
 log = logging.getLogger(__name__)
@@ -90,14 +90,16 @@ def proposal_from(
         # must never act for real on a proposal whose mode nobody wrote down.
         dry_run=bool(pending.get("dry_run", True)),
         # Not the model's reasoning or confidence: the reasoning can quote the
-        # email, and the card does not need either.
+        # email, and the card does not need either. The title and the location
+        # are scrubbed as the event's arguments are (M18, D6), so the card
+        # shows what the hash binds, for a payload parked before that too.
         payload={
-            "title": proposed.get("title"),
+            "title": shown(proposed.get("title")),
             "start_utc": proposed.get("start_utc"),
             "end_utc": proposed.get("end_utc"),
             "timezone": proposed.get("timezone"),
             "attendees": attendees,
-            "location": proposed.get("location"),
+            "location": shown(proposed.get("location")),
             "conflicts": list(pending.get("conflicts") or []),
             "review_issues": list(pending.get("review_issues") or []),
             "outside_guests": list(pending.get("outside_guests") or []),

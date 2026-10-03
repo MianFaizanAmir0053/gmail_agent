@@ -1,0 +1,13 @@
+{
+  "id": "output-title-meeting-link",
+  "group": "output",
+  "note": "An allowlisted meeting link in a title stays, over https.",
+  "title": "Sync on meet.google.com/abc-defg-hij",
+  "location": null,
+  "expect": {
+    "kept": [
+      "Sync on https://meet.google.com/abc-defg-hij"
+    ],
+    "gone": []
+  }
+}

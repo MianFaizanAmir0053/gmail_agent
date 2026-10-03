@@ -369,3 +369,20 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
 - **Tests.**
   - Ten new tests in `tests/test_pipeline.py`, five forged-structure fixtures (`forged-*`) carrying inert markers only, and the old layout tests rewritten in `tests/test_models.py` and `tests/test_evaluation.py`.
   - Three deliberate breaks were each caught: the correction back in the user turn, no defusing, and no scrub at assembly.
+
+### Task 18.7, titles, locations and Telegram (2026-10-03)
+
+- **One function for the card and the event.** `hashing.shown` scrubs a title or a location onto one line. `event_args` and the card's payload (`park.proposal_from`) both take them from it, so the card shows what the hash binds. It reads whatever a checkpoint or a payload holds, so one made before this is shown and written scrubbed. The checkpoint's extraction stays as the model wrote it; the checkpoint holds the email anyway.
+- **`scrub.scrub_line`** applies `scrub`'s rules to one line. Each run of line breaks and spaces becomes one space and other control characters go, before the scrub and again after it, since NFKC can add a space. A cue anywhere in a title covers all of it.
+- **The hash's form is unchanged** (`HASH_VERSION` 1), so a title with nothing to scrub hashes as before. A pending proposal whose title or location the scrub changes no longer matches its approval. A Confirm on it comes back to the owner, "the proposal changed", with the scrubbed card at the next generation.
+- **Telegram.**
+  - Every card opens with a fixed label, `📅 Proposed event`, so no title can make a card read as the edit prompt a reply is routed by.
+  - `sendMessage` and `editMessageText` both turn link previews off. They send `link_preview_options`, which Bot API 7.0 put in place of the `disable_web_page_preview` the spec names. The Bot API pages could not be reached from this machine to check again; the owner's Telegram end test will show it.
+- **The poll's development output** prints the card's title, not the model's.
+- **Fixtures.** Eleven `output-*` cases in `data/injection/`, a new group: a title and a location as a model might write them, with what must hold. The README now documents this group and 18.6's `forged` group.
+- **Tests.**
+  - The output cases run through `scrub_line`, `event_args`, the card's payload and the Telegram card, each failure naming the case and the expectation's index.
+  - A graph test writes an event from a model's title and location. A worker test (Postgres) confirms a proposal hashed before the scrub, and sees it come back to the owner.
+  - Six deliberate breaks were each caught: no scrub in `shown`, the title first on the card, previews left on in an edit, either fold in `scrub_line` taken out, and the poll printing the model's title.
+  - 1873 tests pass against a local Postgres 16, the version CI runs, with lint and mypy clean.
+- **A limit, seen while writing the fixtures.** The code rules read a number within 15 characters after "call" or "dial" as a phone number, even with a cue word between them. So a PIN after "Board call, PIN" survives, in mail as in a title. Changing 18.1's rules is beyond this task; 18.11's suite can carry the case.

@@ -1293,6 +1293,36 @@ def test_a_confirm_whose_arguments_changed_returns_to_the_owner(
 
 
 @pytest.mark.integration
+def test_a_confirm_hashed_before_titles_were_scrubbed_returns_to_the_owner(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parked and approved under code that kept the model's title as written
+    (before M18, D6): the approval no longer matches what would run. The
+    proposal comes back with its title scrubbed, under a new generation,
+    rather than failing."""
+    title = "Kickoff, agenda at https://docs.example.net/agenda/q4"
+    session = _counting(conn, pipeline=FakePipeline(extractions=[_meeting(title)]))
+    with monkeypatch.context() as before:
+        before.setattr("app.policy.hashing.scrub_line", lambda text: text)
+        _parked(conn, session)
+        old = _token(conn)
+        _confirm(conn, "m1", revision=1)
+    announced: list[ProposalRecord] = []
+
+    assert apply_open(session, announce=announced.append) == [("m1", "no_effect")]
+    assert session.resumes == 0
+    assert _outcomes(conn) == [("no_effect", "the proposal changed", True)]
+    assert _action(conn) == ("refused", "the proposal changed", False)
+    scrubbed = "Kickoff, agenda at [link: docs.example.net]"
+    assert [(record.generation, record.payload["title"]) for record in announced] == [(2, scrubbed)]
+    stored = conn.execute("SELECT payload->>'title' FROM proposals WHERE message_id = 'm1'")
+    assert stored.fetchone() == (scrubbed,)
+    stale = decide(conn, "m1", action="confirm", revision=1, via="web", token=old, dry_run=True)
+    assert stale.status == "stale"
+    assert _confirm(conn, "m1", revision=1).status == "queued"  # the new card's
+
+
+@pytest.mark.integration
 def test_a_confirm_recorded_before_m17_returns_to_the_owner(conn: psycopg.Connection) -> None:
     """It has no approval: it is shown again ("approve again"), never run."""
     session = _counting(conn)

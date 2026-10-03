@@ -14,6 +14,11 @@ import httpx
 
 API_ROOT = "https://api.telegram.org"
 
+NO_PREVIEW: dict[str, Any] = {"link_preview_options": {"is_disabled": True}}
+"""On every call that sends text (M18, D6): a preview has Telegram fetch a
+link in the text and draw the page it finds into the chat. Bot API 7.0
+replaced `disable_web_page_preview` with this."""
+
 
 class TelegramError(RuntimeError):
     """The Bot API rejected a call."""
@@ -65,7 +70,7 @@ class TelegramClient:
             "chat_id": chat_id,
             "text": text,
             "parse_mode": "HTML",
-            "disable_web_page_preview": True,
+            **NO_PREVIEW,
         }
         if keyboard:
             payload["reply_markup"] = {"inline_keyboard": keyboard}
@@ -86,6 +91,7 @@ class TelegramClient:
                 "message_id": message_id,
                 "text": text,
                 "parse_mode": "HTML",
+                **NO_PREVIEW,
             },
         )
 

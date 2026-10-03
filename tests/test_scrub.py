@@ -20,6 +20,7 @@ from app.policy.scrub import (
     redact_secrets,
     scrub,
     scrub_counted,
+    scrub_line,
     unwrap,
 )
 
@@ -33,11 +34,13 @@ def _load(group: str) -> list[dict[str, Any]]:
 
 CREDENTIAL = _load("credential")
 MEETING = _load("meeting")
+OUTPUT = _load("output")
 
 
 def test_the_fixture_groups_are_not_empty() -> None:
     assert len(CREDENTIAL) >= 10
     assert len(MEETING) >= 6
+    assert len(OUTPUT) >= 10
 
 
 # --- normalisation -------------------------------------------------------------------
@@ -466,3 +469,75 @@ def test_the_email_window_does_not_block_a_distant_code() -> None:
 
 def test_a_credential_subject_also_removes_an_alphanumeric_secret() -> None:
     assert "Xy7kP2q" not in redact_secrets("temporary password Xy7kP2q")
+
+
+# --- what the model writes (D6) ------------------------------------------------------
+
+
+def _fields(case: dict[str, Any]) -> list[str]:
+    return [scrub_line(case[name]) for name in ("title", "location") if case[name] is not None]
+
+
+def _on_one_line(text: str) -> bool:
+    return text == " ".join(text.split()) and text.isprintable()
+
+
+@pytest.mark.parametrize("case", OUTPUT, ids=lambda case: case["id"])
+def test_what_the_model_writes_keeps_and_loses_what_it_must(case: dict[str, Any]) -> None:
+    """A failure names the case and the expectation's index, never the text."""
+    fields = _fields(case)
+    text = "\n".join(fields)
+    lost = [index for index, kept in enumerate(case["expect"]["kept"]) if kept not in text]
+    left = [index for index, gone in enumerate(case["expect"]["gone"]) if gone in text]
+    assert not lost, f"{case['id']}: kept {lost} lost"
+    assert not left, f"{case['id']}: gone {left} left"
+    assert all(_on_one_line(field) for field in fields), f"{case['id']}: not on one line"
+
+
+@pytest.mark.parametrize("case", OUTPUT, ids=lambda case: case["id"])
+def test_scrubbing_what_the_model_writes_twice_changes_nothing(case: dict[str, Any]) -> None:
+    unchanged = all(scrub_line(once) == once for once in _fields(case))
+    assert unchanged, case["id"]
+
+
+@pytest.mark.parametrize(
+    "line_break",
+    [
+        "\r\n",
+        "\n",
+        "\r",
+        "\t",
+        chr(0x0B),
+        chr(0x0C),
+        chr(0x1C),
+        chr(0x85),
+        chr(0x2028),
+        chr(0x2029),
+    ],
+)
+def test_every_kind_of_line_break_becomes_one_space(line_break: str) -> None:
+    assert scrub_line(f"Weekly{line_break}{line_break}sync ") == "Weekly sync"
+
+
+def test_other_control_characters_are_removed() -> None:
+    assert scrub_line("Wee" + chr(0) + "kly" + chr(0x1B) + " sync" + chr(0x7F)) == "Weekly sync"
+
+
+def test_a_cue_anywhere_in_what_the_model_writes_covers_all_of_it() -> None:
+    """Folded first: a code more lines from its cue than mail's window reaches
+    is on the cue's line."""
+    text = "PIN\na\nb\nc\nd\n482913"
+    assert "482913" in scrub(text)
+    assert scrub_line(text) == "PIN a b c d [code removed]"
+
+
+def test_a_space_that_normalising_adds_is_folded_too() -> None:
+    """NFKC writes a spacing diaeresis as a space and a combining mark."""
+    once = scrub_line("Sync " + chr(0xA8))
+    assert once == "Sync " + chr(0x308)
+    assert scrub_line(once) == once
+
+
+def test_a_blank_field_scrubs_to_nothing() -> None:
+    assert scrub_line("") == ""
+    assert scrub_line(" \n\t ") == ""
