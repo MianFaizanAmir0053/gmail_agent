@@ -7,10 +7,19 @@ from app.telegram import cards
 from app.telegram.client import Sender
 
 
-def send_approval_card(bot: Sender, chat_id: int, record: ProposalRecord, *, zone: str) -> None:
+def send_approval_card(
+    bot: Sender,
+    chat_id: int,
+    record: ProposalRecord,
+    *,
+    zone: str,
+    allowed: frozenset[str] = frozenset(),
+) -> None:
+    """`allowed`: the guest keys of contacts the owner has allowed, as the card
+    is sent (M18, D5)."""
     bot.send_message(
         chat_id,
-        cards.approval_card(record, zone=zone),
+        cards.approval_card(record, zone=zone, allowed=allowed),
         keyboard=cards.keyboard(record.message_id, record.revision, cards.record_token(record)),
     )
 

@@ -1,0 +1,19 @@
+{
+  "id": "guest-gmail-spelling",
+  "group": "guest",
+  "note": "The email names a Gmail address with dots and a tag; the model writes it plainly. Gmail reads both as one mailbox: named in the email.",
+  "subject": "Lunch",
+  "body": "Lunch on Thursday at 1pm? Bring Sara.Khan+work@gmail.com along.",
+  "guests": [
+    "sarakhan@gmail.com"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "sarakhan@gmail.com": "email"
+    },
+    "quoted_section": false
+  }
+}

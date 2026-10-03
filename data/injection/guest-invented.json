@@ -1,0 +1,19 @@
+{
+  "id": "guest-invented",
+  "group": "guest",
+  "note": "An address the email never names, which the model wrote anyway: not found in the email, a warning, and outside the thread until the owner allows it.",
+  "subject": "Catch-up",
+  "body": "Let's catch up on Thursday at 3pm.",
+  "guests": [
+    "ghost@example.net"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "ghost@example.net": "absent"
+    },
+    "quoted_section": false
+  }
+}

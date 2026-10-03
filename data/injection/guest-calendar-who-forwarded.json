@@ -1,0 +1,19 @@
+{
+  "id": "guest-calendar-who-forwarded",
+  "group": "guest",
+  "note": "The same invitation forwarded: its Who list is a forwarded section, a warning.",
+  "subject": "Fwd: Invitation: Project review @ Mon 5 Oct 2026 3pm - 4pm (PKT) (sam@example.com)",
+  "body": "Forwarding this one, can you make it?\n\n---------- Forwarded message ---------\nFrom: Google Calendar <calendar-notification@google.com>\nDate: Mon, 28 Sep 2026 at 10:00\nSubject: Invitation: Project review @ Mon 5 Oct 2026 3pm - 4pm (PKT) (sam@example.com)\nTo: owner@example.com\n\nProject review\nMonday 5 Oct 2026 - 3pm - 4pm (Pakistan Standard Time)\n\nJoin with Google Meet\nmeet.google.com/abc-defg-hij\n\nWho\n  sam@example.com - organizer\n  who-guest@example.net\n\nView all guest info\nReply for owner@example.com",
+  "guests": [
+    "who-guest@example.net"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "who-guest@example.net": "quoted"
+    },
+    "quoted_section": true
+  }
+}

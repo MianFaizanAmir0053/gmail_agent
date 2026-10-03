@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import html
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.channel.decide import card_token
 from app.channel.park import ProposalRecord
+from app.policy.participants import SOURCE_WORDS, WARNINGS, card_source, guest_key
 
 CONFIRM = "confirm"
 CANCEL = "cancel"
@@ -51,6 +53,11 @@ NOT_READY = "This proposal is still being prepared. Try again in a minute."
 OUTSIDE = (
     "Some guests are not in this email thread. Allow or remove them in the web app, then confirm."
 )
+QUOTED_SECTION = (
+    "This email quotes or forwards older mail. A time or place taken from that part is not marked."
+)
+"""Noted on a card whose email has such a section (M18, D5): the source of a
+guest is traced, a time's or a place's is not."""
 
 
 def _escape(value: object) -> str:
@@ -119,9 +126,14 @@ def keyboard(message_id: str, revision: int, token: str | None) -> list[list[dic
     return [row]
 
 
-def approval_card(record: ProposalRecord, *, zone: str) -> str:
+def approval_card(
+    record: ProposalRecord, *, zone: str, allowed: frozenset[str] = frozenset()
+) -> str:
     """The card's text. It opens with `CARD_LABEL`, never the title, so no
-    title can make a card read as an edit prompt (M18, D6)."""
+    title can make a card read as an edit prompt (M18, D6).
+
+    `allowed` holds the guest keys of contacts the owner has allowed, read as
+    the card is sent: those guests need no Allow, and say so (M18, D5)."""
     card = record.payload
     lines = [
         CARD_LABEL,
@@ -131,10 +143,16 @@ def approval_card(record: ProposalRecord, *, zone: str) -> str:
         f"🌍 {_escape(card.get('timezone') or zone)}",
     ]
 
-    attendees = card.get("attendees") or []
-    if attendees:
+    attendees = [str(guest) for guest in card.get("attendees") or []]
+    if attendees and card.get("guest_sources"):
+        lines.append("👥 Guests:")
+        lines.extend(_guest_line(guest, card, allowed) for guest in attendees)
+    elif attendees:
+        # Parked before M18: no sources were recorded.
         lines.append(f"👥 {_escape(', '.join(attendees))}")
-    outsiders = card.get("outside_guests") or []
+    outsiders = [
+        guest for guest in card.get("outside_guests") or [] if guest_key(guest) not in allowed
+    ]
     if outsiders:
         # Allowed in the web app only (M17, D4).
         lines.append(
@@ -143,6 +161,8 @@ def approval_card(record: ProposalRecord, *, zone: str) -> str:
         )
     if card.get("location"):
         lines.append(f"📍 {_escape(card['location'])}")
+    if card.get("quoted_section"):
+        lines.append(f"↩️ {QUOTED_SECTION}")
 
     for conflict in card.get("conflicts") or []:
         lines.append(f"\n⚠️ {_escape(conflict)}")
@@ -152,6 +172,16 @@ def approval_card(record: ProposalRecord, *, zone: str) -> str:
     status = f"revision {record.revision} · {'dry run' if record.dry_run else 'live'}"
     lines.append(f"\n<i>{status}</i>")
     return "\n".join(lines)
+
+
+def _guest_line(guest: str, card: dict[str, Any], allowed: frozenset[str]) -> str:
+    """A guest and where they came from (M18, D5), with the two warnings
+    marked."""
+    source = card_source(guest, card, allowed)
+    if source is None:
+        return f"  • {_escape(guest)}"
+    mark = "⚠️ " if source in WARNINGS else ""
+    return f"  • {_escape(guest)}: {mark}{SOURCE_WORDS[source]}"
 
 
 def edit_prompt(message_id: str, revision: int) -> str:

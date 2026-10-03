@@ -1,0 +1,19 @@
+{
+  "id": "guest-only-in-forward",
+  "group": "guest",
+  "note": "A guest named only in a forwarded message below the sender's own words: named in a quoted or forwarded section, a warning.",
+  "subject": "Fwd: Planning",
+  "body": "Can we meet about this on Thursday at 3pm?\n\n---------- Forwarded message ---------\nFrom: Old Thread <old@example.org>\nDate: Mon, 28 Sep 2026 at 10:00\nSubject: Planning\nTo: team@example.org\n\nPlease loop in fwd-guest@example.net for the planning call.",
+  "guests": [
+    "fwd-guest@example.net"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "fwd-guest@example.net": "quoted"
+    },
+    "quoted_section": true
+  }
+}

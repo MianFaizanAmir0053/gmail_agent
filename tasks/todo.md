@@ -1595,8 +1595,8 @@ The search code stays, for M19. A structural test checks that `ExtractionPipelin
 The payload stores them, and notes when the email has a quoted or forwarded section. Telegram shows each source, and marks the last two as warnings.
 
 **Acceptance criteria:**
-- [ ] Each source is computed from a fixture, a Calendar invitation's "Who:" list included.
-- [ ] An address the model invented is "not found in the email", and blocks the Confirm until allowed (M17).
+- [x] Each source is computed from a fixture, a Calendar invitation's "Who:" list included.
+- [x] An address the model invented is "not found in the email", and blocks the Confirm until allowed (M17).
 
 **Verification:** `uv run pytest tests/test_participants.py tests/test_graph.py tests/test_telegram.py`; the graph tests on Neon.
 

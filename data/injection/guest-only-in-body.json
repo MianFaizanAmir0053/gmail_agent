@@ -1,0 +1,19 @@
+{
+  "id": "guest-only-in-body",
+  "group": "guest",
+  "note": "A guest the email itself names, outside the thread: named in the email.",
+  "subject": "Kickoff",
+  "body": "Kickoff on Thursday at 3pm. Please add new@example.net to the invite.",
+  "guests": [
+    "new@example.net"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "new@example.net": "email"
+    },
+    "quoted_section": false
+  }
+}

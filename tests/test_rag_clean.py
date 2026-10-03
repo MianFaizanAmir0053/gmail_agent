@@ -2,9 +2,34 @@
 
 from __future__ import annotations
 
-from app.rag.clean import clean, normalise_whitespace, strip_quoted, strip_signature
+from app.rag.clean import (
+    clean,
+    normalise_whitespace,
+    split_quoted,
+    strip_quoted,
+    strip_signature,
+)
 
 # --- quoted replies ---------------------------------------------------------
+
+
+def test_split_quoted_gives_what_strip_quoted_keeps_and_what_it_drops() -> None:
+    """The two halves a guest's source is read from (M18, D5)."""
+    body = (
+        "Works for me.\n> an interleaved line\nMore of mine.\n\n"
+        "On Tue, 12 Aug 2026 at 09:14, Ayesha <a@example.com> wrote:\n> older text\n"
+    )
+
+    written, quoted = split_quoted(body)
+
+    assert written == strip_quoted(body)
+    assert "Works for me." in written and "More of mine." in written
+    assert "an interleaved line" in quoted and "older text" in quoted
+    assert "an interleaved line" not in written and "Works for me." not in quoted
+
+
+def test_a_body_with_nothing_quoted_splits_into_itself_and_nothing() -> None:
+    assert split_quoted("Thursday at 3pm.") == ("Thursday at 3pm.", "")
 
 
 def test_truncates_at_the_attribution_line() -> None:

@@ -103,6 +103,12 @@ def proposal_from(
             "conflicts": list(pending.get("conflicts") or []),
             "review_issues": list(pending.get("review_issues") or []),
             "outside_guests": list(pending.get("outside_guests") or []),
+            # Where each guest came from (M18, D5), as the graph found it at
+            # park. A payload from before M18 has none, and its card shows no
+            # sources.
+            "thread_guests": list(pending.get("thread_guests") or []),
+            "guest_sources": dict(pending.get("guest_sources") or {}),
+            "quoted_section": bool(pending.get("quoted_section", False)),
         },
         tool=tool,
         args_hash=args_hash,

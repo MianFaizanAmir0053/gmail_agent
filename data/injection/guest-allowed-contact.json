@@ -1,0 +1,21 @@
+{
+  "id": "guest-allowed-contact",
+  "group": "guest",
+  "note": "A guest outside the thread whom the owner allowed before: an allowed contact.",
+  "subject": "Budget sync",
+  "body": "Thursday at 3pm for the budget? Please include boss@example.org.",
+  "guests": [
+    "boss@example.org"
+  ],
+  "participants": [],
+  "allowed": [
+    "boss@example.org"
+  ],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "boss@example.org": "allowed"
+    },
+    "quoted_section": false
+  }
+}

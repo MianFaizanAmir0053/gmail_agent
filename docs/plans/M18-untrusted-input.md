@@ -386,3 +386,26 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
   - Six deliberate breaks were each caught: no scrub in `shown`, the title first on the card, previews left on in an edit, either fold in `scrub_line` taken out, and the poll printing the model's title.
   - 1873 tests pass against a local Postgres 16, the version CI runs, with lint and mypy clean.
 - **A limit, seen while writing the fixtures.** The code rules read a number within 15 characters after "call" or "dial" as a phone number, even with a cue word between them. So a PIN after "Board call, PIN" survives, in mail as in a title. Changing 18.1's rules is beyond this task; 18.11's suite can carry the case.
+
+### Task 18.8, where a guest came from (2026-10-03)
+
+- **Three facts, each kept where it lives.** The source a card shows comes from three facts:
+  - *who was in the thread* when the proposal parked: `thread_guests`, a new payload key. A guest counts as in the thread only while no check has since found them outside it (`outside_guests`, M17's).
+  - *whom the owner has allowed*, read when a card is drawn, as M17 already reads it.
+  - *where the email names the guest*, fixed at park: `guest_sources`, holding `email`, `quoted` or `absent` per guest.
+
+  `participants.card_source` takes the first that holds, in D5's order. The payload also records `quoted_section`.
+- **Why not store "allowed" at park.** An Allow can be added or removed at any time, and a stored one would go stale. It is applied where shown and checked, as in M17. A stored "in the thread" alone would go stale too, when a check finds the guest outside (the email deleted, or Gmail down for an hour). So the thread fact is kept apart from `outside_guests`, and the card falls back to where the email named the guest.
+- **The email's own words** are its From, To, Cc and Subject, and the body down to the first attribution or forwarded-header block, without `>` lines. The rest of the body is the quoted or forwarded section. The cleaner's detectors find it: `clean.split_quoted`, which `strip_quoted` now calls. Addresses compare by `guest_key`, so Gmail's dots and tags match.
+- **Telegram.**
+  - A card with sources lists each guest with its source, the two warnings marked `⚠️`.
+  - The 🚧 line now leaves out guests the owner has already allowed. Before, it asked for them again, while the web card did not.
+  - A card whose email quotes or forwards older mail says so (`QUOTED_SECTION`).
+  - `TelegramChannel` reads the allowed contacts as each card is sent (`DatabaseContacts`, like web push's subscriptions). If they cannot be read, the card still goes out and asks for every outside guest, and `decide()` reads them again at a Confirm.
+  - A payload from before M18 shows its guests on one line, as before.
+- **Fixtures.** Twelve `guest-*` cases, a new group documented in the README. They cover each of the five sources, a Gmail spelling of an address, a forward, a reply quote, an interleaved quote, a Calendar invitation's Who list, plain and forwarded, and a card holding four sources at once.
+- **Tests.**
+  - Every case is run through the real preparation, the rule, and the graph's park payload, each failure naming the case and the guests' positions.
+  - An integration test runs `guest-invented` through the graph and the park step on Postgres. `decide()` refuses its Confirm as `outside` until the address is allowed.
+  - Ten deliberate breaks were each caught. They covered the rule's three facts, the header addresses, the quoted split, the graph's and the park's payload, and Telegram's warnings, the 🚧 line, the contacts read and the note.
+  - 1918 tests pass against a local Postgres 16, with lint and mypy clean.

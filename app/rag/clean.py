@@ -76,6 +76,14 @@ def strip_quoted(text: str) -> str:
     close to universal, and the rare bottom-poster loses a reply that is quoted
     verbatim in the next message of the thread anyway.
     """
+    return split_quoted(text)[0]
+
+
+def split_quoted(text: str) -> tuple[str, str]:
+    """`(written, quoted)`: what `strip_quoted` keeps, and what it drops -- the
+    `>` lines above the first attribution or pasted header block, then
+    everything from there on. A guest's source on a card is read from the
+    two (M18, D5)."""
     cut = len(text)
     for pattern in (_ATTRIBUTION, _ATTRIBUTION_LOCALISED, _HEADER_BLOCK):
         match = pattern.search(text)
@@ -85,7 +93,7 @@ def strip_quoted(text: str) -> str:
     head = text[:cut]
 
     # Interleaved replies still leave `>` lines above the cut.
-    return _QUOTED_LINE.sub("", head)
+    return _QUOTED_LINE.sub("", head), "".join(_QUOTED_LINE.findall(head)) + text[cut:]
 
 
 # --- Signatures -------------------------------------------------------------

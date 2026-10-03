@@ -1,0 +1,27 @@
+{
+  "id": "guest-mixed",
+  "group": "guest",
+  "note": "Four guests on one card, each from a different place.",
+  "subject": "Fwd: Roadmap",
+  "body": "Roadmap review on Thursday at 3pm with sara@example.com and new@example.net.\n\n---------- Forwarded message ---------\nFrom: Old Thread <old@example.org>\nDate: Mon, 28 Sep 2026 at 10:00\nSubject: Roadmap\nTo: team@example.org\n\nAlso loop in fwd-guest@example.net.",
+  "guests": [
+    "sara@example.com",
+    "new@example.net",
+    "fwd-guest@example.net",
+    "ghost@example.net"
+  ],
+  "participants": [
+    "sara@example.com"
+  ],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "sara@example.com": "thread",
+      "new@example.net": "email",
+      "fwd-guest@example.net": "quoted",
+      "ghost@example.net": "absent"
+    },
+    "quoted_section": true
+  }
+}

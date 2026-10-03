@@ -21,13 +21,29 @@ the sender's own words -- an SPF comment, a quoted envelope address -- and
 may contain `;` or `dmarc=pass`. Quoted strings and comments are skipped as
 RFC 8601 defines them, and a header with more than one DMARC result is
 refused outright.
+
+**Where a guest came from** (M18, D5) is on every card, so an injected guest
+does not look like a real one. Three facts make it, each kept where it lives:
+- who was in the thread when the proposal parked (`thread_guests`), less
+  anyone a check has since found outside it (`outside_guests`);
+- whom the owner has allowed, read when a card is drawn;
+- where the email names the guest (`named`), fixed at park: in its own words,
+  only in a quoted or forwarded section, or nowhere at all.
+
+A card shows the first that holds, in that order (`card_source`). The last
+two places are warnings: the email did not write the address itself, or the
+model made it up.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from email.utils import getaddresses, parseaddr
-from typing import Any
+from typing import Any, Literal
+
+from app.contracts import EmailMessage
+from app.rag.clean import split_quoted
 
 GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 
@@ -39,6 +55,29 @@ _LEFT_OUT = frozenset({"SPAM", "TRASH"})
 SPACE = " \t\r\n\f\v\ufeff"
 """What is trimmed from an address before it is compared: ASCII space and a
 byte-order mark. The web app trims the same set (`dashboard/src/lib/guests.ts`)."""
+
+Named = Literal["email", "quoted", "absent"]
+"""Where the email names a guest: in its own words -- From, To, Cc, Subject,
+and the body down to the first quote -- only in a quoted or forwarded
+section, or nowhere."""
+
+Source = Literal["thread", "allowed", "email", "quoted", "absent"]
+
+SOURCE_WORDS: dict[Source, str] = {
+    "thread": "in the thread",
+    "allowed": "an allowed contact",
+    "email": "named in the email",
+    "quoted": "named in a quoted or forwarded section",
+    "absent": "not found in the email",
+}
+"""What a card says of each source. The web card says the same
+(`dashboard/src/lib/guests.ts`)."""
+
+WARNINGS: frozenset[Source] = frozenset({"quoted", "absent"})
+
+_ADDRESS = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}")
+"""An address in text. Length-bounded, as the scrubber's is, so a long run
+of word characters cannot make matching quadratic."""
 
 
 def guest_key(address: str) -> str:
@@ -150,6 +189,47 @@ def outside(
         for guest in guests
         if guest_key(guest) not in participants and guest_key(guest) not in confirmed
     ]
+
+
+def named(guests: Iterable[str], email: EmailMessage) -> tuple[dict[str, Named], bool]:
+    """Where `email` names each guest, and whether it has a quoted or
+    forwarded section at all (D5).
+
+    The section is found with the cleaner's attribution and header detectors
+    (`app/rag/clean.py`). A time or a place taken from it is not traced, so
+    the card only says that the email has one.
+    """
+    written, quoted = split_quoted(email.body_text)
+    headers = {guest_key(a) for a in (email.sender, *email.recipients) if "@" in a}
+    own = headers | _keys(email.subject, written)
+    older = _keys(quoted)
+    sources: dict[str, Named] = {}
+    for guest in guests:
+        key = guest_key(guest)
+        sources[guest] = "email" if key in own else "quoted" if key in older else "absent"
+    return sources, bool(quoted.strip())
+
+
+def card_source(guest: str, card: Mapping[str, Any], allowed: frozenset[str]) -> Source | None:
+    """A guest's source as a card shows it (D5), from a stored payload and the
+    guest keys the owner has allowed. None for a payload parked before M18,
+    which records no sources."""
+    where = (card.get("guest_sources") or {}).get(guest)
+    if where not in ("email", "quoted", "absent"):
+        return None
+    key = guest_key(guest)
+    in_thread = {guest_key(str(g)) for g in card.get("thread_guests") or []}
+    outside_now = {guest_key(str(g)) for g in card.get("outside_guests") or []}
+    if key in in_thread and key not in outside_now:
+        return "thread"
+    if key in allowed:
+        return "allowed"
+    source: Source = where
+    return source
+
+
+def _keys(*texts: str) -> set[str]:
+    return {guest_key(match) for text in texts for match in _ADDRESS.findall(text)}
 
 
 def _values(headers: Sequence[Mapping[str, str]], name: str) -> list[str]:

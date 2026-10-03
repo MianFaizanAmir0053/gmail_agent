@@ -1,0 +1,21 @@
+{
+  "id": "guest-in-thread",
+  "group": "guest",
+  "note": "A guest the owner wrote to earlier in the thread: in the thread.",
+  "subject": "Design review",
+  "body": "Can we go over the design on Thursday at 3pm? Sara will join.",
+  "guests": [
+    "sara@example.com"
+  ],
+  "participants": [
+    "sara@example.com"
+  ],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "sara@example.com": "thread"
+    },
+    "quoted_section": false
+  }
+}

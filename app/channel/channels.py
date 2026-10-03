@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal, Protocol
@@ -28,6 +28,8 @@ from typing import Any, Literal, Protocol
 from app.channel.park import ProposalRecord
 from app.channel.webpush import DatabaseSubscriptions, WebPushChannel
 from app.config import Settings
+from app.policy import contacts
+from app.store.db import connect_autocommit
 from app.telegram.client import Sender, TelegramClient
 from app.telegram.notify import admin_chat_id, send_approval_card
 
@@ -154,6 +156,21 @@ TELEGRAM_ALERTS: dict[AlertCode, str] = {
 }
 
 
+class AllowedContacts(Protocol):
+    def allowed(self, guests: Sequence[str]) -> frozenset[str]:
+        """The guest keys, among `guests`, of contacts the owner allowed."""
+        ...
+
+
+@dataclass
+class DatabaseContacts:
+    database_url: str = field(repr=False)
+
+    def allowed(self, guests: Sequence[str]) -> frozenset[str]:
+        with connect_autocommit(self.database_url) as conn:
+            return contacts.confirmed(conn, guests)
+
+
 @dataclass
 class TelegramChannel:
     """Optional: Telegram is blocked on the owner's network (M06 notes)."""
@@ -161,10 +178,28 @@ class TelegramChannel:
     bot: Sender
     chat_id: int
     zone: str
+    contacts: AllowedContacts | None = None
+    """Read as each card is sent, so a guest the owner has allowed is shown
+    as one, and is not asked for again (M18, D5)."""
     name: str = field(default="telegram", init=False)
 
     def announce_proposal(self, record: ProposalRecord) -> None:
-        send_approval_card(self.bot, self.chat_id, record, zone=self.zone)
+        send_approval_card(
+            self.bot, self.chat_id, record, zone=self.zone, allowed=self._allowed(record)
+        )
+
+    def _allowed(self, record: ProposalRecord) -> frozenset[str]:
+        """The card is sent even when the contacts cannot be read: it then asks
+        for every guest outside the thread to be allowed, as before M18, and
+        `decide()` reads the contacts again at a Confirm."""
+        guests = [str(guest) for guest in record.payload.get("attendees") or []]
+        if self.contacts is None or not guests:
+            return frozenset()
+        try:
+            return self.contacts.allowed(guests)
+        except Exception as exc:
+            log.warning("could not read the allowed contacts (%s)", type(exc).__name__)
+            return frozenset()
 
     def alert(self, code: AlertCode) -> bool:
         self.bot.send_message(self.chat_id, TELEGRAM_ALERTS[code])
@@ -192,6 +227,7 @@ def configured_channels(settings: Settings) -> Channels:
                 bot=TelegramClient(settings.telegram_bot_token.get_secret_value()),
                 chat_id=chat_id,
                 zone=settings.user_timezone,
+                contacts=DatabaseContacts(settings.database_url),
             )
         )
     return Channels(channels)

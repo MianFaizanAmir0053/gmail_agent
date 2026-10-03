@@ -21,6 +21,7 @@ from gmail_payloads import load_cases
 from app.channel.decide import DecisionResult
 from app.channel.park import ProposalRecord, proposal_from, write_park
 from app.policy.hashing import Binding, args_key
+from app.policy.participants import SOURCE_WORDS
 from app.store.ledger import MessageLedger, MessageStatus
 from app.telegram import cards
 from app.telegram.handler import NotAllowedError, TelegramHandler
@@ -481,6 +482,71 @@ def test_the_card_shows_the_title_and_location_scrubbed(case: dict[str, Any]) ->
     left = [index for index, gone in enumerate(case["expect"]["gone"]) if gone in text]
     assert not lost, f"{case['id']}: kept {lost} lost"
     assert not left, f"{case['id']}: gone {left} left"
+
+
+# --- where a guest came from (M18, D5) --------------------------------------------------
+
+
+GUESTS = [
+    "sara@example.com",
+    "ali@example.org",
+    "new@example.net",
+    "fwd@example.net",
+    "ghost@example.net",
+]
+
+
+def _sourced() -> ProposalRecord:
+    """Each source on one card: Sara is in the thread, Ali an allowed contact."""
+    return _record(
+        proposed=dict(PENDING["proposed"], attendees=GUESTS),
+        outside_guests=GUESTS[1:],
+        thread_guests=GUESTS[:1],
+        guest_sources={
+            "sara@example.com": "email",
+            "ali@example.org": "email",
+            "new@example.net": "email",
+            "fwd@example.net": "quoted",
+            "ghost@example.net": "absent",
+        },
+        quoted_section=True,
+    )
+
+
+def test_the_card_says_where_each_guest_came_from() -> None:
+    text = cards.approval_card(_sourced(), zone="UTC", allowed=frozenset({"ali@example.org"}))
+
+    assert "sara@example.com: in the thread" in text
+    assert "ali@example.org: an allowed contact" in text
+    assert "new@example.net: named in the email" in text
+    assert "fwd@example.net: ⚠️ named in a quoted or forwarded section" in text
+    assert "ghost@example.net: ⚠️ not found in the email" in text
+
+
+def test_only_the_two_warnings_are_marked() -> None:
+    lines = cards.approval_card(_sourced(), zone="UTC").split("\n")
+
+    warned = [line for line in lines if line.startswith("  • ") and "⚠️" in line]
+    assert [line.removeprefix("  • ").split(":")[0] for line in warned] == GUESTS[3:]
+
+
+def test_an_allowed_guest_is_not_asked_for_again() -> None:
+    text = cards.approval_card(_sourced(), zone="UTC", allowed=frozenset({"ali@example.org"}))
+
+    assert "Not in this email thread: new@example.net, fwd@example.net, ghost@example.net." in text
+
+
+def test_the_card_notes_a_quoted_or_forwarded_section() -> None:
+    """A time or place taken from it is not traced (M18, D5)."""
+    assert cards.QUOTED_SECTION in cards.approval_card(_sourced(), zone="UTC")
+    assert cards.QUOTED_SECTION not in cards.approval_card(_record(), zone="UTC")
+
+
+def test_a_card_parked_before_m18_lists_its_guests_without_sources() -> None:
+    text = cards.approval_card(_record(), zone="UTC")
+
+    assert "👥 sara@example.com" in text
+    assert not any(words in text for words in SOURCE_WORDS.values())
 
 
 def test_every_call_that_sends_text_turns_link_previews_off(

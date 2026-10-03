@@ -28,7 +28,7 @@ from app.google.gmail import GmailClient
 from app.graph.state import GraphState
 from app.graph.versioning import action_type
 from app.policy.hashing import event_args, tool_for
-from app.policy.participants import outside, participants
+from app.policy.participants import named, outside, participants
 from app.policy.registry import Approval, Registry
 from app.store.ledger import MessageLedger, MessageStatus
 from app.tools.calendar_tool import check_conflicts
@@ -123,13 +123,20 @@ def extract(deps: Deps, state: GraphState) -> GraphState:
 def detect_conflicts(deps: Deps, state: GraphState) -> GraphState:
     extraction = state["extraction"]
     if extraction.start_utc is None or extraction.end_utc is None:
-        return {"conflicts": [], "outside_guests": []}
+        return {"conflicts": [], "outside_guests": [], "thread_guests": [], "guest_sources": {}}
 
     args = event_args(extraction, state["message_id"])
     check = check_conflicts(deps.calendar, args)
+    outside_guests = _outside_guests(deps, state, args.attendees)
+    # Where each guest came from, computed once, here, and read by every card
+    # (M18, D5). Allowed contacts are applied where a card is drawn.
+    sources, quoted = named(args.attendees, state["email"])
     return {
         "conflicts": [check.describe()] if check.has_conflict else [],
-        "outside_guests": _outside_guests(deps, state, args.attendees),
+        "outside_guests": outside_guests,
+        "thread_guests": [guest for guest in args.attendees if guest not in outside_guests],
+        "guest_sources": dict(sources),
+        "quoted_section": quoted,
     }
 
 
@@ -168,6 +175,10 @@ def await_approval(deps: Deps, state: GraphState) -> GraphState:
             "conflicts": state.get("conflicts", []),
             # Marked on the card, and checked before any Confirm (M17, D4).
             "outside_guests": state.get("outside_guests", []),
+            # Where each guest came from (M18, D5).
+            "thread_guests": state.get("thread_guests", []),
+            "guest_sources": state.get("guest_sources", {}),
+            "quoted_section": state.get("quoted_section", False),
             # `DRY_RUN` is read when a session is built, not stored with the
             # thread. Recording it here is what lets M17 refuse a proposal that
             # was parked under a different setting than the one it would run in.

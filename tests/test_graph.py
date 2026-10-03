@@ -11,11 +11,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
-from gmail_payloads import load_cases
+from gmail_payloads import gmail_response, load_cases
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.payloads import ClassifyPayload
+from app.google.gmail import to_email_message
 from app.graph.build import build_graph
 from app.graph.nodes import CARRIED_A_CODE, NOT_A_MEETING, Deps
 from app.policy.registry import Approval, Outcome
@@ -860,6 +861,120 @@ def test_an_outsider_added_by_an_edit_is_marked() -> None:
     second = _interrupt_payload(graph, config)
     assert second is not None
     assert second["outside_guests"] == ["new@example.net"]
+
+
+# --- where a guest came from (M18, D5) --------------------------------------------------
+
+
+class CaseGmail(FakeGmail):
+    """A `guest-*` case's email, through the real preparation, and its thread:
+    one message the owner sent to the case's participants."""
+
+    def __init__(self, case: dict[str, Any]) -> None:
+        to = ", ".join(case["participants"])
+        sent = {"labelIds": ["SENT"], "payload": {"headers": [{"name": "To", "value": to}]}}
+        super().__init__({"messages": [sent] if to else []})
+        self.email = to_email_message(gmail_response(case))
+
+    def get_message(self, message_id: str) -> EmailMessage:
+        return self.email
+
+    def thread_headers(self, thread_id: str) -> dict[str, Any]:
+        return self.thread if thread_id == self.email.thread_id else {"messages": []}
+
+
+def _parked_for(case: dict[str, Any]) -> dict[str, Any]:
+    """The interrupt payload a case parks with, its model proposing the case's guests."""
+    proposed = _meeting().model_copy(update={"attendees": case["guests"]})
+    deps = _deps(gmail=CaseGmail(case), pipeline=FakePipeline(extractions=[proposed]))
+    graph, config, _ = _run(deps)
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None
+    return payload
+
+
+@pytest.mark.parametrize("case", load_cases("guest"), ids=lambda case: case["id"])
+def test_a_card_shows_where_each_guest_came_from(case: dict[str, Any]) -> None:
+    """Computed once at park and stored with the card. A failure names the
+    case and the guests' positions, never the email."""
+    from app.channel.park import proposal_from
+    from app.policy.participants import card_source, guest_key
+
+    card = proposal_from("m1", _parked_for(case), revision=1).payload
+    allowed = frozenset(guest_key(address) for address in case["allowed"])
+
+    wrong = [
+        index
+        for index, guest in enumerate(case["guests"])
+        if card_source(guest, card, allowed) != case["expect"]["sources"][guest]
+    ]
+    assert not wrong, f"{case['id']}: guests {wrong} have the wrong source"
+    assert card["quoted_section"] is case["expect"]["quoted_section"], case["id"]
+
+
+def test_the_sources_are_kept_beside_the_guests_outside_the_thread() -> None:
+    """guest-mixed: the payload says who was in the thread, and where the
+    email named each guest. The outside guests are M17's, unchanged."""
+    case = next(case for case in load_cases("guest") if case["id"] == "guest-mixed")
+
+    payload = _parked_for(case)
+
+    assert payload["thread_guests"] == ["sara@example.com"]
+    assert payload["outside_guests"] == case["guests"][1:]
+    assert payload["guest_sources"] == {
+        "sara@example.com": "email",
+        "new@example.net": "email",
+        "fwd-guest@example.net": "quoted",
+        "ghost@example.net": "absent",
+    }
+
+
+@pytest.mark.integration
+def test_an_invented_guest_blocks_the_confirm_until_the_owner_allows_it(
+    conn: Any,
+) -> None:
+    """guest-invented: not found in the email, and outside the thread, so a
+    Confirm is refused until the owner allows the address (M17, D4)."""
+    from app.channel.decide import card_token, decide
+    from app.channel.park import record_park
+    from app.graph.runner import GraphSession
+    from app.policy import contacts
+    from app.policy.hashing import args_key
+    from app.policy.participants import card_source
+    from app.store.ledger import MessageLedger
+
+    case = next(case for case in load_cases("guest") if case["id"] == "guest-invented")
+    proposed = _meeting().model_copy(update={"attendees": case["guests"]})
+    deps = _deps(gmail=CaseGmail(case), pipeline=FakePipeline(extractions=[proposed]))
+    session = GraphSession(deps=deps, conn=conn, checkpointer=InMemorySaver(), trace=False)
+    conn.execute("DELETE FROM confirmed_contacts")
+    MessageLedger(conn).claim("m1", "m1")
+    session.start("m1", "m1")
+    pending = session.pending("m1")
+    assert pending is not None
+
+    record = record_park(session, "m1", pending)
+
+    (guest,) = case["guests"]
+    assert card_source(guest, record.payload, frozenset()) == "absent"
+    assert record.args_hash is not None
+    token = card_token(record.args_hash, record.dry_run, record.generation)
+
+    def confirm() -> str:
+        result = decide(
+            conn,
+            "m1",
+            action="confirm",
+            revision=1,
+            via="web",
+            token=token,
+            dry_run=record.dry_run,
+        )
+        return result.status
+
+    assert confirm() == "outside"
+    contacts.allow(conn, guest, via="web", key=args_key("test-key"))
+    assert confirm() == "queued"
 
 
 def test_a_run_marks_the_message_its_model_calls_serve() -> None:

@@ -1,0 +1,19 @@
+{
+  "id": "guest-only-in-interleaved-quote",
+  "group": "guest",
+  "note": "A guest named only on a quoted line between the sender's own: a warning.",
+  "subject": "Re: Offsite",
+  "body": "Inline answers below.\n> Should we add inline-guest@example.net?\nThursday at 3pm, in Room 4B.",
+  "guests": [
+    "inline-guest@example.net"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "inline-guest@example.net": "quoted"
+    },
+    "quoted_section": true
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "guest-calendar-who",
+  "group": "guest",
+  "note": "A Google Calendar invitation, its guest named only in the Who list: named in the email.",
+  "subject": "Invitation: Project review @ Mon 5 Oct 2026 3pm - 4pm (PKT) (sam@example.com)",
+  "body": "Project review\nMonday 5 Oct 2026 - 3pm - 4pm (Pakistan Standard Time)\n\nJoin with Google Meet\nmeet.google.com/abc-defg-hij\n\nWho\n  sam@example.com - organizer\n  who-guest@example.net\n\nView all guest info\nReply for owner@example.com",
+  "guests": [
+    "who-guest@example.net"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "who-guest@example.net": "email"
+    },
+    "quoted_section": false
+  }
+}

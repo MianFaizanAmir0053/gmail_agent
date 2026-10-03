@@ -1,0 +1,19 @@
+{
+  "id": "guest-only-in-reply-quote",
+  "group": "guest",
+  "note": "A guest named only in the quoted reply below an attribution line: a warning.",
+  "subject": "Re: Planning",
+  "body": "Thursday at 3pm works for me.\n\nOn Mon, 28 Sep 2026 at 10:00, Amir <amir@example.org> wrote:\n> Let's include quoted-guest@example.net too.",
+  "guests": [
+    "quoted-guest@example.net"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "quoted-guest@example.net": "quoted"
+    },
+    "quoted_section": true
+  }
+}

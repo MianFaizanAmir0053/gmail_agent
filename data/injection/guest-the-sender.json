@@ -1,0 +1,19 @@
+{
+  "id": "guest-the-sender",
+  "group": "guest",
+  "note": "The email's own sender, named only in its From header and not verified by DMARC: named in the email.",
+  "subject": "Quick call",
+  "body": "Could we have a quick call on Thursday at 3pm?",
+  "guests": [
+    "sender@example.com"
+  ],
+  "participants": [],
+  "allowed": [],
+  "expect": {
+    "credential": false,
+    "sources": {
+      "sender@example.com": "email"
+    },
+    "quoted_section": false
+  }
+}

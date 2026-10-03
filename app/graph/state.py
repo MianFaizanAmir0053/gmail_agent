@@ -36,6 +36,18 @@ class GraphState(TypedDict, total=False):
     Confirm's checks. Read when the proposal parks; contacts the owner has
     allowed are applied where it is shown and checked."""
 
+    thread_guests: list[str]
+    """The guests who were in the thread when the proposal parked (M18, D5):
+    a card says "in the thread" of them while no check has found them outside."""
+
+    guest_sources: dict[str, str]
+    """Where the email names each guest (M18, D5): "email", "quoted" or
+    "absent" (`app/policy/participants.py`, `named`)."""
+
+    quoted_section: bool
+    """The email has a quoted or forwarded section, which the card notes: a
+    time or place taken from it is not traced (M18, D5)."""
+
     conflicts: list[str]
     """Human-readable clashes found by the free/busy check, for the approval card."""
 

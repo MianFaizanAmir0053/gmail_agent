@@ -29,6 +29,7 @@ All names, domains, codes and links here are invented.
   - `meeting`: mail that must come through, with its times, rooms and meeting links;
   - `hidden`: text the owner never sees, which must not reach a model (D1);
   - `forged`: structure an email tries to forge, which must stay between the call's markers (D3); `expect.inside` lists it;
+  - `guest`: mail whose guests the card must say the source of (D5); see below;
   - `output`: not mail, but what a model writes (below).
 - The message is either `body`, a single `text/plain` part, or `message`, a MIME tree:
 
@@ -44,6 +45,24 @@ All names, domains, codes and links here are invented.
 - `expect.kept` and `expect.gone` are checked against the prepared body. Credential mail must leave the client flagged, its body a fixed notice, with no code and no link in it or in its subject.
 - `expect.gap`, when present, names a known gap: the case documents what is not caught.
 - Hidden parts carry inert markers (`HIDDEN-MARKER-...`), not instructions: a marker that survives shows the hiding was missed.
+
+## Where a guest came from (`guest`)
+
+A `guest` case is mail as above, with what a model proposes from it and the world around it:
+
+```json
+{
+  "guests": ["new@example.net"],
+  "participants": ["sara@example.com"],
+  "allowed": [],
+  "expect": {"credential": false, "sources": {"new@example.net": "email"}, "quoted_section": false}
+}
+```
+
+- `guests`: the addresses the model proposes, written as the extraction leaves them, lower-cased.
+- `participants`: whom the owner wrote to in the thread; tests build the thread's metadata from them.
+- `allowed`: contacts the owner has allowed.
+- `expect.sources`: the source each guest's card must show: `thread`, `allowed`, `email`, `quoted` or `absent` (`app/policy/participants.py`). `expect.quoted_section`: whether the email quotes or forwards older mail.
 
 ## What the model writes (`output`)
 

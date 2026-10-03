@@ -1,12 +1,27 @@
-"""Who is in the thread (M17, D4): the rule an invite's guests are held to."""
+"""Who is in the thread (M17, D4): the rule an invite's guests are held to.
+Where each guest came from (M18, D5), from the `guest-*` cases in
+`data/injection/`."""
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, get_args
 
 import pytest
+from gmail_payloads import gmail_response, load_cases
 
-from app.policy.participants import guest_key, outside, participants
+from app.contracts import EmailMessage
+from app.google.gmail import to_email_message
+from app.policy.participants import (
+    SOURCE_WORDS,
+    WARNINGS,
+    Source,
+    card_source,
+    guest_key,
+    named,
+    outside,
+    participants,
+)
 
 OWNER = "owner@example.com"
 
@@ -292,3 +307,119 @@ def test_one_unreadable_recipient_header_drops_only_itself() -> None:
 
 def test_a_byte_order_mark_is_trimmed_as_the_web_app_trims_it() -> None:
     assert guest_key("\ufeffSara@Example.com ") == "sara@example.com"
+
+
+# --- where a guest came from (M18, D5) ---------------------------------------------------
+
+
+GUESTS = load_cases("guest")
+
+
+def _card(case: dict[str, Any]) -> tuple[dict[str, Any], frozenset[str]]:
+    """The payload a park stores for the case, from the real preparation, and
+    the guest keys the owner has allowed."""
+    email = to_email_message(gmail_response(case))
+    sources, quoted = named(case["guests"], email)
+    thread = frozenset(guest_key(address) for address in case["participants"])
+    outside_guests = outside(case["guests"], participants=thread, confirmed=frozenset())
+    card = {
+        "attendees": case["guests"],
+        "outside_guests": outside_guests,
+        "thread_guests": [guest for guest in case["guests"] if guest not in outside_guests],
+        "guest_sources": sources,
+        "quoted_section": quoted,
+    }
+    return card, frozenset(guest_key(address) for address in case["allowed"])
+
+
+def test_every_source_has_a_case() -> None:
+    expected = {source for case in GUESTS for source in case["expect"]["sources"].values()}
+    assert expected == set(get_args(Source))
+
+
+@pytest.mark.parametrize("case", GUESTS, ids=lambda case: case["id"])
+def test_each_guest_gets_the_source_its_case_expects(case: dict[str, Any]) -> None:
+    """A failure names the case and the guests' positions, never the email."""
+    card, allowed = _card(case)
+    wrong = [
+        index
+        for index, guest in enumerate(case["guests"])
+        if card_source(guest, card, allowed) != case["expect"]["sources"][guest]
+    ]
+    assert not wrong, f"{case['id']}: guests {wrong} have the wrong source"
+    assert card["quoted_section"] is case["expect"]["quoted_section"], case["id"]
+
+
+def _email(**fields: Any) -> EmailMessage:
+    values: dict[str, Any] = {
+        "id": "m1",
+        "thread_id": "t1",
+        "subject": "Sync",
+        "body_text": "Thursday at 3pm.",
+        "sender": "sender@example.com",
+        "recipients": ["owner@example.com"],
+        "received_at": datetime(2026, 10, 1, tzinfo=UTC),
+    }
+    return EmailMessage(**(values | fields))
+
+
+def test_the_subject_and_the_recipients_are_the_emails_own_words() -> None:
+    email = _email(subject="Sync with sub@example.net", recipients=["cc@example.net"])
+
+    sources, quoted = named(["sub@example.net", "cc@example.net"], email)
+
+    assert sources == {"sub@example.net": "email", "cc@example.net": "email"}
+    assert quoted is False
+
+
+def test_a_guest_named_both_above_and_in_a_quote_is_named_in_the_email() -> None:
+    body = "Add both@example.net.\n\nOn Mon, Amir <amir@example.org> wrote:\n> both@example.net"
+    assert named(["both@example.net"], _email(body_text=body))[0] == {"both@example.net": "email"}
+
+
+def test_a_payload_from_before_m18_has_no_sources() -> None:
+    card = {"attendees": ["sara@example.com"], "outside_guests": ["sara@example.com"]}
+    assert card_source("sara@example.com", card, frozenset()) is None
+
+
+def test_a_stored_source_that_is_not_one_reads_as_none() -> None:
+    card = {"guest_sources": {"sara@example.com": "trusted"}}
+    assert card_source("sara@example.com", card, frozenset()) is None
+
+
+def _stored(where: str, *, in_thread: bool, outside_now: bool) -> dict[str, Any]:
+    guest = "sara@example.com"
+    return {
+        "guest_sources": {guest: where},
+        "thread_guests": [guest] if in_thread else [],
+        "outside_guests": [guest] if outside_now else [],
+    }
+
+
+def test_a_guest_in_the_thread_at_park_but_found_outside_since_is_not_in_it() -> None:
+    """A check before a Confirm read the thread again, and found them outside
+    it: the email deleted, say. The card says where the email named them."""
+    card = _stored("email", in_thread=True, outside_now=True)
+    assert card_source("sara@example.com", card, frozenset()) == "email"
+
+
+def test_an_allowed_guest_stays_allowed_once_a_check_no_longer_marks_them() -> None:
+    """A check before a Confirm leaves allowed guests out of `outside_guests`."""
+    card = _stored("quoted", in_thread=False, outside_now=False)
+    assert card_source("sara@example.com", card, frozenset({"sara@example.com"})) == "allowed"
+
+
+def test_the_first_source_that_holds_is_shown() -> None:
+    """In D5's order: in the thread, then allowed, then where the email names
+    them. A guest the owner allowed is no warning, wherever the email put them."""
+    guest = frozenset({"sara@example.com"})
+    in_thread = _stored("absent", in_thread=True, outside_now=False)
+    assert card_source("sara@example.com", in_thread, guest) == "thread"
+    outside_it = _stored("absent", in_thread=False, outside_now=True)
+    assert card_source("sara@example.com", outside_it, guest) == "allowed"
+    assert card_source("sara@example.com", outside_it, frozenset()) == "absent"
+
+
+def test_every_source_has_words_and_two_are_warnings() -> None:
+    assert set(SOURCE_WORDS) == set(get_args(Source))
+    assert {"quoted", "absent"} == WARNINGS

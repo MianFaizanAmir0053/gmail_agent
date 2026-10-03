@@ -212,6 +212,68 @@ def test_telegram_announces_a_card_for_the_records_revision() -> None:
     assert all(":2:m1" in button["callback_data"] for button in keyboard[0])
 
 
+OUTSIDER = proposal_from(
+    "m1",
+    PENDING
+    | {
+        "outside_guests": ["sara@example.com"],
+        "guest_sources": {"sara@example.com": "email"},
+    },
+    2,
+)
+
+
+@dataclass
+class Contacts:
+    """Stands in for the contacts table: the guest keys the owner allowed."""
+
+    keys: frozenset[str] = frozenset()
+    broken: bool = False
+    asked: list[list[str]] = field(default_factory=list)
+
+    def allowed(self, guests: Any) -> frozenset[str]:
+        self.asked.append(list(guests))
+        if self.broken:
+            raise ConnectionError("database unavailable")
+        return self.keys & frozenset(guests)
+
+
+def test_telegram_reads_the_allowed_contacts_as_it_sends_a_card() -> None:
+    """A guest the owner allowed is shown as one, and not asked for (M18, D5)."""
+    bot = FakeBot()
+    contacts = Contacts(keys=frozenset({"sara@example.com"}))
+
+    TelegramChannel(bot=bot, chat_id=4242, zone="UTC", contacts=contacts).announce_proposal(
+        OUTSIDER
+    )
+
+    assert contacts.asked == [["sara@example.com"]]
+    assert "sara@example.com: an allowed contact" in bot.sent[-1]["text"]
+    assert "Not in this email thread" not in bot.sent[-1]["text"]
+
+
+def test_telegram_still_sends_the_card_when_the_contacts_cannot_be_read() -> None:
+    """It asks for the guest to be allowed, and `decide()` reads the contacts
+    again at a Confirm."""
+    bot = FakeBot()
+
+    TelegramChannel(
+        bot=bot, chat_id=4242, zone="UTC", contacts=Contacts(broken=True)
+    ).announce_proposal(OUTSIDER)
+
+    assert "Not in this email thread: sara@example.com" in bot.sent[-1]["text"]
+
+
+def test_a_configured_telegram_channel_reads_the_contacts_table() -> None:
+    from app.channel.channels import DatabaseContacts
+
+    (channel,) = configured_channels(
+        _settings(telegram_bot_token=SecretStr("123:abc"), allowed_chat_ids=[4242])
+    ).channels
+    assert isinstance(channel, TelegramChannel)
+    assert isinstance(channel.contacts, DatabaseContacts)
+
+
 def test_telegram_alerts_in_words_the_owner_can_act_on() -> None:
     bot = FakeBot()
 
