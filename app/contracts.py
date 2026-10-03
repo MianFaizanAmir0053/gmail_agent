@@ -31,6 +31,11 @@ class EmailMessage(BaseModel):
     sender: str
     recipients: list[str] = Field(default_factory=list)
     received_at: datetime
+    credential: bool = False
+    """It carried a sign-in code, a sign-in or reset link, or a secret (M18,
+    decision 2). Its body is then `app.policy.scrub.CREDENTIAL_NOTICE`, and
+    the graph sets it aside before any model reads it. Checkpoints made before
+    M18 lack the field, and read as False."""
 
 
 class ExtractionResult(BaseModel):

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import html
 import json
 import math
 import random
@@ -24,6 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import getaddresses
+from html.parser import HTMLParser
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 
@@ -33,6 +33,7 @@ from googleapiclient.errors import HttpError
 
 from app.contracts import EmailMessage
 from app.mail import quota
+from app.policy.scrub import CREDENTIAL_NOTICE, is_credential, normalise, scrub
 
 METADATA_HEADERS = (
     "From",
@@ -321,10 +322,6 @@ def to_message_meta(
     )
 
 
-_TAG = re.compile(r"<[^>]+>")
-_WHITESPACE = re.compile(r"\n\s*\n\s*\n+")
-
-
 def _decode(data: str) -> str:
     """Decode Gmail's base64url payload. Returns "" on malformed input."""
     try:
@@ -335,42 +332,203 @@ def _decode(data: str) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+_VOID = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+_ALWAYS_HIDDEN = frozenset({"head", "title", "style", "script", "template"})
+_BLOCK = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "tbody",
+        "thead",
+        "tfoot",
+        "tr",
+        "ul",
+    }
+)
+_CELL = frozenset({"td", "th"})
+_ZERO = re.compile(r"[+-]?0*\.?0*(?:px|pt|em|rem|ex|ch|vh|vw|%)?")
+_SPACES = re.compile(r"\s+")
+
+
+def _hides(tag: str, attrs: list[tuple[str, str | None]]) -> bool:
+    """Whether an element's own markup hides it (M18, D1)."""
+    if tag in _ALWAYS_HIDDEN:
+        return True
+    style = ""
+    for name, value in attrs:
+        if name == "hidden":
+            return True
+        if name == "style" and value:
+            style = value
+    for declaration in style.split(";"):
+        name, _, value = declaration.partition(":")
+        name = name.strip().lower()
+        value = value.lower().replace("!important", "").strip()
+        if (
+            (name == "display" and value == "none")
+            or (name == "visibility" and value in ("hidden", "collapse"))
+            or (name in ("font-size", "max-height", "opacity") and value and _ZERO.fullmatch(value))
+            or (name == "mso-hide" and value == "all")
+        ):
+            return True
+    return False
+
+
+class _Visible(HTMLParser):
+    """The text a reader of the HTML would see.
+
+    Hidden content is dropped while the markup is still markup: comments,
+    `<head>`, `<style>`, `<script>`, `<template>`, and every element whose
+    inline style hides it or that carries `hidden`, with all it contains. An
+    element left open hides until an enclosing one closes. Text whose colour
+    matches its background, or hidden by a stylesheet class, stays: that is
+    beyond markup alone, and the injection suite carries it as a known gap.
+
+    Entities are decoded by the parser itself, numeric ones included:
+    transactional mail once arrived with a literal `&#128206;` in the body.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._open: list[tuple[str, bool]] = []
+        self._chunks: list[str] = []
+
+    @property
+    def _hidden(self) -> bool:
+        return bool(self._open) and self._open[-1][1]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _VOID:
+            if tag in ("br", "hr") and not self._hidden:
+                self._chunks.append("\n")
+            return
+        hidden = self._hidden or _hides(tag, attrs)
+        self._open.append((tag, hidden))
+        if not hidden and tag in _BLOCK:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if not any(name == tag for name, _ in self._open):
+            return
+        while self._open:
+            name, hidden = self._open.pop()
+            if not hidden and (name in _BLOCK or name in _CELL):
+                self._chunks.append("\n" if name in _BLOCK else " ")
+            if name == tag:
+                return
+
+    def handle_data(self, data: str) -> None:
+        if self._hidden:
+            return
+        if any(name == "pre" for name, _ in self._open):
+            self._chunks.append(data)
+            return
+        text = _SPACES.sub(" ", data)
+        if not self._chunks or self._chunks[-1].endswith("\n"):
+            text = text.lstrip()
+        self._chunks.append(text)
+
+    def text(self) -> str:
+        lines = (line.rstrip() for line in "".join(self._chunks).split("\n"))
+        return re.sub(r"\n{2,}", "\n", "\n".join(lines)).strip("\n").strip()
+
+
 def _html_to_text(markup: str) -> str:
-    text = re.sub(r"(?is)<(script|style).*?</\1>", "", markup)
-    text = re.sub(r"(?i)<br\s*/?>|</p>", "\n", text)
-    text = _TAG.sub("", text)
-    # html.unescape rather than a hand-written table. The table handled five
-    # named entities and left numeric ones alone, so transactional mail arrived
-    # with literal `&#128206;` in the body -- which then went on to be embedded.
-    text = html.unescape(text)
-    return _WHITESPACE.sub("\n\n", text).strip()
+    parser = _Visible()
+    parser.feed(markup)
+    parser.close()
+    return parser.text()
 
 
-def _walk(part: dict[str, Any], acc: dict[str, str]) -> None:
-    mime = part.get("mimeType", "")
+def _is_attachment(part: dict[str, Any]) -> bool:
+    if part.get("filename"):
+        return True
+    for header in part.get("headers", []):
+        if header.get("name", "").lower() == "content-disposition":
+            return cast(str, header.get("value", "")).strip().lower().startswith("attachment")
+    return False
+
+
+def _shown(part: dict[str, Any]) -> list[tuple[str, str]]:
+    """The text parts a reader is shown, in order, as (MIME type, text).
+
+    Attachments and every part inside an attached message are skipped. Of a
+    `multipart/alternative`, the last alternative holding HTML is shown, else
+    the last holding text: alternatives run from plainest to richest, and
+    Gmail shows the owner the HTML. Other containers show all their parts."""
+    mime = cast(str, part.get("mimeType", "")).lower()
+    if _is_attachment(part) or mime == "message/rfc822":
+        return []
+    children = [cast(dict[str, Any], child) for child in part.get("parts", [])]
+    if mime == "multipart/alternative":
+        options = [shown for shown in map(_shown, children) if shown]
+        rich = [shown for shown in options if any(kind == "text/html" for kind, _ in shown)]
+        return (rich or options or [[]])[-1]
+    if children:
+        return [shown for child in children for shown in _shown(child)]
     data = part.get("body", {}).get("data")
-
-    if data and mime in ("text/plain", "text/html") and mime not in acc:
-        acc[mime] = _decode(data)
-
-    for child in part.get("parts", []):
-        _walk(cast(dict[str, Any], child), acc)
+    if data and mime in ("text/plain", "text/html"):
+        return [(mime, _decode(data))]
+    return []
 
 
 def extract_body(payload: dict[str, Any]) -> str:
-    """Best-effort plain text from a Gmail payload.
+    """The text of a Gmail payload as its reader sees it (M18, D1), normalised.
 
-    Prefers `text/plain`; falls back to stripped `text/html`. Returns "" when
-    the message carries no textual part at all (attachment-only mail).
+    HTML is preferred to `text/plain`, hidden content is removed, attachments
+    and attached messages are skipped, and parts shown one after another are
+    joined by a blank line. Returns "" when no part is text (attachment-only
+    mail).
     """
-    found: dict[str, str] = {}
-    _walk(payload, found)
-
-    if "text/plain" in found:
-        return found["text/plain"].strip()
-    if "text/html" in found:
-        return _html_to_text(found["text/html"])
-    return ""
+    texts = [
+        _html_to_text(text) if kind == "text/html" else text.strip()
+        for kind, text in _shown(payload)
+    ]
+    return normalise("\n\n".join(text for text in texts if text))
 
 
 def _header(payload: dict[str, Any], name: str) -> str:
@@ -386,7 +544,14 @@ def _addresses(raw: str) -> list[str]:
 
 
 def to_email_message(message: dict[str, Any]) -> EmailMessage:
-    """Convert a Gmail `users.messages.get` response into our contract type."""
+    """Convert a Gmail `users.messages.get` response into our contract type,
+    scrubbed (M18, D2): nothing leaves this function with a code or a link
+    but a meeting link.
+
+    Credential mail leaves flagged, its body a fixed notice; its subject keeps
+    no token shaped like a code, cue word or not. Other mail leaves with its
+    subject and body scrubbed. Addresses are left as they are: a guest's
+    address is what the owner checks."""
     payload = cast(dict[str, Any], message.get("payload", {}))
 
     # internalDate is epoch milliseconds, UTC, and set by Gmail itself -- more
@@ -395,15 +560,19 @@ def to_email_message(message: dict[str, Any]) -> EmailMessage:
 
     sender = _addresses(_header(payload, "From"))
     recipients = _addresses(_header(payload, "To")) + _addresses(_header(payload, "Cc"))
+    subject = _header(payload, "Subject")
+    body = extract_body(payload)
+    credential = is_credential(subject, body)
 
     return EmailMessage(
         id=cast(str, message["id"]),
         thread_id=cast(str, message["threadId"]),
-        subject=_header(payload, "Subject"),
-        body_text=extract_body(payload),
+        subject=scrub(subject, every_line=credential),
+        body_text=CREDENTIAL_NOTICE if credential else scrub(body),
         sender=sender[0] if sender else "",
         recipients=recipients,
         received_at=received_at,
+        credential=credential,
     )
 
 

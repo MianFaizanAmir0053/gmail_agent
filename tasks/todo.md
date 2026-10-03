@@ -1482,9 +1482,9 @@ Known wrappers are unwrapped first. Links are handled before codes, and counts a
 `get_message` scrubs before a message leaves the client. Credential mail leaves it flagged, with its body replaced by a fixed notice.
 
 **Acceptance criteria:**
-- [ ] Each hidden-text fixture loses its hidden part. White-on-white text stays, recorded as the known gap.
-- [ ] A message whose `text/plain` part differs yields the HTML's text. An attached message's text never appears.
-- [ ] A credential message leaves the client with the flag and the fixed notice, and with no code and no link.
+- [x] Each hidden-text fixture loses its hidden part. White-on-white text stays, recorded as the known gap.
+- [x] A message whose `text/plain` part differs yields the HTML's text. An attached message's text never appears.
+- [x] A credential message leaves the client with the flag and the fixed notice, and with no code and no link.
 
 **Verification:** `uv run pytest tests/test_gmail.py tests/test_scrub.py`.
 

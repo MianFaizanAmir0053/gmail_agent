@@ -1,0 +1,12 @@
+{
+  "id": "hidden-attached-message",
+  "group": "hidden",
+  "note": "An attached message and an attached text file: neither is the body.",
+  "subject": "Fwd: notes",
+  "message": {"mime": "multipart/mixed", "parts": [
+    {"mime": "text/plain", "text": "Notes attached. Can we go through them on Tuesday at 2pm?"},
+    {"mime": "message/rfc822", "parts": [{"mime": "text/plain", "text": "HIDDEN-MARKER-ATTACHED"}]},
+    {"mime": "text/plain", "filename": "notes.txt", "disposition": "attachment", "text": "HIDDEN-MARKER-FILE"}
+  ]},
+  "expect": {"credential": false, "kept": ["Can we go through them on Tuesday at 2pm?"], "gone": ["HIDDEN-MARKER-ATTACHED", "HIDDEN-MARKER-FILE"]}
+}

@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from gmail_payloads import gmail_response, load_cases
 from googleapiclient.errors import HttpError
 
 from app.google.gmail import (
@@ -28,6 +29,7 @@ from app.google.gmail import (
     to_message_meta,
 )
 from app.mail import quota
+from app.policy.scrub import CREDENTIAL_NOTICE
 
 
 def _b64(text: str) -> str:
@@ -42,12 +44,14 @@ def test_extracts_simple_plain_text() -> None:
     assert extract_body(_part("text/plain", "Can we meet Tuesday?")) == "Can we meet Tuesday?"
 
 
-def test_prefers_plain_text_over_html() -> None:
+def test_prefers_html_over_plain_text() -> None:
+    # Gmail shows the owner the HTML (M18, D1): a plain part that differs
+    # could carry what the owner never sees.
     payload: dict[str, Any] = {
         "mimeType": "multipart/alternative",
-        "parts": [_part("text/plain", "plain wins"), _part("text/html", "<p>html loses</p>")],
+        "parts": [_part("text/plain", "plain loses"), _part("text/html", "<p>html wins</p>")],
     }
-    assert extract_body(payload) == "plain wins"
+    assert extract_body(payload) == "html wins"
 
 
 def test_falls_back_to_html_when_no_plain_part() -> None:
@@ -132,6 +136,186 @@ def test_to_email_message_maps_headers_and_time() -> None:
     assert email.body_text == "Can we meet next Tuesday at 3?"
     assert email.received_at.tzinfo is not None
     assert email.received_at == datetime.fromtimestamp(1786000000, tz=UTC)
+    assert not email.credential
+
+
+# --- the body the owner sees (M18, D1) ------------------------------------------------
+
+
+def _html(markup: str) -> dict[str, Any]:
+    return _part("text/html", markup)
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<p>Shown</p><!-- secret -->",
+        '<p>Shown</p><div style="display:none">secret</div>',
+        '<p>Shown</p><div style="visibility: hidden">secret</div>',
+        '<p>Shown</p><span style="font-size:0">secret</span>',
+        '<p>Shown</p><span style="font-size: 0.0pt !important">secret</span>',
+        '<p>Shown</p><div style="max-height:0px;overflow:hidden">secret</div>',
+        '<p>Shown</p><div style="opacity:0">secret</div>',
+        '<p>Shown</p><div style="mso-hide:all">secret</div>',
+        "<p>Shown</p><div hidden>secret</div>",
+        "<head><title>secret</title><style>p{}</style></head><p>Shown</p>",
+        "<p>Shown</p><script>secret()</script><template>secret</template>",
+        '<p>Shown</p><div style="display:none"><table><tr><td>secret</td></tr></table></div>',
+    ],
+)
+def test_hidden_content_is_removed_before_the_tags(markup: str) -> None:
+    assert extract_body(_html(markup)) == "Shown"
+
+
+def test_an_unclosed_hidden_element_hides_until_its_parent_closes() -> None:
+    markup = '<div><span style="display:none">secret<p>still hidden</div><p>Shown</p>'
+    assert extract_body(_html(markup)) == "Shown"
+
+
+def test_a_visible_element_inside_a_visible_one_stays() -> None:
+    markup = '<div style="opacity:0.5"><span style="font-size:12px">Shown</span></div>'
+    assert extract_body(_html(markup)) == "Shown"
+
+
+def test_blocks_and_line_breaks_become_lines_and_spaces_collapse() -> None:
+    markup = "<div>Meet   at\n   3pm</div><p>Room 4<br>Floor 2</p><ul><li>One</li><li>Two</li></ul>"
+    assert extract_body(_html(markup)) == "Meet at 3pm\nRoom 4\nFloor 2\nOne\nTwo"
+
+
+def test_table_cells_are_kept_apart() -> None:
+    markup = "<table><tr><td>Time</td><td>3pm</td></tr><tr><td>Room</td><td>4</td></tr></table>"
+    assert extract_body(_html(markup)) == "Time 3pm\nRoom 4"
+
+
+def test_preformatted_text_keeps_its_layout() -> None:
+    assert extract_body(_html("<pre>a  b\n  c</pre>")) == "a  b\n  c"
+
+
+def test_the_body_is_normalised() -> None:
+    markup = "<p>482&nbsp;913 and 1\N{ZERO WIDTH SPACE}2</p>"
+    assert extract_body(_html(markup)) == "482 913 and 12"
+
+
+def test_an_attached_message_is_not_the_body() -> None:
+    payload: dict[str, Any] = {
+        "mimeType": "multipart/mixed",
+        "parts": [
+            _part("text/plain", "Covering note"),
+            {"mimeType": "message/rfc822", "parts": [_part("text/plain", "attached text")]},
+        ],
+    }
+    assert extract_body(payload) == "Covering note"
+
+
+def test_an_attached_text_file_is_not_the_body() -> None:
+    attachment = _part("text/plain", "file text")
+    attachment["filename"] = "notes.txt"
+    attachment["headers"] = [{"name": "Content-Disposition", "value": "attachment"}]
+    payload: dict[str, Any] = {
+        "mimeType": "multipart/mixed",
+        "parts": [_part("text/plain", "Covering note"), attachment],
+    }
+    assert extract_body(payload) == "Covering note"
+
+
+def test_a_message_attached_only_yields_an_empty_body() -> None:
+    payload: dict[str, Any] = {
+        "mimeType": "multipart/mixed",
+        "parts": [{"mimeType": "message/rfc822", "parts": [_part("text/plain", "attached text")]}],
+    }
+    assert extract_body(payload) == ""
+
+
+def test_parts_shown_one_after_another_are_all_the_body() -> None:
+    payload: dict[str, Any] = {
+        "mimeType": "multipart/mixed",
+        "parts": [_part("text/plain", "First"), _part("text/html", "<p>Second</p>")],
+    }
+    assert extract_body(payload) == "First\n\nSecond"
+
+
+def test_html_wins_inside_a_related_part() -> None:
+    payload: dict[str, Any] = {
+        "mimeType": "multipart/alternative",
+        "parts": [
+            _part("text/plain", "plain loses"),
+            {
+                "mimeType": "multipart/related",
+                "parts": [_part("text/html", "<p>html wins</p>"), {"mimeType": "image/png"}],
+            },
+        ],
+    }
+    assert extract_body(payload) == "html wins"
+
+
+# --- the message that leaves the client (M18, D2) -------------------------------------
+
+
+def _message(subject: str, body: str) -> dict[str, Any]:
+    return {
+        "id": "m1",
+        "threadId": "t1",
+        "internalDate": "1786000000000",
+        "payload": {
+            "mimeType": "text/plain",
+            "headers": [
+                {"name": "Subject", "value": subject},
+                {"name": "From", "value": "a@b.example"},
+            ],
+            "body": {"data": _b64(body)},
+        },
+    }
+
+
+def test_links_and_codes_are_scrubbed_before_the_message_leaves() -> None:
+    email = to_email_message(
+        _message("Code 482913 inside", "Your code is 771204. See https://evil.example/x")
+    )
+    assert email.subject == "Code [code removed] inside"
+    assert email.body_text == "Your code is [code removed]. See [link: evil.example]"
+    assert not email.credential
+
+
+def test_credential_mail_leaves_flagged_with_the_fixed_notice() -> None:
+    email = to_email_message(
+        _message("482913 is your Acme verification code", "Use 482913. https://acme.example/v?t=1")
+    )
+    assert email.credential
+    assert email.body_text == CREDENTIAL_NOTICE
+    assert email.subject == "[code removed] is your Acme verification code"
+
+
+def test_every_code_shaped_token_goes_from_a_credential_subject() -> None:
+    # No cue word is needed: the message is known to carry a code.
+    email = to_email_message(_message("Use 4829 1374 to finish your two-factor sign in", "Hi"))
+    assert email.credential
+    assert "4829" not in email.subject
+
+
+# --- every fixture, through the real preparation ---------------------------------------
+
+
+@pytest.mark.parametrize("case", load_cases("credential"), ids=lambda case: case["id"])
+def test_a_credential_fixture_leaves_flagged_with_no_code_and_no_link(
+    case: dict[str, Any],
+) -> None:
+    email = to_email_message(gmail_response(case))
+    assert email.credential
+    assert email.body_text == CREDENTIAL_NOTICE
+    assert "http" not in email.subject
+    assert not any(char.isdigit() for char in email.subject)
+
+
+@pytest.mark.parametrize(
+    "case", load_cases("meeting") + load_cases("hidden"), ids=lambda case: case["id"]
+)
+def test_a_fixture_keeps_what_it_must_and_loses_what_it_must(case: dict[str, Any]) -> None:
+    email = to_email_message(gmail_response(case))
+    assert email.credential is case["expect"]["credential"]
+    for kept in case["expect"]["kept"]:
+        assert kept in email.body_text, kept
+    for gone in case["expect"]["gone"]:
+        assert gone not in email.body_text, gone
 
 
 def test_missing_headers_do_not_raise() -> None:

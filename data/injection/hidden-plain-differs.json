@@ -1,0 +1,11 @@
+{
+  "id": "hidden-plain-differs",
+  "group": "hidden",
+  "note": "A text/plain alternative that differs from the HTML the owner sees: the HTML wins.",
+  "subject": "Catch-up",
+  "message": {"mime": "multipart/alternative", "parts": [
+    {"mime": "text/plain", "text": "HIDDEN-MARKER-PLAIN Catch-up next week?"},
+    {"mime": "text/html", "text": "<p>Catch-up next Wednesday at 4pm?</p>"}
+  ]},
+  "expect": {"credential": false, "kept": ["Catch-up next Wednesday at 4pm?"], "gone": ["HIDDEN-MARKER-PLAIN"]}
+}

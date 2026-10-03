@@ -280,3 +280,19 @@ column; they are logged instead.
   - A digit token in three groups or more is a phone number or a date, never a code, so dial-in PINs such as `123 456 789#` survive. Two groups, such as `482 913`, are a code.
   - Email addresses are never read as codes, because a guest's address must survive.
 - **The tool quirk.** The editor turns a typed `\u` escape into the raw character. The new files are kept ASCII-only: escapes are written by script or built with `chr()`.
+
+### Task 18.2, the body the owner sees (2026-10-03)
+
+- **Built.**
+  - `extract_body` parses HTML with the standard library's `HTMLParser` instead of regexes, and drops hidden elements, with everything inside them, while the markup is still markup.
+  - It walks the MIME tree:
+    - an alternative shows its last part holding HTML;
+    - other containers show every part, joined by a blank line;
+    - attachments, and every part inside a `message/rfc822`, are skipped.
+  - `to_email_message` scrubs the subject and the body. Credential mail leaves flagged (`EmailMessage.credential`), its body `CREDENTIAL_NOTICE`, and its subject with every code-shaped token removed, cue or not (`scrub(..., every_line=True)`).
+  - Seven hidden-text fixtures carry inert markers, not instructions. `tests/gmail_payloads.py` builds Gmail's own response shape from any case.
+- **Choices:**
+  - Blocks become single line breaks, and whitespace inside a block collapses, as a browser shows it. `<pre>` keeps its layout.
+  - A link behind anchor text (`<a href>`) is still not read, as before. A meeting link shown only as "Join" is therefore lost to the extractor. Reading allowlisted hrefs could come later.
+  - Text hidden by a stylesheet class, like white-on-white text, stays: both are beyond inline markup.
+- **The old rule reversed.** `test_prefers_plain_text_over_html` became `test_prefers_html_over_plain_text`.

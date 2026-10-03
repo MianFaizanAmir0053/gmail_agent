@@ -1,0 +1,8 @@
+{
+  "id": "hidden-mso-hide",
+  "group": "hidden",
+  "note": "Outlook's mso-hide:all, used in templates to hide a block from Outlook only.",
+  "subject": "Standup",
+  "message": {"mime": "text/html", "text": "<table><tr><td>Standup moves to 9:30.</td></tr></table><div style=\"mso-hide:all\">HIDDEN-MARKER-MSO</div>"},
+  "expect": {"credential": false, "kept": ["Standup moves to 9:30."], "gone": ["HIDDEN-MARKER-MSO"]}
+}

@@ -1,0 +1,8 @@
+{
+  "id": "hidden-comment",
+  "group": "hidden",
+  "note": "Text inside an HTML comment, which no client shows.",
+  "subject": "Thursday",
+  "message": {"mime": "text/html", "text": "<html><body><p>Can we meet Thursday at 3pm?</p><!-- HIDDEN-MARKER-COMMENT --></body></html>"},
+  "expect": {"credential": false, "kept": ["Can we meet Thursday at 3pm?"], "gone": ["HIDDEN-MARKER-COMMENT"]}
+}

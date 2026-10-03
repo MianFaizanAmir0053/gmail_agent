@@ -1,0 +1,8 @@
+{
+  "id": "hidden-display-none",
+  "group": "hidden",
+  "note": "An element hidden by an inline display:none, with a nested element inside it.",
+  "subject": "Lunch",
+  "message": {"mime": "text/html", "text": "<div>Lunch on Friday at 1pm?</div><div style=\"color: red; DISPLAY : none !important\"><p>HIDDEN-MARKER-DISPLAY <b>HIDDEN-MARKER-NESTED</b></p></div><div>Thanks, Hina</div>"},
+  "expect": {"credential": false, "kept": ["Lunch on Friday at 1pm?", "Thanks, Hina"], "gone": ["HIDDEN-MARKER-DISPLAY", "HIDDEN-MARKER-NESTED"]}
+}

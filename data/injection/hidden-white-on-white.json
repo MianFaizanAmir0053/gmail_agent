@@ -1,0 +1,8 @@
+{
+  "id": "hidden-white-on-white",
+  "group": "hidden",
+  "note": "White text on a white background. Matching colours is beyond a regex, so this text stays: the known gap (D1).",
+  "subject": "Dinner",
+  "message": {"mime": "text/html", "text": "<body style=\"background:#ffffff\"><p>Dinner on Saturday at 8?</p><span style=\"color:#ffffff\">HIDDEN-MARKER-WHITE</span></body>"},
+  "expect": {"credential": false, "kept": ["Dinner on Saturday at 8?", "HIDDEN-MARKER-WHITE"], "gone": [], "gap": "white-on-white text stays"}
+}

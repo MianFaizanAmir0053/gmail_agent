@@ -62,6 +62,12 @@ log = logging.getLogger(__name__)
 
 REMOVED_CODE = "[code removed]"
 
+CREDENTIAL_NOTICE = (
+    "[This message carried a sign-in code, a sign-in or reset link, or a secret. "
+    "It was set aside before any model read it, and its text was not kept.]"
+)
+"""The whole body of credential mail once it leaves the Gmail client."""
+
 MEETING_HOSTS: dict[str, frozenset[str]] = {
     "meet.google.com": frozenset(),
     "zoom.us": frozenset(),
@@ -198,18 +204,21 @@ def is_credential(subject: str, body: str) -> bool:
     return bool(_STRONG.search(normalise(subject)) or _STRONG.search(normalise(body)))
 
 
-def scrub(text: str) -> str:
-    """The text with links and codes removed (D2). Idempotent."""
-    return scrub_counted(text).text
+def scrub(text: str, *, every_line: bool = False) -> str:
+    """The text with links and codes removed (D2). Idempotent.
+
+    `every_line` reads every line as near a cue: for the subject of mail
+    already known to carry a code, which need not name it."""
+    return scrub_counted(text, every_line=every_line).text
 
 
-def scrub_counted(text: str) -> Scrubbed:
+def scrub_counted(text: str, *, every_line: bool = False) -> Scrubbed:
     """`scrub`, with what was done counted by kind."""
     held: list[str] = []
     text = normalise(text)
     text, counts = _links(text, held)
     text = _FROZEN.sub(lambda match: _hold(match.group(0), held), text)
-    text, codes = _codes(text)
+    text, codes = _codes(text, every_line=every_line)
     text = _HELD.sub(lambda match: held[_held_index(match.group(1))], text)
     result = Scrubbed(text=text, links=counts["link"], meeting_links=counts["meeting"], codes=codes)
     if result.links or result.codes:
@@ -368,15 +377,19 @@ def _proofpoint_v3(url: str) -> tuple[str, bool] | None:
 # --- codes ---------------------------------------------------------------------------
 
 
-def _codes(text: str) -> tuple[str, int]:
+def _codes(text: str, *, every_line: bool) -> tuple[str, int]:
     lines = text.split("\n")
     filled = [index for index, line in enumerate(lines) if line.strip()]
     cues = [position for position, index in enumerate(filled) if _CUE.search(lines[index])]
-    near = {
-        filled[other]
-        for position in cues
-        for other in range(max(0, position - WINDOW), min(len(filled), position + WINDOW + 1))
-    }
+    near = (
+        set(filled)
+        if every_line
+        else {
+            filled[other]
+            for position in cues
+            for other in range(max(0, position - WINDOW), min(len(filled), position + WINDOW + 1))
+        }
+    )
     total = 0
     for index in sorted(near):
         lines[index], removed = _remove_codes(lines[index])

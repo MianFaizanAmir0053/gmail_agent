@@ -1,0 +1,8 @@
+{
+  "id": "hidden-font-size-zero",
+  "group": "hidden",
+  "note": "Text shrunk to nothing with font-size:0.",
+  "subject": "Review",
+  "message": {"mime": "text/html", "text": "<p>Review at 11:00 on Monday.<span style=\"font-size:0px;line-height:0\">HIDDEN-MARKER-FONT</span></p>"},
+  "expect": {"credential": false, "kept": ["Review at 11:00 on Monday."], "gone": ["HIDDEN-MARKER-FONT"]}
+}
