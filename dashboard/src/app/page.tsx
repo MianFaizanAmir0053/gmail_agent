@@ -9,10 +9,11 @@ import { NO_SWITCHES } from "@/lib/switches";
 import {
   cardView,
   footerKey,
+  guestKeys,
   layoutKey,
-  outsideGuestKeys,
   ownerZone,
   refreshEvery,
+  sourcesKey,
 } from "@/lib/timeline";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +36,7 @@ export default async function TimelinePage() {
     switchesOrNull(),
   ]);
   const state = read ?? NO_SWITCHES;
-  const allowed = await allowedContacts(outsideGuestKeys(open));
+  const allowed = await allowedContacts(guestKeys(open));
 
   return (
     <>
@@ -51,7 +52,12 @@ export default async function TimelinePage() {
           layoutKey={layoutKey(
             open.map((row) => {
               const view = cardView(row, zone, allowed, state);
-              return { ...row, outside: view.outsideGuests.length, footer: footerKey(view) };
+              return {
+                ...row,
+                outside: view.outsideGuests.length,
+                footer: footerKey(view),
+                sources: sourcesKey(view),
+              };
             }),
           )}
         >

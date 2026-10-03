@@ -5,7 +5,7 @@
  * and the card only render what `cardView` decides.
  */
 
-import { guestKey } from "./guests.ts";
+import { cardSource, guestKey, SOURCE_WORDS, type Source, WARNINGS } from "./guests.ts";
 import { heldNote, NO_SWITCHES, type Switches } from "./switches.ts";
 
 export const LAST_EDITABLE_REVISION = 2;
@@ -24,6 +24,25 @@ export type CardPayload = {
   review_issues?: string[] | null;
   /** Guests not in the email's thread when it parked (M17, D4). */
   outside_guests?: string[] | null;
+  /** Guests who were in the thread when it parked (M18, D5). */
+  thread_guests?: string[] | null;
+  /** Where the email named each guest: "email", "quoted" or "absent" (M18, D5). */
+  guest_sources?: Record<string, string> | null;
+  /** The email quotes or forwards older mail (M18, D5). */
+  quoted_section?: boolean | null;
+};
+
+/** One guest on a card, and where they came from (M18, D5). */
+export type GuestView = {
+  address: string;
+  /** Null for a payload parked before M18, which records no sources. */
+  source: Source | null;
+  /** What the card says of the source. */
+  words: string | null;
+  /** Named only in a quoted or forwarded section, or not found at all. */
+  warning: boolean;
+  /** Outside the thread and not allowed: needs an Allow before a Confirm. */
+  outside: boolean;
 };
 
 export type ProposalRow = {
@@ -62,6 +81,12 @@ export type CardView = {
   /** Guests outside the thread the owner has not allowed: each needs an Allow
    * before a Confirm is accepted (M17, D4). */
   outsideGuests: string[];
+  /** Every guest with their source. */
+  guests: GuestView[];
+  /** The payload records sources: the card lists each guest with theirs. */
+  sourced: boolean;
+  /** The email quotes or forwards older mail, which the card notes. */
+  quotedSection: boolean;
   dryRun: boolean;
   invite: boolean;
   /** A decision is open: the worker is applying it. */
@@ -108,6 +133,17 @@ export function cardView(
     applying && row.decision_id && row.decision_action !== "sweep" ? row.decision_id : null;
   const withdrawing = decisionId !== null && row.withdraw_requested === true;
   const withdrawDeclined = decisionId !== null && row.withdraw_declined === true;
+  const outsideGuests = words(card?.outside_guests).filter((guest) => !allowed.has(guestKey(guest)));
+  const guests = words(card?.attendees).map((address): GuestView => {
+    const source = card === null ? null : cardSource(address, card, allowed);
+    return {
+      address,
+      source,
+      words: source === null ? null : SOURCE_WORDS[source],
+      warning: source !== null && WARNINGS.has(source),
+      outside: outsideGuests.includes(address),
+    };
+  });
   return {
     messageId: row.message_id,
     revision: row.revision,
@@ -118,7 +154,10 @@ export function cardView(
     location: text(card?.location),
     conflicts: words(card?.conflicts),
     reviewIssues: words(card?.review_issues),
-    outsideGuests: words(card?.outside_guests).filter((guest) => !allowed.has(guestKey(guest))),
+    outsideGuests,
+    guests,
+    sourced: guests.some((guest) => guest.source !== null),
+    quotedSection: card?.quoted_section === true,
     dryRun: row.dry_run,
     invite: row.action_type === "calendar_invite",
     applying,
@@ -135,11 +174,14 @@ export function cardView(
   };
 }
 
-/** The guest keys of every open card's outside guests: what to look up. */
-export function outsideGuestKeys(rows: Pick<ProposalRow, "payload">[]): string[] {
+/** The guest keys of every open card's guests, outside ones included: what to
+ * look up. An allowed guest is shown as one wherever they stand (M18, D5). */
+export function guestKeys(rows: Pick<ProposalRow, "payload">[]): string[] {
   const keys = new Set<string>();
   for (const row of rows) {
-    for (const guest of words(row.payload?.outside_guests)) keys.add(guestKey(guest));
+    for (const guest of [...words(row.payload?.attendees), ...words(row.payload?.outside_guests)]) {
+      keys.add(guestKey(guest));
+    }
   }
   return [...keys].sort();
 }
@@ -163,14 +205,24 @@ export function layoutKey(
     outside?: number;
     /** What an applying card's footer holds: its height moves the cards below. */
     footer?: string;
+    /** What its guest lines hold (M18, D5): a warning or a note moves them too. */
+    sources?: string;
   })[],
 ): string {
   return rows
     .map(
       (row) =>
-        `${row.message_id}:${row.revision}:${row.status}:${row.outside ?? 0}:${row.footer ?? ""}`,
+        `${row.message_id}:${row.revision}:${row.status}:${row.outside ?? 0}:${row.footer ?? ""}` +
+        `:${row.sources ?? ""}`,
     )
     .join("|");
+}
+
+/** What a card's guest lines show, as `layoutKey` wants it: each guest's
+ * source and whether they need an Allow, and the note on a quoted section. */
+export function sourcesKey(view: Pick<CardView, "guests" | "quotedSection">): string {
+  const guests = view.guests.map((guest) => `${guest.source ?? "-"}${guest.outside ? "!" : ""}`);
+  return `${guests.join(",")}${view.quotedSection ? ";q" : ""}`;
 }
 
 /** What an applying card's footer shows, as `layoutKey` wants it. */

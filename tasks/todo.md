@@ -1579,7 +1579,7 @@ The search code stays, for M19. A structural test checks that `ExtractionPipelin
 
 ### Checkpoint: readers without tools
 
-- [ ] Checks green; Neon.
+- [x] Checks green; Neon. (2026-10-03, at `0335839`: 1873 tests on a local Postgres 16, lint and mypy clean; the graph, worker, decide, park, Telegram and hashing suites on Neon, 288 passed. The run took two passes: the laptop's connection dropped partway through, and the 53 tests it cut off then passed on their own.)
 
 ## Phase 3 · What the owner sees and what is stored
 
@@ -1607,8 +1607,8 @@ The payload stores them, and notes when the email has a quoted or forwarded sect
 **Description:** The web card lists each guest with its source. The two warnings sit beside Allow, and the card notes when the email has a quoted or forwarded section.
 
 **Acceptance criteria:**
-- [ ] Each source renders. A payload from before M18 renders without sources.
-- [ ] The layout key counts the sources, so a warning cannot move a button under a tap.
+- [x] Each source renders. A payload from before M18 renders without sources.
+- [x] The layout key counts the sources, so a warning cannot move a button under a tap.
 
 **Verification:** `cd dashboard; npm test; npm run typecheck; npm run build`. The browser check waits for the owner's end tests.
 

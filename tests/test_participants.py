@@ -423,3 +423,15 @@ def test_the_first_source_that_holds_is_shown() -> None:
 def test_every_source_has_words_and_two_are_warnings() -> None:
     assert set(SOURCE_WORDS) == set(get_args(Source))
     assert {"quoted", "absent"} == WARNINGS
+
+
+def test_the_web_card_says_the_same_words() -> None:
+    """`dashboard/src/lib/guests.ts` mirrors the words and Telegram's note."""
+    from pathlib import Path
+
+    from app.telegram.cards import QUOTED_SECTION
+
+    web = Path(__file__).resolve().parents[1] / "dashboard" / "src" / "lib" / "guests.ts"
+    source = web.read_text("utf-8")
+    assert all(f'{name}: "{words}"' in source for name, words in SOURCE_WORDS.items())
+    assert f'"{QUOTED_SECTION}"' in source

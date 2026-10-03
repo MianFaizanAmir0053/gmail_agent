@@ -409,3 +409,12 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
   - An integration test runs `guest-invented` through the graph and the park step on Postgres. `decide()` refuses its Confirm as `outside` until the address is allowed.
   - Ten deliberate breaks were each caught. They covered the rule's three facts, the header addresses, the quoted split, the graph's and the park's payload, and Telegram's warnings, the 🚧 line, the contacts read and the note.
   - 1918 tests pass against a local Postgres 16, with lint and mypy clean.
+
+### Task 18.9, where a guest came from, on the web card (2026-10-04)
+
+- **Built.** `cardSource` in `dashboard/src/lib/guests.ts` decides a guest's source as `participants.card_source` does: in the thread while no check has found them outside it, else an allowed contact, else where the email named them. The card lists each guest with its source. The two warnings are marked, and an outside guest's Allow sits on the same line. A card whose email quotes or forwards older mail carries the same note as Telegram's.
+- **Allowed contacts are looked up for every guest** (`guestKeys`), not only the outside ones, since an allowed guest is shown as one wherever they stand.
+- **The layout key counts the sources** (`sourcesKey`): each guest's source, whether they need an Allow, and the note. A warning or a note that appears moves the cards below, so `StableTaps` holds the decision buttons for a moment, as it does for any other change in a card's height.
+- **A payload parked before M18** records no sources and renders as before: one line of guests, and a line per outside guest.
+- **The words are shared.** `tests/test_participants.py` checks that the web card's words and note are the ones in `SOURCE_WORDS` and `QUOTED_SECTION`.
+- **Checks.** 144 web tests, typecheck and build; 1919 Python tests on a local Postgres 16, with lint and mypy clean. The browser check waits for the owner's end tests.

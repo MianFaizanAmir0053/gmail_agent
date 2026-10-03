@@ -6,12 +6,13 @@ import {
   cardView,
   footerKey,
   formatWindow,
+  guestKeys,
   layoutKey,
-  outsideGuestKeys,
   HELD_REFRESH_EVERY_MS,
   ownerZone,
   REFRESH_EVERY_MS,
   refreshEvery,
+  sourcesKey,
   type CardPayload,
   type ProposalRow,
 } from "./timeline.ts";
@@ -262,8 +263,95 @@ describe("guests outside the thread (M17, D4)", () => {
     assert.deepEqual(cardView(ROW, "UTC").outsideGuests, []);
   });
 
-  it("looks each guest up once, by the key Fly stores", () => {
-    assert.deepEqual(outsideGuestKeys([row, row, ROW]), ["new@example.net", "sarakhan@gmail.com"]);
+  it("looks each guest up once, by the key Fly stores, outside or not", () => {
+    assert.deepEqual(guestKeys([row, row, ROW]), [
+      "new@example.net",
+      "sara@example.com",
+      "sarakhan@gmail.com",
+    ]);
+  });
+});
+
+describe("where each guest came from (M18, D5)", () => {
+  const guests = [
+    "sara@example.com",
+    "ali@example.org",
+    "new@example.net",
+    "fwd@example.net",
+    "ghost@example.net",
+  ];
+  const sourced: ProposalRow = {
+    ...ROW,
+    payload: {
+      ...ROW.payload,
+      attendees: guests,
+      outside_guests: guests.slice(1),
+      thread_guests: guests.slice(0, 1),
+      guest_sources: {
+        "sara@example.com": "email",
+        "ali@example.org": "email",
+        "new@example.net": "email",
+        "fwd@example.net": "quoted",
+        "ghost@example.net": "absent",
+      },
+      quoted_section: true,
+    },
+  };
+  const allowed = new Set(["ali@example.org"]);
+
+  it("says each guest's source, the two warnings marked", () => {
+    const view = cardView(sourced, "UTC", allowed);
+
+    assert.equal(view.sourced, true);
+    assert.deepEqual(
+      view.guests.map((guest) => [guest.address, guest.words, guest.warning]),
+      [
+        ["sara@example.com", "in the thread", false],
+        ["ali@example.org", "an allowed contact", false],
+        ["new@example.net", "named in the email", false],
+        ["fwd@example.net", "named in a quoted or forwarded section", true],
+        ["ghost@example.net", "not found in the email", true],
+      ],
+    );
+  });
+
+  it("puts an Allow beside every guest outside the thread whom the owner has not allowed", () => {
+    const view = cardView(sourced, "UTC", allowed);
+
+    assert.deepEqual(
+      view.guests.filter((guest) => guest.outside).map((guest) => guest.address),
+      ["new@example.net", "fwd@example.net", "ghost@example.net"],
+    );
+    assert.deepEqual(view.outsideGuests, ["new@example.net", "fwd@example.net", "ghost@example.net"]);
+  });
+
+  it("notes a quoted or forwarded section", () => {
+    assert.equal(cardView(sourced, "UTC").quotedSection, true);
+    assert.equal(cardView(ROW, "UTC").quotedSection, false);
+  });
+
+  it("shows a card parked before M18 without sources", () => {
+    const view = cardView(ROW, "UTC");
+
+    assert.equal(view.sourced, false);
+    assert.deepEqual(
+      view.guests.map((guest) => [guest.source, guest.words, guest.warning]),
+      [[null, null, false]],
+    );
+  });
+
+  it("changes the layout key when a guest's source or a warning changes", () => {
+    const key = (row: ProposalRow, contacts: ReadonlySet<string> = new Set()) =>
+      layoutKey([{ ...row, sources: sourcesKey(cardView(row, "UTC", contacts)) }]);
+    const moved: ProposalRow = {
+      ...sourced,
+      payload: { ...sourced.payload, guest_sources: { ...sourced.payload?.guest_sources, "new@example.net": "absent" } },
+    };
+
+    assert.notEqual(key(moved), key(sourced));
+    assert.notEqual(key(sourced, allowed), key(sourced));
+    assert.notEqual(key({ ...sourced, payload: { ...sourced.payload, quoted_section: false } }), key(sourced));
+    assert.equal(key({ ...sourced }), key(sourced));
   });
 });
 

@@ -356,13 +356,30 @@ h1.section {
   color: var(--err);
 }
 
-/* --- guests outside the thread (M17) --------------------------------------- */
+/* --- guests outside the thread (M17), and where each came from (M18) -------- */
 
 .outside {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+.guests {
+  list-style: none;
+  margin: 2px 0;
+  padding: 0;
+}
+.guest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+.guest.warn {
+  color: var(--warn);
 }
 .allow {
   display: flex;

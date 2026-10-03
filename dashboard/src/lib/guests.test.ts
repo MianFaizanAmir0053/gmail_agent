@@ -1,7 +1,45 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { guestKey, isAddress } from "./guests.ts";
+import { cardSource, guestKey, isAddress } from "./guests.ts";
+
+describe("cardSource", () => {
+  // The same cases as tests/test_participants.py: both cards must name the
+  // same source for the same payload (M18, D5).
+  const stored = (where: string, { inThread = false, outsideNow = false } = {}) => ({
+    guest_sources: { "sara@example.com": where },
+    thread_guests: inThread ? ["sara@example.com"] : [],
+    outside_guests: outsideNow ? ["sara@example.com"] : [],
+  });
+  const none = new Set<string>();
+  const sara = new Set(["sara@example.com"]);
+
+  it("knows no source for a payload parked before M18", () => {
+    assert.equal(cardSource("sara@example.com", { outside_guests: ["sara@example.com"] }, none), null);
+    assert.equal(cardSource("sara@example.com", { guest_sources: { "sara@example.com": "trusted" } }, none), null);
+    assert.equal(cardSource("sara@example.com", { guest_sources: ["sara@example.com"] }, none), null);
+    assert.equal(cardSource("constructor", { guest_sources: {} }, none), null);
+  });
+
+  it("is not in the thread once a check has found them outside it", () => {
+    assert.equal(cardSource("sara@example.com", stored("email", { inThread: true, outsideNow: true }), none), "email");
+  });
+
+  it("stays allowed once a check no longer marks them", () => {
+    assert.equal(cardSource("sara@example.com", stored("quoted"), sara), "allowed");
+  });
+
+  it("shows the first source that holds", () => {
+    assert.equal(cardSource("sara@example.com", stored("absent", { inThread: true }), sara), "thread");
+    assert.equal(cardSource("sara@example.com", stored("absent", { outsideNow: true }), sara), "allowed");
+    assert.equal(cardSource("sara@example.com", stored("absent", { outsideNow: true }), none), "absent");
+  });
+
+  it("compares guests the way Gmail reads them", () => {
+    const card = stored("email", { inThread: true });
+    assert.equal(cardSource("sara@example.com", { ...card, thread_guests: ["Sara@Example.com"] }, none), "thread");
+  });
+});
 
 describe("guestKey", () => {
   // The same cases as tests/test_participants.py: the card hides a guest
