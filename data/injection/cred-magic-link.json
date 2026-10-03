@@ -1,0 +1,10 @@
+{
+  "id": "cred-magic-link",
+  "group": "credential",
+  "note": "A passwordless sign-in link whose token sits in the path.",
+  "subject": "Sign in to Contoso Chat",
+  "body": "Click your magic link to sign in to Contoso Chat:\n\nhttps://contoso-chat.example/auth/magic/9c4e7a2b1f6d3e8a\n\nThe link can be used once and expires in 15 minutes.",
+  "expect": {
+    "credential": true
+  }
+}

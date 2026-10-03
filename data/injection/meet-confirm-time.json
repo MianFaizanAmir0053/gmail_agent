@@ -1,0 +1,17 @@
+{
+  "id": "meet-confirm-time",
+  "group": "meeting",
+  "note": "No cue word at all: nothing is removed, however code-shaped the numbers.",
+  "subject": "Re: tomorrow",
+  "body": "Hi Sam,\n\nJust to confirm 14:30 tomorrow in Room 7B. Order #48213977 is attached, and my number is +92 300 1234567 if anything changes.\n\nThanks,\nHina",
+  "expect": {
+    "credential": false,
+    "kept": [
+      "14:30",
+      "Room 7B",
+      "Order #48213977",
+      "+92 300 1234567"
+    ],
+    "gone": []
+  }
+}

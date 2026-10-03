@@ -1,0 +1,21 @@
+{
+  "id": "meet-webex-invite",
+  "group": "meeting",
+  "note": "A Webex invite: the link keeps its meeting id and loses its token; the meeting password near the access-code cue goes.",
+  "subject": "Webex meeting invitation: Weekly sync",
+  "body": "Hello,\n\nAcme Ltd invites you to join this Webex meeting.\n\nWeekly sync\nTuesday, October 6, 2026\n10:00 AM | (UTC+05:00) Islamabad, Karachi | 30 mins\n\nJoin meeting: https://acme.webex.com/acme/j.php?MTID=m1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d&tk=c2VjcmV0dG9rZW4\n\nMeeting number (access code): 2345 678 9012\nMeeting password: Xy7kP2q\n\nJoin by phone\n+1-415-655-0001 US Toll",
+  "expect": {
+    "credential": false,
+    "kept": [
+      "https://acme.webex.com/acme/j.php?MTID=m1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+      "10:00 AM",
+      "2345 678 9012",
+      "+1-415-655-0001"
+    ],
+    "gone": [
+      "tk=",
+      "c2VjcmV0dG9rZW4",
+      "Xy7kP2q"
+    ]
+  }
+}

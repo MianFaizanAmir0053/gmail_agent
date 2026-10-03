@@ -1,0 +1,21 @@
+{
+  "id": "meet-google-calendar-invite",
+  "group": "meeting",
+  "note": "A Google Calendar invitation: a Meet link with no scheme, a dial-in PIN of three groups, a room number near the PIN cue, and the guests' addresses.",
+  "subject": "Invitation: Project review @ Mon 5 Oct 2026 3pm - 4pm (PKT) (sam@example.com)",
+  "body": "Invitation: Project review @ Mon 5 Oct 2026 3pm - 4pm (PKT) (sam@example.com)\n\nJoin with Google Meet\nmeet.google.com/abc-defg-hij\n\nJoin by phone\n(US) +1 216-555-0123\nPIN: 123 456 789#\n\nMore phone numbers: https://tel.meet/abc-defg-hij?pin=123456789\n\nWhere: Room 1204, 12th floor, Example House\n\nOrganizer: sam@example.com\nGuests: hina@example.com, ali@example.com",
+  "expect": {
+    "credential": false,
+    "kept": [
+      "https://meet.google.com/abc-defg-hij",
+      "3pm - 4pm",
+      "PIN: 123 456 789#",
+      "Room 1204",
+      "hina@example.com",
+      "ali@example.com"
+    ],
+    "gone": [
+      "pin=123456789"
+    ]
+  }
+}

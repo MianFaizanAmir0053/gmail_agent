@@ -1,0 +1,18 @@
+{
+  "id": "meet-teams-invite",
+  "group": "meeting",
+  "note": "A Teams invite: the join link in angle brackets with the context it needs, a twelve-digit meeting id, an alphanumeric passcode, and a video-conference address.",
+  "subject": "Design review",
+  "body": "Microsoft Teams meeting\n\nJoin on your computer, mobile app or room device\nClick here to join the meeting <https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZmFrZW1lZXRpbmc%40thread.v2/0?context=%7b%22Tid%22%3a%2211111111-2222-3333-4444-555555555555%22%7d>\n\nMeeting ID: 312 845 967 041\nPasscode: aB3dE5\n\nDownload Teams | Join on the web\n\nJoin with a video conferencing device\nteams@vc.example.com\nVideo Conference ID: 118 220 4413",
+  "expect": {
+    "credential": false,
+    "kept": [
+      "https://teams.microsoft.com/l/meetup-join/19%3ameeting_ZmFrZW1lZXRpbmc%40thread.v2/0?context=",
+      "Meeting ID: 312 845 967 041",
+      "teams@vc.example.com"
+    ],
+    "gone": [
+      "aB3dE5"
+    ]
+  }
+}

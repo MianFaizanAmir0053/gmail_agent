@@ -1,0 +1,10 @@
+{
+  "id": "cred-bank-otp",
+  "group": "credential",
+  "note": "A bank's terse OTP mail.",
+  "subject": "Transaction alert",
+  "body": "OTP for your transaction of PKR 25,000 at Example Mart is 552901. It is valid for 5 minutes. Never share your OTP.",
+  "expect": {
+    "credential": true
+  }
+}

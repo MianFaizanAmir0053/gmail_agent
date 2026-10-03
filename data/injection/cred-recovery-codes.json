@@ -1,0 +1,10 @@
+{
+  "id": "cred-recovery-codes",
+  "group": "credential",
+  "note": "Several codes in a list, under a phrase in capitals.",
+  "subject": "Keep these safe",
+  "body": "YOUR RECOVERY CODES\n\n4f9k-2m7q\n8x3d-6n1p\nh5t2-9w4r\n\nEach code can be used once.",
+  "expect": {
+    "credential": true
+  }
+}

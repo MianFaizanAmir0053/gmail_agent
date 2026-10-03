@@ -1,0 +1,10 @@
+{
+  "id": "cred-otp-own-line",
+  "group": "credential",
+  "note": "The commonest one-time-code layout: the cue only in the subject, the code alone on its line, blank lines either side, a non-breaking space inside the code.",
+  "subject": "Your verification code",
+  "body": "Acme Cloud\n\nUse the code below to finish signing in.\n\n\n482\u00a0913\n\n\nThis code expires in 10 minutes. If you didn't try to sign in, you can ignore this email.\n\nAcme Cloud, 1 Example Way, Springfield",
+  "expect": {
+    "credential": true
+  }
+}

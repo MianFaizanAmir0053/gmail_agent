@@ -1,0 +1,10 @@
+{
+  "id": "cred-two-factor-hyphenated",
+  "group": "credential",
+  "note": "Two-factor written with a non-breaking hyphen, and the code split by zero-width spaces.",
+  "subject": "Login attempt",
+  "body": "Your two\u2011factor authentication code is 5\u200b2\u200b9\u200b0\u200b1\u200b8.\n\nDo not share it with anyone.",
+  "expect": {
+    "credential": true
+  }
+}

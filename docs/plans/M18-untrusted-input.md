@@ -268,3 +268,15 @@ column; they are logged instead.
 - The owner took the recommended choice for each of the five decisions, then approved the spec.
 - The tasks are 18.1–18.15 in [`tasks/todo.md`](../../tasks/todo.md), with the plan in [`tasks/plan.md`](../../tasks/plan.md). They begin after M17's review fixes, 17.15–17.18.
 - Injection payloads live in `data/injection/` and are cited by case id. On 2026-10-02, quoting them in the session that reviewed this spec made auto mode block that session's shell.
+
+### Task 18.1, the scrubber (2026-10-03)
+
+- **Built.** `app/policy/scrub.py`, with `tests/test_scrub.py` (135 tests) and the first 16 fixtures in `data/injection/`: 10 real-format credential mails and 6 meeting invites (Zoom, Google Calendar, Teams, Webex and two plain mails). Each test was seen to fail before the module existed. Three deliberate breaks of the module were each caught; one needed a stronger idempotence test first.
+- **Choices within the spec:**
+  - A meeting host's link is not kept when its path signs in, resets or verifies (`/reset_password`, `/signin`, `/auth/...`). The link becomes `[link: host]`. This narrows decision 1, so a token in a path is not carried.
+  - Google's `/url?q=` redirect is unwrapped as well as the three named wrappers. This changes only which host a rewritten link shows; the allowlist is unchanged.
+  - A non-ASCII host is shown as punycode, so a look-alike of a meeting host cannot pass for it.
+  - "OTP" is a strong phrase as well as a cue. "PIN", "passcode", "access code" and "meeting password" are not strong phrases: meeting invites use them.
+  - A digit token in three groups or more is a phone number or a date, never a code, so dial-in PINs such as `123 456 789#` survive. Two groups, such as `482 913`, are a code.
+  - Email addresses are never read as codes, because a guest's address must survive.
+- **The tool quirk.** The editor turns a typed `\u` escape into the raw character. The new files are kept ASCII-only: escapes are written by script or built with `chr()`.

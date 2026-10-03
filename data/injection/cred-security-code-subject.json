@@ -1,0 +1,10 @@
+{
+  "id": "cred-security-code-subject",
+  "group": "credential",
+  "note": "An account provider's security-code mail: the phrase in the subject and the body, the code on its own line.",
+  "subject": "Tailspin account security code",
+  "body": "Please use the following security code for the Tailspin account s***@example.com.\n\nSecurity code: 380174\n\nIf you don't recognise the account, you can click here to remove your email address from it.\n\nThanks,\nThe Tailspin account team",
+  "expect": {
+    "credential": true
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "meet-call-at-1430",
+  "group": "meeting",
+  "note": "A cue word on the same line as a time, a phone number, a booking reference and a room number, none of which is a code.",
+  "subject": "Thursday",
+  "body": "Can we talk at 1430 on Thursday? Use my desk line +44 20 7946 0958, or the code word is 'banana' if security asks at reception. The booking reference is BK48213 and you're in meeting room 2101.",
+  "expect": {
+    "credential": false,
+    "kept": [
+      "at 1430",
+      "+44 20 7946 0958",
+      "BK48213",
+      "room 2101"
+    ],
+    "gone": []
+  }
+}

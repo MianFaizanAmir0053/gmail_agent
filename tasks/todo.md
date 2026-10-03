@@ -1463,9 +1463,9 @@ Spec: [`docs/plans/M18-untrusted-input.md`](../docs/plans/M18-untrusted-input.md
 Known wrappers are unwrapped first. Links are handled before codes, and counts are logged by kind. The first fixtures, real-format credential mail and meeting mail that must survive, start `data/injection/`.
 
 **Acceptance criteria:**
-- [ ] Every strong phrase flags a message, in the subject or the body. No meeting-mail fixture is flagged.
-- [ ] Codes are removed whatever their separators: spaces, dashes, non-breaking or zero-width. Times, years, dates, phone numbers, rooms and order numbers survive.
-- [ ] An allowlisted link keeps its host and path and loses any passcode or token. A wrapped link is unwrapped, and an obfuscated one is found. Scrubbing twice changes nothing.
+- [x] Every strong phrase flags a message, in the subject or the body. No meeting-mail fixture is flagged.
+- [x] Codes are removed whatever their separators: spaces, dashes, non-breaking or zero-width. Times, years, dates, phone numbers, rooms and order numbers survive.
+- [x] An allowlisted link keeps its host and path and loses any passcode or token. A wrapped link is unwrapped, and an obfuscated one is found. Scrubbing twice changes nothing.
 
 **Verification:** `uv run pytest tests/test_scrub.py`; `.\tasks.ps1 check`.
 

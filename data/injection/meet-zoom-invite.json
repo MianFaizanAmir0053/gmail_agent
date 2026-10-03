@@ -1,0 +1,23 @@
+{
+  "id": "meet-zoom-invite",
+  "group": "meeting",
+  "note": "A Zoom invite as Zoom writes it. The passcode goes, from the text and from the link's query; the link, the meeting id, the time and the dial-in number stay.",
+  "subject": "Invitation: Quarterly planning",
+  "body": "Sam Lee is inviting you to a scheduled Zoom meeting.\n\nTopic: Quarterly planning\nTime: Oct 6, 2026 03:00 PM Karachi\n\nJoin Zoom Meeting\nhttps://us02web.zoom.us/j/84512345678?pwd=Q2xheU1hcFZ0aGlzSXNGYWtl\n\nMeeting ID: 845 1234 5678\nPasscode: 9ZcB5x\n\n---\n\nOne tap mobile\n+16465588656,,84512345678#,,,,*482913# US (New York)\n\nDial by your location\n\u2022 +1 646 558 8656 US (New York)\n\nFind your local number: https://us02web.zoom.us/u/kdXyZ12",
+  "expect": {
+    "credential": false,
+    "kept": [
+      "Quarterly planning",
+      "Oct 6, 2026 03:00 PM",
+      "https://us02web.zoom.us/j/84512345678",
+      "Meeting ID: 845 1234 5678",
+      "+1 646 558 8656"
+    ],
+    "gone": [
+      "pwd=",
+      "Q2xheU1hcFZ0aGlzSXNGYWtl",
+      "9ZcB5x",
+      "482913"
+    ]
+  }
+}

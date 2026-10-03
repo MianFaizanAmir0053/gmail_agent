@@ -1,0 +1,10 @@
+{
+  "id": "cred-sign-in-code-table",
+  "group": "credential",
+  "note": "A table template flattened to text: tabs and pipes between cells, the phrase in the body only.",
+  "subject": "Northwind account activity",
+  "body": "Northwind\t|\t\n\nHi Sam,\t|\n\nYour sign-in code\t|\t731 046\t|\n\nEnter it on the page where you started.\t|\n\n\u00a9 Northwind Ltd",
+  "expect": {
+    "credential": true
+  }
+}
