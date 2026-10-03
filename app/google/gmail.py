@@ -23,7 +23,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import getaddresses
-from html.parser import HTMLParser
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 
@@ -33,7 +32,7 @@ from googleapiclient.errors import HttpError
 
 from app.contracts import EmailMessage
 from app.mail import quota
-from app.policy.scrub import CREDENTIAL_NOTICE, is_credential, normalise, scrub
+from app.policy.scrub import CREDENTIAL_NOTICE, is_credential, normalise, redact_secrets, scrub
 
 METADATA_HEADERS = (
     "From",
@@ -332,25 +331,7 @@ def _decode(data: str) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-_VOID = frozenset(
-    {
-        "area",
-        "base",
-        "br",
-        "col",
-        "embed",
-        "hr",
-        "img",
-        "input",
-        "link",
-        "meta",
-        "param",
-        "source",
-        "track",
-        "wbr",
-    }
-)
-_ALWAYS_HIDDEN = frozenset({"head", "title", "style", "script", "template"})
+_ALWAYS_HIDDEN = frozenset({"head", "title", "style", "script", "template", "noscript"})
 _BLOCK = frozenset(
     {
         "address",
@@ -390,98 +371,120 @@ _BLOCK = frozenset(
     }
 )
 _CELL = frozenset({"td", "th"})
-_ZERO = re.compile(r"[+-]?0*\.?0*(?:px|pt|em|rem|ex|ch|vh|vw|%)?")
+_LINE_BREAK = frozenset({"br"})
+
+_ZERO = re.compile(r"[+-]?0*\.?0*(?:px|pt|pc|em|rem|ex|ch|q|cm|mm|in|v\w+|%)?")
+"""A length that is zero, in any CSS unit or none: `0`, `0px`, `0.0mm`, `0vmin`."""
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})\s?|\\(.)")
+_CSS_IMPORTANT = re.compile(r"!\s*important", re.IGNORECASE)
 _SPACES = re.compile(r"\s+")
 
+# Preformatted spaces and newlines, protected through the line-by-line cleanup
+# that collapses the rest, then restored.
+_PRE_SPACE = "\ue020"
+_PRE_NEWLINE = "\ue00a"
 
-def _hides(tag: str, attrs: list[tuple[str, str | None]]) -> bool:
-    """Whether an element's own markup hides it (M18, D1)."""
-    if tag in _ALWAYS_HIDDEN:
+# html5lib yields names in the XHTML namespace; strip it to the bare tag.
+_HTML_NS = "{http://www.w3.org/1999/xhtml}"
+
+
+def _css_value(raw: str) -> str:
+    """A CSS value with comments stripped, escapes decoded, `!important` and
+    whitespace removed, lower-cased. `display:/**/none` and `display:\\6e one`
+    both come back `none`."""
+    without_comments = _CSS_COMMENT.sub("", raw)
+    decoded = _CSS_ESCAPE.sub(
+        lambda m: chr(int(m.group(1), 16)) if m.group(1) else m.group(2), without_comments
+    )
+    return _CSS_IMPORTANT.sub("", decoded).strip().lower()
+
+
+def _hides(attrs: dict[str, str | None]) -> bool:
+    """Whether an element's own markup hides it (M18, D1).
+
+    Inline style only: colour matched to the background, or a stylesheet class,
+    is beyond markup, and the injection suite carries it as a known gap.
+    """
+    if "hidden" in attrs:
         return True
-    style = ""
-    for name, value in attrs:
-        if name == "hidden":
-            return True
-        if name == "style" and value:
-            style = value
-    for declaration in style.split(";"):
-        name, _, value = declaration.partition(":")
-        name = name.strip().lower()
-        value = value.lower().replace("!important", "").strip()
+    style = attrs.get("style") or ""
+    for declaration in _CSS_COMMENT.sub("", style).split(";"):
+        name, sep, value = declaration.partition(":")
+        if not sep:
+            continue
+        name = _css_value(name)
+        value = _css_value(value)
+        shorthand = value.split()[0] if value else ""
         if (
             (name == "display" and value == "none")
             or (name == "visibility" and value in ("hidden", "collapse"))
-            or (name in ("font-size", "max-height", "opacity") and value and _ZERO.fullmatch(value))
+            or (
+                name in ("font-size", "max-height", "max-width", "height", "width")
+                and shorthand
+                and _ZERO.fullmatch(shorthand)
+            )
+            or (name == "font" and shorthand and _ZERO.fullmatch(shorthand.split("/")[0]))
+            or (name == "opacity" and value and _opacity_zero(value))
             or (name == "mso-hide" and value == "all")
+            or (name == "text-indent" and value in ("-9999px", "-999em", "-9999em"))
         ):
             return True
     return False
 
 
-class _Visible(HTMLParser):
-    """The text a reader of the HTML would see.
+def _opacity_zero(value: str) -> bool:
+    """Opacity at or below zero: CSS clamps a negative to 0."""
+    try:
+        return float(value.rstrip("%")) <= 0
+    except ValueError:
+        return False
 
-    Hidden content is dropped while the markup is still markup: comments,
-    `<head>`, `<style>`, `<script>`, `<template>`, and every element whose
-    inline style hides it or that carries `hidden`, with all it contains. An
-    element left open hides until an enclosing one closes. Text whose colour
-    matches its background, or hidden by a stylesheet class, stays: that is
-    beyond markup alone, and the injection suite carries it as a known gap.
 
-    Entities are decoded by the parser itself, numeric ones included:
-    transactional mail once arrived with a literal `&#128206;` in the body.
-    """
+def _protect_pre(text: str) -> str:
+    return text.replace(" ", _PRE_SPACE).replace("\t", _PRE_SPACE).replace("\n", _PRE_NEWLINE)
 
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._open: list[tuple[str, bool]] = []
-        self._chunks: list[str] = []
 
-    @property
-    def _hidden(self) -> bool:
-        return bool(self._open) and self._open[-1][1]
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in _VOID:
-            if tag in ("br", "hr") and not self._hidden:
-                self._chunks.append("\n")
-            return
-        hidden = self._hidden or _hides(tag, attrs)
-        self._open.append((tag, hidden))
-        if not hidden and tag in _BLOCK:
-            self._chunks.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:
-        if not any(name == tag for name, _ in self._open):
-            return
-        while self._open:
-            name, hidden = self._open.pop()
-            if not hidden and (name in _BLOCK or name in _CELL):
-                self._chunks.append("\n" if name in _BLOCK else " ")
-            if name == tag:
-                return
-
-    def handle_data(self, data: str) -> None:
-        if self._hidden:
-            return
-        if any(name == "pre" for name, _ in self._open):
-            self._chunks.append(data)
-            return
-        text = _SPACES.sub(" ", data)
-        if not self._chunks or self._chunks[-1].endswith("\n"):
-            text = text.lstrip()
-        self._chunks.append(text)
-
-    def text(self) -> str:
-        lines = (line.rstrip() for line in "".join(self._chunks).split("\n"))
-        return re.sub(r"\n{2,}", "\n", "\n".join(lines)).strip("\n").strip()
+def _walk_visible(element: Any, chunks: list[str], in_pre: bool) -> None:
+    name = element.tag
+    if not isinstance(name, str):
+        # A comment or processing instruction: never shown, and its `.text` is
+        # the comment body, which must not reach the model.
+        return
+    tag = name.replace(_HTML_NS, "")
+    if tag in _ALWAYS_HIDDEN or _hides(element.attrib):
+        return
+    pre = in_pre or tag == "pre"
+    if tag in _BLOCK or tag in _LINE_BREAK:
+        chunks.append("\n")
+    elif tag in _CELL:
+        chunks.append(" ")
+    if element.text:
+        chunks.append(_protect_pre(element.text) if pre else _SPACES.sub(" ", element.text))
+    for child in element:
+        _walk_visible(child, chunks, pre)
+        if child.tail:
+            chunks.append(_protect_pre(child.tail) if pre else _SPACES.sub(" ", child.tail))
+    if tag in _BLOCK:
+        chunks.append("\n")
+    elif tag in _CELL:
+        chunks.append(" ")
 
 
 def _html_to_text(markup: str) -> str:
-    parser = _Visible()
-    parser.feed(markup)
-    parser.close()
-    return parser.text()
+    """The text a reader of the HTML would see, parsed with the WHATWG tree
+    algorithm (html5lib) so hidden content is nested exactly as the owner's
+    client nests it. A regex or a lenient parser lets an attacker close a
+    hidden element early with mismatched tags; the browser algorithm does not.
+    """
+    import html5lib
+
+    document = html5lib.parse(markup, namespaceHTMLElements=False)
+    chunks: list[str] = []
+    _walk_visible(document, chunks, in_pre=False)
+    lines = [_SPACES.sub(" ", line).strip() for line in "".join(chunks).split("\n")]
+    collapsed = re.sub(r"\n{2,}", "\n", "\n".join(lines)).strip()
+    return collapsed.replace(_PRE_SPACE, " ").replace(_PRE_NEWLINE, "\n")
 
 
 def _is_attachment(part: dict[str, Any]) -> bool:
@@ -567,7 +570,7 @@ def to_email_message(message: dict[str, Any]) -> EmailMessage:
     return EmailMessage(
         id=cast(str, message["id"]),
         thread_id=cast(str, message["threadId"]),
-        subject=scrub(subject, every_line=credential),
+        subject=redact_secrets(subject) if credential else scrub(subject),
         body_text=CREDENTIAL_NOTICE if credential else scrub(body),
         sender=sender[0] if sender else "",
         recipients=recipients,

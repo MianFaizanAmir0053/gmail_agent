@@ -172,6 +172,49 @@ def test_an_unclosed_hidden_element_hides_until_its_parent_closes() -> None:
     assert extract_body(_html(markup)) == "Shown"
 
 
+@pytest.mark.parametrize(
+    "markup",
+    [
+        # Mismatched and self-closing tags: the browser algorithm nests the
+        # marker inside the hidden element, so these must not surface it.
+        '<div style="display:none"/>secret',
+        '<div style="display:none" style="color:red">secret</div>',
+        '<span style="display:none"><div>x</span>secret</div>',
+        '<p><b style="display:none">x</p><p>secret</p>',
+        '<table><tr><td><div style="display:none">a</div></td></tr></table>'
+        '<div style="display:none">secret</td>',
+    ],
+)
+def test_malformed_markup_cannot_pull_text_out_of_a_hidden_element(markup: str) -> None:
+    assert "secret" not in extract_body(_html(markup))
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "display:/**/none",
+        "display:none ! important",
+        "display:\\6e one",
+        "font-size:0mm",
+        "font-size:0cm",
+        "font-size:0vmin",
+        "font:0/0 a",
+        "opacity:-1",
+        "max-width:0;overflow:hidden",
+        "height:0;overflow:hidden",
+    ],
+)
+def test_a_hiding_style_written_another_way_is_still_hidden(style: str) -> None:
+    assert extract_body(_html(f'<p>Shown</p><div style="{style}">secret</div>')) == "Shown"
+
+
+def test_a_preheader_hidden_with_display_none_does_not_show() -> None:
+    markup = (
+        '<span style="display:none;max-height:0;overflow:hidden">Preview secret</span><p>Hi</p>'
+    )
+    assert extract_body(_html(markup)) == "Hi"
+
+
 def test_a_visible_element_inside_a_visible_one_stays() -> None:
     markup = '<div style="opacity:0.5"><span style="font-size:12px">Shown</span></div>'
     assert extract_body(_html(markup)) == "Shown"

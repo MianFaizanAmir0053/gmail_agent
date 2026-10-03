@@ -8,12 +8,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from app.policy.scrub import is_credential, normalise, scrub, scrub_counted, unwrap
+from app.policy.scrub import (
+    is_credential,
+    normalise,
+    redact_secrets,
+    scrub,
+    scrub_counted,
+    unwrap,
+)
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "data" / "injection"
 
@@ -368,3 +376,93 @@ def test_a_clean_text_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.INFO, logger="app.policy.scrub"):
         scrub("See you at 3pm in Room 4.")
     assert caplog.records == []
+
+
+# --- review findings (2026-10-03) ----------------------------------------------------
+
+
+def test_a_backslash_cannot_disguise_a_meeting_host() -> None:
+    # A browser reads the backslash as a slash, so the real host is the outside
+    # domain, not zoom.us.
+    backslash = chr(92)
+    assert scrub(f"https://evil.example{backslash}.zoom.us/j/1") == "[link: evil.example]"
+    assert scrub(f"https://evil.example{backslash}@zoom.us/j/1") == "[link: evil.example]"
+
+
+@pytest.mark.parametrize(
+    "kept",
+    ["1430-1530", "2025-2026", "1030am", "0900UTC", "1430hrs", "14h30"],
+)
+def test_times_and_year_ranges_survive_beside_a_cue(kept: str) -> None:
+    assert scrub(f"your code and the slot {kept}") == f"your code and the slot {kept}"
+
+
+def test_a_code_split_one_digit_per_cell_is_removed() -> None:
+    assert scrub("your code is 4 8 2 9 1 3") == "your code is [code removed]"
+
+
+def test_a_code_separated_by_a_tab_is_removed() -> None:
+    assert scrub("code:\t482 913") == "code:\t[code removed]"
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ["2046 is your verification code", "G-482913 is your code", "Code 4829 1374"],
+)
+def test_a_credential_subject_keeps_no_code(subject: str) -> None:
+    redacted = redact_secrets(subject)
+    assert not any(run.isdigit() and len(run) >= 4 for run in re.findall(r"\d+", redacted))
+
+
+def test_a_credential_subject_keeps_no_link_not_even_a_meeting_one() -> None:
+    assert "zoom.us/j" not in redact_secrets("reset at https://zoom.us/j/84512345678?pwd=x")
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "Your API key",
+        "Your access token is ready",
+        "Here is your confirmation code",
+        "Set up MFA",
+        "Your verification link",
+        "two-step authentication",
+        "Your new password",
+    ],
+)
+def test_more_secret_wordings_are_recognised(subject: str) -> None:
+    assert is_credential(subject, "Hello.")
+
+
+def test_a_phrase_does_not_span_a_blank_line() -> None:
+    assert not is_credential("", "- Security\n\n- Code freeze on Friday")
+
+
+def test_a_host_ending_in_a_wrapper_name_is_not_the_wrapper() -> None:
+    assert scrub("https://notmimecast.com/s/A?domain=zoom.us") == "[link: notmimecast.com]"
+
+
+def test_a_doubled_www_is_idempotent() -> None:
+    once = scrub("visit www.www.example.com/x")
+    assert once == "visit [link: example.com]"
+    assert scrub(once) == once
+
+
+def test_scrubbing_is_fast_on_a_long_hostile_line() -> None:
+    import time
+
+    hostile = "a" * 60_000 + " code 482913"
+    start = time.perf_counter()
+    result = scrub(hostile)
+    assert time.perf_counter() - start < 2.0
+    assert "[code removed]" in result
+
+
+def test_the_email_window_does_not_block_a_distant_code() -> None:
+    # A cue far to the left still marks the line; the per-token window only
+    # bounds how far each rule looks, it does not gate removal.
+    assert scrub("code " + "x " * 50 + "482913").endswith("[code removed]")
+
+
+def test_a_credential_subject_also_removes_an_alphanumeric_secret() -> None:
+    assert "Xy7kP2q" not in redact_secrets("temporary password Xy7kP2q")

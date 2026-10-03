@@ -26,6 +26,10 @@ dependencies = [
     "tzdata>=2024.1",
     "uvicorn[standard]>=0.30",
     "pywebpush>=2.5.0",
+    # Parses the email's HTML with the WHATWG algorithm a browser uses (M18, D1),
+    # so hidden content is found through the same tag nesting the owner's client
+    # applies -- not a regex or a lenient parser an attacker can nest around.
+    "html5lib>=1.1",
 ]
 
 [dependency-groups]
@@ -78,6 +82,7 @@ module = [
     "google.oauth2.*",
     "pywebpush.*",
     "py_vapid.*",
+    "html5lib.*",
 ]
 ignore_missing_imports = true
 

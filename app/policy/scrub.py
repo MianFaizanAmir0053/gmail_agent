@@ -92,16 +92,19 @@ WINDOW = 3
 """How many non-empty lines from a cue word a code may be."""
 
 _DASHES = r"\-\u2010-\u2015\u2212"
-_GAP = rf"[\s{_DASHES}]*"
-"""Between the words of a strong phrase: nothing, spaces, line breaks or a
-dash, so "sign-in", "sign in" and "signin" are all one phrase."""
+_GAP = rf"[ \t{_DASHES}]*\n?[ \t]*"
+"""Between the words of a strong phrase: spaces, tabs, a dash, or a single
+line break, so "sign-in", "sign in" and "signin" are all one phrase. At most
+one newline, so a phrase does not span a blank line between two paragraphs
+(M18, finding 9)."""
 
 _STRONG_PHRASES = (
-    rf"verification{_GAP}codes?",
+    rf"verification{_GAP}(?:codes?|links?)",
+    rf"confirmation{_GAP}codes?",
     rf"one{_GAP}time{_GAP}(?:pass)?(?:codes?|words?|pins?)",
-    rf"single{_GAP}use{_GAP}codes?",
+    rf"single{_GAP}use{_GAP}(?:codes?|passwords?)",
     rf"(?:sign|log){_GAP}(?:in|on){_GAP}(?:codes?|links?)",
-    rf"security{_GAP}codes?",
+    rf"security{_GAP}(?:codes?|keys?)",
     rf"authentication{_GAP}codes?",
     rf"recovery{_GAP}(?:codes?|keys?)",
     rf"backup{_GAP}codes?",
@@ -109,10 +112,16 @@ _STRONG_PHRASES = (
     rf"reset{_GAP}(?:your{_GAP}|the{_GAP})?password",
     rf"password{_GAP}reset",
     rf"forgot(?:ten)?{_GAP}(?:your{_GAP})?password",
-    rf"temporary{_GAP}password",
-    rf"(?:two|2){_GAP}(?:factor|step{_GAP}verification)",
+    rf"(?:temporary|new){_GAP}password",
+    rf"(?:your{_GAP})?password{_GAP}is",
+    rf"(?:two|2){_GAP}(?:factor|step){_GAP}(?:verification|authentication)?",
     r"2fa",
     rf"multi{_GAP}factor",
+    r"mfa",
+    rf"api{_GAP}(?:keys?|tokens?|secrets?)",
+    rf"access{_GAP}tokens?",
+    rf"(?:client|secret|private){_GAP}(?:keys?|secrets?)",
+    rf"bearer{_GAP}tokens?",
     r"otp",
 )
 _STRONG = re.compile(r"\b(?:" + "|".join(_STRONG_PHRASES) + r")\b", re.IGNORECASE)
@@ -122,10 +131,12 @@ _CUE = re.compile(r"\b(?:codes?|otp|passcodes?|pins?|verification)\b", re.IGNORE
 _DEFANG = re.compile(r"\[\.\]|\(\.\)|\{\.\}")
 _HXXP = re.compile(r"\bhxxp(s?)(?=://)", re.IGNORECASE)
 _URL = re.compile(
-    r"(?:\bhttps?://|\bwww\.)[^\s<>\"'`]+"
-    r"|\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}/[^\s<>\"'`]*",
+    r"(?:\bhttps?://|\bwww\.)[^\s<>\"'`]{1,2000}"
+    r"|\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,20}[a-z]{2,24}/[^\s<>\"'`]{0,2000}",
     re.IGNORECASE,
 )
+"""The greedy parts are length-bounded so a very long run of URL-shaped
+characters cannot make matching quadratic (M18, finding 8)."""
 _TRAILING = ".,;:!?'\")]}"
 _SIGN_IN_PATH = re.compile(
     r"(?:^|/)(?:sign-?in|sign-?up|log-?in|activat\w*|verif\w*|reset\w*|password\w*|"
@@ -133,12 +144,19 @@ _SIGN_IN_PATH = re.compile(
     re.IGNORECASE,
 )
 
-_FROZEN = re.compile(r"\[link: [^\]\n]*\]|\[link\]|\[code removed\]|[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_FROZEN = re.compile(
+    r"\[link: [^\]\n]*\]|\[link\]|\[code removed\]|[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}"
+)
 """What the code pass must not read: link markers, removed-code markers (whose
-"code" would otherwise be a cue), and email addresses (a guest's address)."""
+"code" would otherwise be a cue), and email addresses (a guest's address). The
+local and domain parts are length-bounded so a long run of word characters
+without an at-sign cannot make matching quadratic (M18, finding 8)."""
 
-_DIGITS = re.compile(rf"(?<![\w+#{_DASHES}])\d+(?:[ {_DASHES}]\d+)*(?!\w)")
-_GROUP_SPLIT = re.compile(rf"[ {_DASHES}]")
+_DIGITS = re.compile(rf"(?<![\w+#{_DASHES}])\d+(?:[ \t{_DASHES}]\d+)*(?!\w)")
+_DIGITS_STRICT = re.compile(rf"(?<!\d)\d+(?:[ \t{_DASHES}]\d+)*")
+"""For a credential subject (M18, finding 4): every digit run, even one behind
+a `G-` prefix or glued to a word, since the message already carries a secret."""
+_GROUP_SPLIT = re.compile(rf"[ \t{_DASHES}]")
 _ALNUM = re.compile(
     r"(?<![\w@./+#\-])(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{5,10}"
     r"(?![\w@/\-]|\.\w)"
@@ -161,8 +179,15 @@ _LABEL_BEFORE = re.compile(
     r"\b\.?(?:\s*(?:no|number|num|id|#)\.?)?\s*(?:is|was|:|-|#)?\s*$",
     re.IGNORECASE,
 )
-_TIME_TOKEN = re.compile(r"\d{1,2}h\d{2}|\d{1,2}(?:am|pm)", re.IGNORECASE)
+_TIME_TOKEN = re.compile(
+    r"\d{1,2}[h:]\d{2}|\d{1,4}\s*(?:am|pm|hrs?|hours|utc|gmt|z)", re.IGNORECASE
+)
+"""An alphanumeric token that is really a time: `9h30`, `14:30`, `1430hrs`,
+`1030am`, `0900utc`."""
 _ORDINAL = re.compile(r"\d+(?:st|nd|rd|th)", re.IGNORECASE)
+_CLOCK = re.compile(r"[0-2]?\d[0-5]\d")
+"""A four-digit 24-hour clock time, 0000 to 2359, for a time range like
+`1430-1530` (M18, finding 7)."""
 
 _HOLD_OPEN = chr(0xE000)
 _HOLD_CLOSE = chr(0xE001)
@@ -212,13 +237,25 @@ def scrub(text: str, *, every_line: bool = False) -> str:
     return scrub_counted(text, every_line=every_line).text
 
 
-def scrub_counted(text: str, *, every_line: bool = False) -> Scrubbed:
-    """`scrub`, with what was done counted by kind."""
+def redact_secrets(text: str) -> str:
+    """A credential message's subject, with every code-shaped run and every
+    link removed outright (M18, decision 2 and finding 4): no meeting link is
+    kept and no not-a-code exception applies, since the message is already
+    known to carry a secret."""
+    return scrub_counted(text, every_line=True, strict=True, keep_meeting=False).text
+
+
+def scrub_counted(
+    text: str, *, every_line: bool = False, strict: bool = False, keep_meeting: bool = True
+) -> Scrubbed:
+    """`scrub`, with what was done counted by kind. `strict` removes every
+    code-shaped run with no exception, and `keep_meeting=False` rewrites even an
+    allowlisted meeting link to `[link: host]`: both for a credential subject."""
     held: list[str] = []
     text = normalise(text)
-    text, counts = _links(text, held)
+    text, counts = _links(text, held, keep_meeting=keep_meeting)
     text = _FROZEN.sub(lambda match: _hold(match.group(0), held), text)
-    text, codes = _codes(text, every_line=every_line)
+    text, codes = _codes(text, every_line=every_line, strict=strict)
     text = _HELD.sub(lambda match: held[_held_index(match.group(1))], text)
     result = Scrubbed(text=text, links=counts["link"], meeting_links=counts["meeting"], codes=codes)
     if result.links or result.codes:
@@ -247,14 +284,14 @@ def unwrap(url: str) -> tuple[str, bool]:
 # --- links ---------------------------------------------------------------------------
 
 
-def _links(text: str, held: list[str]) -> tuple[str, Counter[str]]:
+def _links(text: str, held: list[str], *, keep_meeting: bool = True) -> tuple[str, Counter[str]]:
     counts: Counter[str] = Counter()
     text = _DEFANG.sub(".", text)
     text = _HXXP.sub(lambda match: "http" + match.group(1), text)
 
     def replace(match: re.Match[str]) -> str:
         raw, trailing = _trim(match.group(0))
-        rewritten, kept = _rewrite(raw)
+        rewritten, kept = _rewrite(raw, keep_meeting=keep_meeting)
         counts["meeting" if kept else "link"] += 1
         return (_hold(rewritten, held) if kept else rewritten) + trailing
 
@@ -274,9 +311,13 @@ def _trim(url: str) -> tuple[str, str]:
     return url[:end], url[end:]
 
 
-def _rewrite(raw: str) -> tuple[str, bool]:
+def _rewrite(raw: str, *, keep_meeting: bool = True) -> tuple[str, bool]:
     """A kept meeting link, or `[link: host]`."""
-    url = raw if re.match(r"https?://", raw, re.IGNORECASE) else "http://" + raw
+    # A backslash is a slash in a URL to every browser, so a host written
+    # `real.example\.zoom.us` resolves to `real.example`, not a meeting host
+    # (M18, finding 1). Fold it before the host is read.
+    url = raw.replace("\\", "/")
+    url = url if re.match(r"https?://", url, re.IGNORECASE) else "http://" + url
     url, recoverable = unwrap(url)
     try:
         parts = urlsplit(url)
@@ -286,7 +327,7 @@ def _rewrite(raw: str) -> tuple[str, bool]:
     if not host:
         return "[link]", False
     keys = _meeting_keys(host)
-    if keys is not None and recoverable and not _SIGN_IN_PATH.search(parts.path):
+    if keep_meeting and keys is not None and recoverable and not _SIGN_IN_PATH.search(parts.path):
         query = urlencode(
             [
                 (key, value)
@@ -298,15 +339,22 @@ def _rewrite(raw: str) -> tuple[str, bool]:
     return f"[link: {_display(host)}]", False
 
 
+def _host_matches(host: str, domain: str) -> bool:
+    """`host` is `domain` itself or a subdomain of it, at a dot boundary, so
+    `notmimecast.com` is not a match for `mimecast.com` (M18, finding 12)."""
+    return host == domain or host.endswith("." + domain)
+
+
 def _meeting_keys(host: str) -> frozenset[str] | None:
     for domain, keys in MEETING_HOSTS.items():
-        if host == domain or host.endswith("." + domain):
+        if _host_matches(host, domain):
             return keys
     return None
 
 
 def _display(host: str) -> str:
-    host = host.removeprefix("www.")
+    while host.startswith("www."):
+        host = host[4:]
     if host.isascii():
         return host
     try:
@@ -322,7 +370,7 @@ def _unwrap_once(url: str) -> tuple[str, bool] | None:
     except ValueError:
         return None
     query = parse_qs(parts.query)
-    if host.endswith("safelinks.protection.outlook.com"):
+    if _host_matches(host, "safelinks.protection.outlook.com"):
         return _first(query, "url")
     if host == "urldefense.proofpoint.com" and parts.path.startswith("/v1/url"):
         return _first(query, "u")
@@ -333,10 +381,10 @@ def _unwrap_once(url: str) -> tuple[str, bool] | None:
         return unquote(encoded.translate(str.maketrans("-_", "%/"))), True
     if host in ("urldefense.com", "urldefense.proofpoint.com") and "/v3/__" in url:
         return _proofpoint_v3(url)
-    if host.endswith("mimecast.com") and parts.path.startswith("/s/"):
+    if _host_matches(host, "mimecast.com") and parts.path.startswith("/s/"):
         domain = query.get("domain", [""])[0]
         return (f"https://{domain}", False) if domain else None
-    if host in ("google.com", "www.google.com") and parts.path == "/url":
+    if _host_matches(host, "google.com") and parts.path == "/url":
         return _first(query, "q") or _first(query, "url")
     return None
 
@@ -377,7 +425,13 @@ def _proofpoint_v3(url: str) -> tuple[str, bool] | None:
 # --- codes ---------------------------------------------------------------------------
 
 
-def _codes(text: str, *, every_line: bool) -> tuple[str, int]:
+_WINDOW_CHARS = 48
+"""How much text either side of a token the code rules read. Bounded so a very
+long line does not make the pass quadratic (M18, finding 8); every rule looks
+only a few words out."""
+
+
+def _codes(text: str, *, every_line: bool, strict: bool = False) -> tuple[str, int]:
     lines = text.split("\n")
     filled = [index for index, line in enumerate(lines) if line.strip()]
     cues = [position for position, index in enumerate(filled) if _CUE.search(lines[index])]
@@ -392,26 +446,28 @@ def _codes(text: str, *, every_line: bool) -> tuple[str, int]:
     )
     total = 0
     for index in sorted(near):
-        lines[index], removed = _remove_codes(lines[index])
+        lines[index], removed = _remove_codes(lines[index], strict=strict)
         total += removed
     return "\n".join(lines), total
 
 
-def _remove_codes(line: str) -> tuple[str, int]:
+def _remove_codes(line: str, *, strict: bool) -> tuple[str, int]:
     removed = 0
 
     def digits(match: re.Match[str]) -> str:
         nonlocal removed
-        before, after = match.string[: match.start()], match.string[match.end() :]
-        if not _is_digit_code(match.group(0), before, after):
+        before = match.string[max(0, match.start() - _WINDOW_CHARS) : match.start()]
+        after = match.string[match.end() : match.end() + _WINDOW_CHARS]
+        if not _is_digit_code(match.group(0), before, after, strict=strict):
             return match.group(0)
         removed += 1
         return REMOVED_CODE
 
     def alphanumeric(match: re.Match[str]) -> str:
         nonlocal removed
-        token, before = match.group(0), match.string[: match.start()]
-        if (
+        token = match.group(0)
+        before = match.string[max(0, match.start() - _WINDOW_CHARS) : match.start()]
+        if not strict and (
             _TIME_TOKEN.fullmatch(token)
             or _ORDINAL.fullmatch(token)
             or _LABEL_BEFORE.search(before)
@@ -420,18 +476,29 @@ def _remove_codes(line: str) -> tuple[str, int]:
         removed += 1
         return REMOVED_CODE
 
-    line = _DIGITS.sub(digits, line)
+    line = (_DIGITS_STRICT if strict else _DIGITS).sub(digits, line)
     line = _ALNUM.sub(alphanumeric, line)
     return line, removed
 
 
-def _is_digit_code(token: str, before: str, after: str) -> bool:
+def _is_digit_code(token: str, before: str, after: str, *, strict: bool) -> bool:
     groups = _GROUP_SPLIT.split(token)
     count = sum(len(group) for group in groups)
-    if not 4 <= count <= 10 or len(groups) >= 3:
-        return False  # too short or long, or a phone number or a date
-    if len(groups) == 2 and max(len(group) for group in groups) <= 2:
-        return False  # a short date: 10-05
+    if not 4 <= count <= 10:
+        return False  # too short or long
+    if strict:
+        return True  # a credential subject: every code-shaped run goes
+    if len(groups) >= 3:
+        # Usually a phone number or a date. A run of single digits, though, is
+        # a code split one per cell: "4 8 2 9 1 3" (M18, finding 6).
+        return all(len(group) == 1 for group in groups)
+    if len(groups) == 2:
+        if max(len(group) for group in groups) <= 2:
+            return False  # a short date: 10-05
+        if all(_CLOCK.fullmatch(group) for group in groups):
+            return False  # a time range: 1430-1530 (M18, finding 7)
+        if all(len(group) == 4 and 1900 <= int(group) <= 2099 for group in groups):
+            return False  # a year range: 2025-2026
     if _NUMBER_PART_BEFORE.search(before) or _NUMBER_PART_AFTER.match(after):
         return False  # part of a time, a decimal, a date or a path
     if len(groups) == 1 and len(token) == 4:

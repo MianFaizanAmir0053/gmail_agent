@@ -303,6 +303,27 @@ column; they are logged instead.
 - **Tests.** A pipeline that fails the test on any call proves no model runs. The checkpoint holds only the notice, and no extraction. Unflagged mail still reaches the classifier.
 - **The topology gains an edge** (`fetch` to `skip`) and loses none. Threads parked before it resume as they were. The review node's removal in 18.4 is the change that needs parked threads drained first (D9).
 
+### Review of phase 1, and the fixes (2026-10-03)
+
+A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were reproduced or read in the code, and all are fixed, with a regression test each in `tests/test_scrub.py` and `tests/test_gmail.py`. Findings are described in words here, never as payloads.
+
+- **High, three:**
+  - A meeting-link look-alike survived when its host was followed by a backslash. Browsers read a backslash as a slash, so the real host was the outside one. `_rewrite` now folds backslashes into slashes before reading the host.
+  - Malformed markup could pull hidden text out of a hidden element: self-closing tags, a duplicated style attribute, and misnested closing tags. A browser nests these differently from the standard library's lenient parser. **`extract_body` now parses with html5lib**, the WHATWG algorithm browsers use, with the owner's approval of the new dependency. Comments are skipped as tree nodes.
+  - Hiding styles were matched by exact spelling. Values are now normalised before matching: CSS comments stripped, escapes decoded, `! important` in any spacing. Any zero length, in any unit, counts. So do `font:0/...`, an opacity at or below zero, and a zero width or height.
+- **Medium, five:**
+  - A credential subject could keep a code or a link through the not-a-code rules. The new `redact_secrets` removes every code-shaped run and every link, keeping no meeting link.
+  - More secret wordings are now strong phrases: API keys, access, bearer and client tokens and secrets, "new password", "your password is", "confirmation code", "verification link", MFA, and two-step authentication.
+  - Codes split one digit per cell, or by a tab, are now found.
+  - Time ranges, year ranges and glued time tokens near a cue word are no longer removed: `1430-1530`, `2025-2026`, `1030am`, `0900UTC`, `1430hrs`.
+  - Matching could go quadratic on hostile input. Greedy parts are now length-bounded, and each token's rules read a 48-character window. A 60,000-character test line scrubs well under the 2-second limit.
+- **Low, four:**
+  - A strong phrase no longer spans a blank line between paragraphs: at most one line break.
+  - A doubled leading `www.` no longer breaks idempotence.
+  - Wrapper hosts match at a dot boundary, so a domain that merely ends in "mimecast.com" is not Mimecast.
+  - Phrases found only in hidden parts are a known limit: credential detection reads what the owner sees.
+- **Process.** The review subagent was stopped twice by an upstream safeguard reacting to the phishing-shaped links it built to probe the scrubber. Later, credential-shaped strings in my own verification commands made auto mode block this session's shell. The fixes were finished in default permission mode.
+
 ### Task 18.4, the reviewer removed (2026-10-03)
 
 - **Removed:**
