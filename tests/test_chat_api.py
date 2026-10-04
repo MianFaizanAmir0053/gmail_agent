@@ -58,6 +58,7 @@ def stored(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     monkeypatch.setattr("app.web_api.turns.store", store)
     monkeypatch.setattr("app.web_api.connect_autocommit", no_connection)
+    monkeypatch.setattr("app.web_api.chat_requested", lambda: True)
     return kept
 
 
@@ -154,7 +155,17 @@ def on_postgres(monkeypatch: pytest.MonkeyPatch, conn: psycopg.Connection) -> Te
 
     conn.execute("DELETE FROM chat_turns")  # rolled back with the test
     monkeypatch.setattr("app.web_api.connect_autocommit", the_test_connection)
+
+    def woken() -> bool:
+        WOKEN.append(1)
+        return True
+
+    monkeypatch.setattr("app.web_api.chat_requested", woken)
+    WOKEN.clear()
     return _client(monkeypatch)
+
+
+WOKEN: list[int] = []
 
 
 @pytest.mark.integration
@@ -169,6 +180,7 @@ def test_a_resend_finds_the_turn_already_stored(
     assert first == again
     rows = conn.execute("SELECT typed, pasted, status FROM chat_turns").fetchall()
     assert rows == [("Summarize this", "Please review.", "queued")]
+    assert WOKEN == [1]  # the job is woken for the new turn, not for the resend
 
 
 @pytest.mark.integration

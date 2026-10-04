@@ -36,6 +36,7 @@ from app.mail.sync import SYNC_EVERY as MAIL_SYNC_EVERY
 from app.mail.sync import run_scheduled as run_sync
 from app.obs.liveness import LIVENESS, MAIL_SYNC, TOKEN_EVIDENCE
 from app.obs.token_report import standby_state, token_report
+from app.planner import chat
 from app.store.db import connect
 from app.store.job_runs import JobRuns
 
@@ -250,14 +251,61 @@ def wake_decisions() -> bool:
     CLI in another process, or a scheduler that is off -- and the next tick
     then finds the decision.
     """
+    return _wake("decisions")
+
+
+def _wake(job: str) -> bool:
     scheduler = _active
     if scheduler is None or not scheduler.running:
         return False
     try:
-        scheduler.modify_job("decisions", next_run_time=datetime.now(UTC))
+        scheduler.modify_job(job, next_run_time=datetime.now(UTC))
     except JobLookupError:
         return False
     return True
+
+
+CHAT_FAILURES_RECORDED_EVERY = timedelta(minutes=5)
+"""The chat job runs every thirty seconds, so a failing one is recorded in
+`job_runs` at most this often."""
+
+_chat_failure_recorded_at: datetime | None = None
+
+
+def run_chat(settings: Settings) -> None:
+    """The chat job (M19, D1): fail the turns a restart stranded, then answer
+    the queued ones, one at a time. A tick with nothing queued opens no
+    session, so it loads no credentials."""
+    global _chat_failure_recorded_at
+    started_at = datetime.now(UTC)
+    answered = 0
+    try:
+        with connect(settings.database_url) as conn:
+            stranded = chat.strand(conn, now=started_at)
+            waiting = chat.has_queued(conn)
+        if stranded:
+            log.warning("chat: %d turn(s) stranded by a restart were failed", len(stranded))
+        if not waiting or STOPPING.is_set():
+            return
+        with chat.chat_session(settings) as session:
+            while not STOPPING.is_set() and chat.answer_next(session) is not None:
+                answered += 1
+    except Exception as exc:
+        log.exception("chat job failed")
+        last = _chat_failure_recorded_at
+        if last is None or started_at - last >= CHAT_FAILURES_RECORDED_EVERY:
+            _chat_failure_recorded_at = started_at
+            record_tick(settings, "chat", started_at, ok=False, error=type(exc).__name__)
+        return
+    if answered:
+        record_tick(settings, "chat", started_at, ok=True, started=answered)
+
+
+def chat_requested() -> bool:
+    """A turn was stored in this process: run the chat job now, so the owner's
+    question does not wait for the next tick. False when this process runs no
+    scheduler; the next tick then finds it."""
+    return _wake("chat")
 
 
 def run_reconcile(settings: Settings) -> None:
@@ -606,6 +654,20 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=int(DECISIONS_EVERY.total_seconds()),
+    )
+
+    # One at a time (M19, D1), and at start: the first tick's sweep fails the
+    # turns a restart stranded.
+    scheduler.add_job(
+        run_chat,
+        "interval",
+        seconds=int(chat.CHAT_EVERY.total_seconds()),
+        args=[settings],
+        id="chat",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=int(chat.CHAT_EVERY.total_seconds()),
+        next_run_time=datetime.now(UTC),
     )
 
     # At start, so a restart with a raised cap shows at once, then every few

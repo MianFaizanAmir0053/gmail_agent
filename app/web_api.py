@@ -57,7 +57,7 @@ from app.channel.decide import (
 )
 from app.channel.pairing import IssuedCode, issue_code, redeem
 from app.config import Settings, get_settings
-from app.jobs.scheduler import decision_recorded, wake_decisions
+from app.jobs.scheduler import chat_requested, decision_recorded, wake_decisions
 from app.planner import turns
 from app.planner.turns import MAX_PASTED_CHARS, MAX_TYPED_CHARS
 from app.policy import contacts, control
@@ -381,6 +381,8 @@ async def post_chat(
             status_code=409,
         )
     stored = await run_in_threadpool(_store_turn, settings, body)
+    if stored.new:
+        chat_requested()
     return JSONResponse({"status": "queued", "turn_id": stored.turn_id}, status_code=202)
 
 

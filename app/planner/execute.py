@@ -56,6 +56,7 @@ from app.planner.plan import (
     Slot,
     Step,
 )
+from app.policy.budget import SPENDING_STOPPED, MessageTooCostlyError
 from app.policy.participants import guest_key
 
 log = logging.getLogger(__name__)
@@ -200,6 +201,20 @@ class Outcome:
     """Addresses in the pasted text, each offered for an Allow (D5)."""
 
 
+class TurnStoppedError(Exception):
+    """The whole turn stops, for a fixed reason it is answered with: its
+    deadline, a pause or a cap. Never taken for one step's failure."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+STOPS_THE_TURN = (TurnStoppedError, MessageTooCostlyError, *SPENDING_STOPPED)
+"""What stops a turn rather than a step: the job's own stop, and the spend
+gate refusing a reader's call."""
+
+
 class StepRefusedError(Exception):
     """A step that will not run, for a fixed reason the turn's answer gives.
     A tool may raise it too, as the reader does at its limit."""
@@ -215,13 +230,22 @@ class _NeedsOwnerError(Exception):
         self.question = question
 
 
-def execute(plan: Plan, turn: Turn, tools: Tools, *, now: datetime) -> Outcome:
-    """Run `plan`'s steps in order, each after D4's checks."""
+def execute(
+    plan: Plan,
+    turn: Turn,
+    tools: Tools,
+    *,
+    now: datetime,
+    before_step: Callable[[], None] = lambda: None,
+) -> Outcome:
+    """Run `plan`'s steps in order, each after D4's checks. `before_step` may
+    stop the whole turn (`TurnStoppedError`): the chat job's deadline."""
     run = _Run(plan, turn, tools, now)
     ran: list[Ran] = []
     refused: list[Refused] = []
     question: str | None = None
     for number, step in enumerate(plan.steps, start=1):
+        before_step()
         try:
             result, origin = run.step(number, step)
         except StepRefusedError as refusal:
@@ -230,6 +254,8 @@ def execute(plan: Plan, turn: Turn, tools: Tools, *, now: datetime) -> Outcome:
         except _NeedsOwnerError as asks:
             question = asks.question
             break
+        except STOPS_THE_TURN:
+            raise
         except Exception as exc:
             # Gmail or the calendar failed. The type only: a message can quote mail.
             log.warning("step %d (%s) could not run: %s", number, step.op, type(exc).__name__)

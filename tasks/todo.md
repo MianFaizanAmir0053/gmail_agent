@@ -1939,9 +1939,9 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - **Each turn:** a 90-second deadline; writes only while `running`; stranded turns failed at boot and by the job; traced under `chat-<turn>`.
 
 **Acceptance criteria:**
-- [ ] A turn is stored, run, answered and traced.
-- [ ] A stranded turn is failed and nothing parks after.
-- [ ] The deadline stops a slow turn.
+- [x] A turn is stored, run, answered and traced.
+- [x] A stranded turn is failed and nothing parks after.
+- [x] The deadline stops a slow turn.
 
 **Verification:** `uv run pytest tests/test_chat_job.py tests/test_scheduler.py`; Neon.
 

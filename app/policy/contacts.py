@@ -25,6 +25,7 @@ __all__ = [
     "MAX_ADDRESS_CHARS",
     "allow",
     "confirmed",
+    "every_confirmed",
     "guest_key",
     "remove",
     "unconfirmed_outsiders",
@@ -84,6 +85,14 @@ def confirmed(conn: psycopg.Connection, addresses: Iterable[str]) -> frozenset[s
         "SELECT address FROM confirmed_contacts WHERE address = ANY(%s)", (keys,)
     ).fetchall()
     return frozenset(row[0] for row in rows)
+
+
+def every_confirmed(conn: psycopg.Connection) -> list[str]:
+    """Every confirmed contact's guest key: the only addresses the planner's
+    `contacts.find` may name (M19, D3)."""
+    return [
+        row[0] for row in conn.execute("SELECT address FROM confirmed_contacts ORDER BY address")
+    ]
 
 
 class _Message(Protocol):

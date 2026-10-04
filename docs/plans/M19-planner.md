@@ -648,3 +648,23 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **The turn's own gate (`models.chat_gate`)** holds `CHAT_TURN_CEILING_USD`, and its calls are metered under `chat-<turn>`. The new settings are in `.env.example`.
 - **Not yet:** the job that runs a turn, wakes on a new one and stops it by the check (19.10).
 - 16 deliberate breaks, each caught. One was missed at first, and a test was added. 2684 tests pass, with lint and mypy clean, and the chat and grant tests pass on Neon (Postgres 18).
+
+### Task 19.10, the chat job (2026-10-04)
+
+- **`app/planner/chat.py`** runs a turn's life:
+  - It claims the oldest queued turn, skipping any another worker has locked.
+  - It plans from the typed request, runs the plan, renders the answer, and ends the turn: answered, stopped or failed, with the checked plan, the answer and a fixed reason.
+- **The deadline and the chat check** run before the plan, before each read and park, and before each step: the executor gained a `before_step` hook. Past 90 seconds the turn stops, saying so.
+- **What stops a turn, not a step:** the executor's new `TurnStoppedError`, and the spend gate refusing a reader's call. A refusal of a single step still leaves the others running.
+- **How a turn ends:**
+  - A plan the check refuses, or a model answer that is unusable, fails the turn as "could not plan this".
+  - Anything else unforeseen fails it with a fixed sentence. Its trace keeps the exception's type.
+- **Writes are conditional:**
+  - A turn's end is written only while the turn is `running`.
+  - A park runs inside a transaction that holds the turn `running` (`while_running`).
+  - A turn the sweep has failed writes nothing more. A test sweeps one mid-turn to show it.
+- **Stranded turns:** the job's sweep fails a turn left `running` past its deadline. The job's first tick runs at boot, so that sweep is boot's.
+- **Metering and traces:** each turn's calls are metered under `chat-<turn>` (`CURRENT_MESSAGE`). It is one run in `runs`, with a span for the plan and one for each read.
+- **No cards yet:** until the queue knows chat's proposals (19.12, 19.13), a proposal step is refused with a fixed sentence.
+- **The scheduler's `chat` job** runs every 30 seconds, one tick at a time, and the API wakes it for a new turn (not for a resend). A tick with nothing queued opens no session, so it loads no credentials. Failures are recorded at most every five minutes.
+- 17 deliberate breaks, each caught; two tests the list showed were missing were added first. 2705 tests pass, with lint and mypy clean, and the job's and API's tests pass on Neon.

@@ -20,8 +20,10 @@ from app.jobs.poll import STOPPING, PollResult
 from app.jobs.scheduler import (
     DecisionsStatus,
     build_scheduler,
+    chat_requested,
     check_token,
     record_tick,
+    run_chat,
     run_decisions,
     run_ingest,
     run_mail_recall,
@@ -58,6 +60,7 @@ def test_the_standing_jobs_are_registered() -> None:
         "mail_sync",
         "mail_recall",
         "watch",
+        "chat",
     }
 
 
@@ -865,3 +868,95 @@ def test_ingestion_claims_nothing_while_paused(monkeypatch: pytest.MonkeyPatch) 
 
     assert stats.messages_seen == 0
     assert closed == [True]  # the gate's connection is closed all the same
+
+
+# --- the chat job (M19, D1) -----------------------------------------------------------------
+
+
+def test_the_chat_job_runs_every_thirty_seconds_one_at_a_time_from_boot() -> None:
+    """One turn at a time, and a first tick at start: its sweep fails the
+    turns a restart stranded."""
+    job = next(j for j in build_scheduler(_settings()).get_jobs() if j.id == "chat")
+
+    assert "0:00:30" in str(job.trigger)
+    assert job.max_instances == 1
+    assert job.coalesce is True
+    assert job.next_run_time <= datetime.now(UTC) + timedelta(seconds=1)
+
+
+def _chat_queue(
+    monkeypatch: pytest.MonkeyPatch, *, stranded: list[int], waiting: bool
+) -> list[datetime]:
+    """The queue a tick finds; returns when each sweep ran."""
+    swept: list[datetime] = []
+
+    @contextmanager
+    def _connection(url: str, **kwargs: Any) -> Iterator[object]:
+        yield object()
+
+    def _strand(conn: Any, now: datetime) -> list[int]:
+        swept.append(now)
+        return stranded
+
+    monkeypatch.setattr("app.jobs.scheduler.connect", _connection)
+    monkeypatch.setattr("app.planner.chat.strand", _strand)
+    monkeypatch.setattr("app.planner.chat.has_queued", lambda conn: waiting)
+    return swept
+
+
+def test_a_tick_with_nothing_queued_opens_no_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No credentials are loaded, and nothing is recorded, every thirty seconds.
+    The sweep still runs: a restart's stranded turns need no queue to be found."""
+    swept = _chat_queue(monkeypatch, stranded=[], waiting=False)
+    recorded = _capture(monkeypatch)
+
+    def _no_session(settings: Settings) -> Any:
+        raise AssertionError("a session was opened")
+
+    monkeypatch.setattr("app.planner.chat.chat_session", _no_session)
+    run_chat(_settings())
+    assert recorded == []
+    assert len(swept) == 1
+
+
+def test_a_tick_answers_every_queued_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _chat_queue(monkeypatch, stranded=[7], waiting=True)
+    recorded = _capture(monkeypatch)
+    queue = [11, 12, None]
+    monkeypatch.setattr("app.planner.chat.chat_session", lambda settings: nullcontext(object()))
+    monkeypatch.setattr("app.planner.chat.answer_next", lambda session: queue.pop(0))
+
+    run_chat(_settings())
+
+    assert queue == []
+    assert recorded == [{"job": "chat", "ok": True, "started": 2}]
+
+
+def test_a_failing_chat_job_is_recorded_at_most_every_five_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _chat_queue(monkeypatch, stranded=[], waiting=True)
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler._chat_failure_recorded_at", None)
+
+    def _no_credentials(settings: Settings) -> Any:
+        raise RuntimeError("TEST_CALENDAR_ID must be set")
+
+    monkeypatch.setattr("app.planner.chat.chat_session", _no_credentials)
+    run_chat(_settings())  # must not raise
+    run_chat(_settings())
+
+    assert recorded == [{"job": "chat", "ok": False, "error": "RuntimeError"}]
+
+
+def test_a_stored_turn_wakes_the_chat_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    scheduler = build_scheduler(_settings())
+    scheduler.start(paused=True)  # nothing actually runs
+    try:
+        monkeypatch.setattr("app.jobs.scheduler._active", scheduler)
+        assert chat_requested() is True
+        job = scheduler.get_job("chat")
+        assert job is not None
+        assert job.next_run_time <= datetime.now(UTC) + timedelta(seconds=1)
+    finally:
+        scheduler.shutdown(wait=False)
