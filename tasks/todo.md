@@ -1694,9 +1694,9 @@ The tests run every fixture through the real `get_message` preparation and the p
 **Description:** A fake model that does whatever each injection asks, driven through the graph to park, `decide()` and the registry.
 
 **Acceptance criteria:**
-- [ ] Nothing is booked without a Confirm bound to the exact arguments.
-- [ ] Every injected guest is marked, and blocks the Confirm.
-- [ ] A forged correction changes nothing.
+- [x] Nothing is booked without a Confirm bound to the exact arguments.
+- [x] Every injected guest is marked, and blocks the Confirm.
+- [x] A forged correction changes nothing.
 
 **Verification:** `uv run pytest tests/test_injection_flow.py`, on Neon (`-m integration`).
 

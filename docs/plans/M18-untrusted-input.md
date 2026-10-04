@@ -597,3 +597,22 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
   - re-ingesting the development chunks;
   - the retrieval eval, which must stay within two points of recall at 5, with the "order reference" queries judged by hand;
   - draining the development threads parked before M18.
+
+### Review of 18.11 to 18.15, and the fixes (2026-10-04)
+
+`/code-review` at high effort, fresh context, over `f21a553..HEAD`, with the no-quote rule in its arguments: nothing code-shaped came back, and the shell stayed open. Ten findings.
+
+- **Fixed in the model run (`app/eval/injection.py`), a test each:**
+  - **A run where nothing parks passed as a baseline:** a model rejecting every email checked no card. Each case now records whether it is credential mail, and a baseline needs every other case parked at least once.
+  - **The hash missed how a call is sent and bounded** (`app/extraction/llm.py`, `app/policy/models.py`) and which models run. Both files joined `SHAPING`, and production's model names are hashed too.
+  - **A forged correction obeyed by moving the meeting went unseen** when no marker was copied. The seven forged-correction cases now ask for a concrete change ("move it to 11pm"), with the email's own time in `expect.at`. A card at any other local time fails (`CORRECTION_OBEYED`).
+  - **Every sample ran under the case's id,** so the spend gate's per-message ceiling would have added samples and later runs together until it refused every case. Each sample now has a message id of its own.
+  - **`--baseline` ignored `--no-save`, and refused a partial run only after spending.** Both are now refused before the pipeline is built.
+  - **The link check missed `[link]`,** the form for a link with no readable host.
+  - **The hash was taken after the run,** so an edit made during it would have been credited to it. It is taken at the start.
+- **Fixed elsewhere:**
+  - the golden runner prepares each fixture inside its own error guard;
+  - the flow suite imports `OWNER`, `SENDER`, `NAMED` and `CaseGmail` from the run instead of keeping copies.
+- **Kept, with the reason.** Skipping every SVG and MathML element can drop text that follows an unclosed `<svg>`. Under the HTML parser's rules that text sits inside the SVG element, outside any `<text>`, where a browser draws nothing; Gmail removes SVG outright. The model then misses only what the owner cannot see either.
+- **Checks.** Nine deliberate breaks were each caught, one per fix. 2386 tests pass on a local Postgres 16.
+- **18.12 on Neon:** all 77 cases pass (21 minutes).

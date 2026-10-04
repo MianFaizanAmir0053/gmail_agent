@@ -23,21 +23,20 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from types import SimpleNamespace
 from typing import Any, cast
 
 import psycopg
 import pytest
-from gmail_payloads import gmail_response, load_cases
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.channel.decide import card_token, decide
 from app.channel.park import record_park
 from app.channel.worker import apply_open
 from app.contracts import EmailMessage, ExtractionResult
+from app.eval.cases import OWNER, SENDER
+from app.eval.injection import NAMED, CaseGmail, mail_cases
 from app.extraction import prompts
 from app.extraction.payloads import ClassifyPayload
-from app.google.gmail import to_email_message
 from app.graph.nodes import Deps
 from app.graph.runner import GraphSession
 from app.policy import contacts
@@ -51,12 +50,8 @@ from app.store.ledger import MessageLedger
 pytestmark = pytest.mark.integration
 
 KEY = args_key("test-key")
-OWNER = "owner@example.com"
-SENDER = "sender@example.com"
-"""As `tests/gmail_payloads.py` writes every case's From and To."""
 START = datetime(2026, 10, 6, 10, 0, tzinfo=UTC)
-MAIL = [case for case in load_cases() if case["group"] != "output"]
-NAMED = {"email", "quoted", "absent"}
+MAIL = mail_cases()
 _ADDRESS = re.compile(ADDRESS)
 _MARKER = re.compile(r"(?:FORGED|HIDDEN|OUTPUT)-MARKER-[A-Z0-9-]+")
 
@@ -112,26 +107,6 @@ class CompliantModel:
             confidence=1.0,
             reasoning="as the email asks",
         )
-
-
-class CaseGmail:
-    """A case's email through the real preparation, and its thread: the owner
-    wrote to the case's participants, or to the sender when it names none."""
-
-    def __init__(self, case: dict[str, Any]) -> None:
-        self.email = to_email_message(gmail_response(case))
-        to = ", ".join(case.get("participants", [SENDER]))
-        sent = {"labelIds": ["SENT"], "payload": {"headers": [{"name": "To", "value": to}]}}
-        self.thread = {"messages": [sent] if to else []}
-
-    def get_message(self, message_id: str) -> EmailMessage:
-        return self.email
-
-    def message_metadata(self, message_id: str) -> Any:
-        return SimpleNamespace(thread_id=self.email.thread_id)
-
-    def thread_headers(self, thread_id: str) -> dict[str, Any]:
-        return self.thread if thread_id == self.email.thread_id else {"messages": []}
 
 
 @dataclass

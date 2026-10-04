@@ -66,11 +66,11 @@ def predict(
     predictions: list[ExtractionResult] = []
     errors: list[str] = []
     for fixture in fixtures:
-        email = prepared(fixture.email)
-        if email.credential:
-            predictions.append(SET_ASIDE)
-            continue
         try:
+            email = prepared(fixture.email)
+            if email.credential:
+                predictions.append(SET_ASIDE)
+                continue
             predictions.append(
                 extractor(email, now_utc=fixture.now_utc, user_timezone=fixture.user_timezone)
             )

@@ -118,6 +118,22 @@ def test_credential_mail_is_set_aside_before_the_extractor() -> None:
     assert errors == []
 
 
+def test_a_fixture_whose_preparation_raises_is_an_error_not_the_end_of_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.eval import run
+
+    def prepared(email: Any) -> Any:
+        if email.id == FIXTURES[0].email.id:
+            raise ValueError("cannot prepare")
+        return email
+
+    monkeypatch.setattr(run, "prepared", prepared)
+    predictions, errors = predict(FIXTURES[:2], lambda email, **kwargs: FIXTURES[1].expected)
+    assert len(predictions) == 2
+    assert len(errors) == 1 and errors[0].startswith(f"{FIXTURES[0].id}: ValueError")
+
+
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda f: f.id)
 def test_owner_is_never_an_attendee(fixture: Fixture) -> None:
     """Convention: attendees are the *other* participants."""
