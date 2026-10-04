@@ -1,8 +1,14 @@
-"""Calendar writes.
+"""Calendar reads and writes.
 
 Every mutating method checks `dry_run` and returns without calling Google. The
 flag is threaded through the constructor rather than read from settings inside
 each method, so tests can exercise both paths without touching the environment.
+
+**Two calendars (M19, D3).** Reads -- free/busy and `list_events` -- go to the
+read calendar, the owner's primary, so a card's "no conflicts" means the
+owner's real calendar is free. Writes, and what an approval binds, go to
+`calendar_id`: the test calendar, until M17's open question about where
+writes go is decided.
 
 **Writes that can be finished (M17, D3).** `insert` sends an event with an id
 chosen by us, and `find` asks for it by that id. A write interrupted halfway
@@ -15,10 +21,21 @@ calendar the owner approved, not whichever one the settings name today.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime, time
 from typing import Any, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from googleapiclient.errors import HttpError
+
+PRIMARY = "primary"
+"""Google's name for the signed-in account's own calendar."""
+
+EVENTS_PER_READ = 50
+
+_EVENT_FIELDS = (
+    "timeZone,nextPageToken,"
+    "items(summary,status,start,end,organizer(email,self),attendees(self,responseStatus))"
+)
 
 
 class NotUtcError(ValueError):
@@ -82,10 +99,37 @@ class BusyInterval:
     end: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class CalendarEvent:
+    """One event as `list_events` reads it. Its title is whatever its organiser
+    wrote, and a stranger's invitation reaches the calendar by default, so a
+    title is never the owner's own words (M19, D7)."""
+
+    title: str
+    start: datetime
+    end: datetime
+    all_day: bool
+    """An all-day event runs from the midnight that starts its first day to
+    the one that ends its last, in the calendar's own zone."""
+    organizer: str | None
+    by_owner: bool
+    """Google says the organiser is the calendar's owner (`organizer.self`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarEvents:
+    events: tuple[CalendarEvent, ...]
+    more: bool
+    """Google had more than this one page."""
+
+
 class CalendarClient:
-    def __init__(self, service: Any, calendar_id: str, *, dry_run: bool) -> None:
+    def __init__(
+        self, service: Any, calendar_id: str, *, dry_run: bool, read_calendar_id: str = PRIMARY
+    ) -> None:
         self._service = service
         self._calendar_id = calendar_id
+        self._read_calendar_id = read_calendar_id
         self._dry_run = dry_run
 
     @property
@@ -97,6 +141,11 @@ class CalendarClient:
         """Where events go. Part of what an approval binds (M17, D2): approved
         for one calendar, an event must not be booked on another."""
         return self._calendar_id
+
+    @property
+    def read_calendar_id(self) -> str:
+        """Where free/busy and events are read: the owner's primary (M19, D3)."""
+        return self._read_calendar_id
 
     def create_event(
         self,
@@ -199,7 +248,12 @@ class CalendarClient:
         return True
 
     def freebusy(self, start_utc: datetime, end_utc: datetime) -> list[BusyInterval]:
-        """Busy intervals on this calendar. Read-only, so it ignores dry_run."""
+        """Busy intervals on the read calendar. Read-only, so it ignores dry_run.
+
+        Google answers a calendar it cannot read with errors beside an empty
+        busy list. That answer raises `CalendarUnavailableError`: it must
+        never be read as free.
+        """
         response = cast(
             dict[str, Any],
             self._service.freebusy()
@@ -207,16 +261,85 @@ class CalendarClient:
                 body={
                     "timeMin": _rfc3339(start_utc, "start_utc"),
                     "timeMax": _rfc3339(end_utc, "end_utc"),
-                    "items": [{"id": self._calendar_id}],
+                    "items": [{"id": self._read_calendar_id}],
                 }
             )
             .execute(),
         )
-        busy = response.get("calendars", {}).get(self._calendar_id, {}).get("busy", [])
+        answer = response.get("calendars", {}).get(self._read_calendar_id)
+        if answer is None or answer.get("errors"):
+            raise CalendarUnavailableError("the calendar's free/busy cannot be read")
         return [
             BusyInterval(
                 start=datetime.fromisoformat(b["start"]),
                 end=datetime.fromisoformat(b["end"]),
             )
-            for b in busy
+            for b in answer.get("busy", [])
         ]
+
+    def list_events(self, start_utc: datetime, end_utc: datetime) -> CalendarEvents:
+        """The events on the read calendar that overlap the range, earliest
+        first, each repeat of a recurring event on its own. One page of
+        `EVENTS_PER_READ`. Read-only, so it ignores dry_run.
+
+        Left out: cancelled events, events the owner declined, and any with
+        no start or end Google could give.
+        """
+        response = cast(
+            dict[str, Any],
+            self._service.events()
+            .list(
+                calendarId=self._read_calendar_id,
+                timeMin=_rfc3339(start_utc, "start_utc"),
+                timeMax=_rfc3339(end_utc, "end_utc"),
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=EVENTS_PER_READ,
+                fields=_EVENT_FIELDS,
+            )
+            .execute(),
+        )
+        zone = _zone(response.get("timeZone"))
+        events = (_event(item, zone) for item in response.get("items", []))
+        return CalendarEvents(
+            events=tuple(event for event in events if event is not None),
+            more="nextPageToken" in response,
+        )
+
+
+def _event(item: dict[str, Any], zone: ZoneInfo) -> CalendarEvent | None:
+    if item.get("status") == "cancelled" or any(
+        guest.get("self") and guest.get("responseStatus") == "declined"
+        for guest in item.get("attendees", [])
+    ):
+        return None
+    start, end = _moment(item.get("start", {}), zone), _moment(item.get("end", {}), zone)
+    if start is None or end is None:
+        return None
+    organizer = item.get("organizer", {})
+    return CalendarEvent(
+        title=item.get("summary") or "",
+        start=start,
+        end=end,
+        all_day="dateTime" not in item["start"],
+        organizer=organizer.get("email"),
+        by_owner=organizer.get("self") is True,
+    )
+
+
+def _moment(edge: dict[str, Any], zone: ZoneInfo) -> datetime | None:
+    """A timed edge is an instant; an all-day one, the midnight starting its date."""
+    if "dateTime" in edge:
+        return datetime.fromisoformat(edge["dateTime"]).astimezone(UTC)
+    if "date" in edge:
+        return datetime.combine(date.fromisoformat(edge["date"]), time(), tzinfo=zone).astimezone(
+            UTC
+        )
+    return None
+
+
+def _zone(name: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(name) if name else ZoneInfo("UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")

@@ -7,6 +7,7 @@ import pytest
 
 from app.google.calendar import (
     CalendarClient,
+    CalendarEvent,
     CalendarUnavailableError,
     NotUtcError,
     WriteRejectedError,
@@ -287,3 +288,185 @@ def test_a_calendar_the_token_cannot_see_proves_nothing_about_its_events() -> No
 
     with pytest.raises(CalendarUnavailableError):
         client.find("cal_gone", "ma0123456789")
+
+
+# --- two calendars: reads from the primary (M19, D3) ------------------------
+
+
+class _Reads:
+    """Answers free/busy and one page of events with what it was given, and
+    writes down every request."""
+
+    def __init__(self, *, free_busy: dict[str, Any] | None = None, page: Any = None) -> None:
+        self.free_busy = free_busy or {}
+        self.page = page or {"items": []}
+        self.asked: list[tuple[str, dict[str, Any]]] = []
+        self.inserted: list[str] = []
+        self._answer: Any = None
+
+    def freebusy(self) -> _Reads:
+        return self
+
+    def events(self) -> _Reads:
+        return self
+
+    def query(self, *, body: dict[str, Any]) -> _Reads:
+        self.asked.append(("freebusy", body))
+        self._answer = self.free_busy
+        return self
+
+    def list(self, **kwargs: Any) -> _Reads:
+        self.asked.append(("list", kwargs))
+        self._answer = self.page
+        return self
+
+    def insert(self, *, calendarId: str, body: dict[str, Any]) -> _Reads:  # noqa: N803
+        self.inserted.append(calendarId)
+        self._answer = {"id": "evt_123"}
+        return self
+
+    def execute(self) -> Any:
+        return self._answer
+
+
+def _reader(service: _Reads, *, dry_run: bool = False) -> CalendarClient:
+    return CalendarClient(service, "cal_test", dry_run=dry_run)
+
+
+def test_the_read_calendar_is_the_primary_and_writes_keep_their_own() -> None:
+    client = _reader(_Reads())
+    assert (client.read_calendar_id, client.calendar_id) == ("primary", "cal_test")
+
+
+def test_free_busy_reads_the_primary() -> None:
+    """A card's "no conflicts" means the owner's real calendar is free (D3)."""
+    busy = {"start": "2026-08-18T10:15:00Z", "end": "2026-08-18T11:00:00Z"}
+    service = _Reads(free_busy={"calendars": {"primary": {"busy": [busy]}}})
+
+    intervals = _reader(service).freebusy(START, END)
+
+    assert service.asked == [
+        (
+            "freebusy",
+            {
+                "timeMin": "2026-08-18T10:00:00+00:00",
+                "timeMax": "2026-08-18T10:30:00+00:00",
+                "items": [{"id": "primary"}],
+            },
+        )
+    ]
+    assert [(b.start, b.end) for b in intervals] == [
+        (START + timedelta(minutes=15), START + timedelta(hours=1))
+    ]
+
+
+def test_writes_go_to_the_write_calendar() -> None:
+    service = _Reads()
+    _reader(service).create_event(title="Sync", start_utc=START, end_utc=END, timezone="UTC")
+    assert service.inserted == ["cal_test"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"calendars": {"primary": {"busy": [], "errors": [{"reason": "notFound"}]}}},
+        {"calendars": {}},
+        {},
+    ],
+)
+def test_free_busy_that_cannot_be_read_is_never_free(answer: dict[str, Any]) -> None:
+    """Google reports an unreadable calendar beside an empty busy list."""
+    with pytest.raises(CalendarUnavailableError):
+        _reader(_Reads(free_busy=answer)).freebusy(START, END)
+
+
+def _item(**fields: Any) -> dict[str, Any]:
+    return {
+        "summary": "Design review",
+        "status": "confirmed",
+        "start": {"dateTime": "2026-08-18T15:00:00+05:00"},
+        "end": {"dateTime": "2026-08-18T16:00:00+05:00"},
+        "organizer": {"email": "sara@example.com"},
+    } | fields
+
+
+def test_events_are_read_from_the_primary_one_page_at_a_time() -> None:
+    service = _Reads(page={"items": [], "nextPageToken": "next"})
+
+    events = _reader(service, dry_run=True).list_events(START, END)
+
+    kind, request = service.asked[0]
+    assert kind == "list"
+    assert request["calendarId"] == "primary"
+    assert (request["timeMin"], request["timeMax"]) == (
+        "2026-08-18T10:00:00+00:00",
+        "2026-08-18T10:30:00+00:00",
+    )
+    assert request["singleEvents"] is True and request["orderBy"] == "startTime"
+    assert request["maxResults"] == 50
+    assert events.more is True and events.events == ()
+
+
+def test_an_event_comes_back_with_its_times_organiser_and_title() -> None:
+    owners = _item(summary="Focus", organizer={"email": "me@example.com", "self": True})
+    service = _Reads(page={"items": [_item(), owners]})
+
+    events = _reader(service).list_events(START, END)
+
+    assert events.more is False
+    first, second = events.events
+    assert first == CalendarEvent(
+        title="Design review",
+        start=datetime(2026, 8, 18, 10, tzinfo=UTC),
+        end=datetime(2026, 8, 18, 11, tzinfo=UTC),
+        all_day=False,
+        organizer="sara@example.com",
+        by_owner=False,
+    )
+    assert (second.title, second.by_owner) == ("Focus", True)
+
+
+def test_an_all_day_event_spans_its_days_in_the_calendars_zone() -> None:
+    item = _item(start={"date": "2026-08-18"}, end={"date": "2026-08-19"})
+    service = _Reads(page={"timeZone": "Asia/Karachi", "items": [item]})
+
+    (event,) = _reader(service).list_events(START, END).events
+
+    assert event.all_day is True
+    assert (event.start, event.end) == (
+        datetime(2026, 8, 17, 19, tzinfo=UTC),
+        datetime(2026, 8, 18, 19, tzinfo=UTC),
+    )
+
+
+def test_an_event_with_no_title_has_an_empty_one() -> None:
+    item = _item()
+    del item["summary"]
+    (event,) = _reader(_Reads(page={"items": [item]})).list_events(START, END).events
+    assert event.title == ""
+
+
+def test_cancelled_declined_and_timeless_events_are_left_out() -> None:
+    declined = _item(attendees=[{"self": True, "responseStatus": "declined"}])
+    someone_else_declined = _item(
+        attendees=[{"email": "x@example.com", "responseStatus": "declined"}]
+    )
+    page = {
+        "items": [
+            _item(status="cancelled"),
+            declined,
+            _item(start={}),
+            someone_else_declined,
+        ]
+    }
+
+    events = _reader(_Reads(page=page)).list_events(START, END).events
+
+    assert len(events) == 1
+
+
+def test_a_naive_range_is_refused_before_reading() -> None:
+    service = _Reads()
+    with pytest.raises(NotUtcError):
+        _reader(service).list_events(datetime(2026, 8, 18, 10), END)
+    assert service.asked == []

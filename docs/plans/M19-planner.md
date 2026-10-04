@@ -544,3 +544,12 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **Not yet:** whether the API accepts the schema is recorded once a development key exists (19.16).
 - **Order:** 19.3's harness scores a plan by running it through the executor, so it is built after 19.6.
 - 38 deliberate breaks, one per rule, each caught. 2462 tests pass, with lint and mypy clean.
+
+### Task 19.4, two calendars (2026-10-04)
+
+- **`CalendarClient`** has a read calendar, `primary` by default, beside the write calendar it had. Free/busy and the new `list_events` read the primary. Inserts, deletes and the approval's binding keep the write calendar. Only the graph and the smoke tool build a client, and neither names the read calendar.
+- **Mail's cards change with this:** their conflicts now come from the owner's real calendar, not the test calendar. DEPLOY.md §14 says so (19.17).
+- **Free/busy that cannot be read is never free.** Google reports an unreadable calendar as errors beside an empty busy list, and the client used to take that as free. It now raises `CalendarUnavailableError`, as it does when the calendar is missing from the answer.
+- **`list_events`** reads one page of 50, earliest first, each repeat of a recurring event on its own, and says whether there were more. Each event has its title, its start and end, whether it lasts all day, its organiser, and whether Google says the organiser is the owner. It leaves out cancelled events and those the owner declined. All-day events run from midnight to midnight in the calendar's own zone.
+- **Scopes:** `events.list` on the primary is covered by `calendar.events`, which the agent already holds.
+- 12 deliberate breaks, each caught. 2476 tests pass, with lint and mypy clean.

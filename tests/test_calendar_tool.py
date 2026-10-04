@@ -41,26 +41,31 @@ class FakeEvents:
 
 
 class FakeFreebusy:
-    def __init__(self, busy: list[dict[str, str]]) -> None:
+    """Busy on every calendar asked about, as given, and notes which were asked."""
+
+    def __init__(self, busy: list[dict[str, str]], asked: list[str]) -> None:
         self._busy = busy
+        self._asked = asked
 
     def query(self, *, body: dict[str, Any]) -> FakeFreebusy:
+        self._asked.extend(item["id"] for item in body["items"])
         return self
 
     def execute(self) -> dict[str, Any]:
-        return {"calendars": {"cal_test": {"busy": self._busy}}}
+        return {"calendars": {calendar: {"busy": self._busy} for calendar in self._asked}}
 
 
 class FakeService:
     def __init__(self, busy: list[dict[str, str]] | None = None) -> None:
         self.events_resource = FakeEvents()
         self._busy = busy or []
+        self.asked: list[str] = []
 
     def events(self) -> FakeEvents:
         return self.events_resource
 
     def freebusy(self) -> FakeFreebusy:
-        return FakeFreebusy(self._busy)
+        return FakeFreebusy(self._busy, self.asked)
 
 
 # --- tool definition -------------------------------------------------------
@@ -124,6 +129,8 @@ def test_conflict_check_reads_the_calendar() -> None:
 
     assert check.has_conflict
     assert "Overlaps 1" in check.describe()
+    # The owner's real calendar, not the one events are written to (M19, D3).
+    assert service.asked == ["primary"]
 
 
 def test_conflict_check_runs_even_in_dry_run() -> None:

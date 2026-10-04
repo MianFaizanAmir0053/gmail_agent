@@ -1832,9 +1832,9 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - The approval's binding and every write keep the write calendar.
 
 **Acceptance criteria:**
-- [ ] Conflicts come from the read calendar.
-- [ ] The hash binds the write calendar.
-- [ ] `list_events` covered against a fake service.
+- [x] Conflicts come from the read calendar.
+- [x] The hash binds the write calendar.
+- [x] `list_events` covered against a fake service.
 
 **Verification:** `uv run pytest tests/test_calendar.py tests/test_graph.py tests/test_hashing.py`.
 

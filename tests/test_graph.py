@@ -621,6 +621,46 @@ def test_conflicts_reach_the_approval_card() -> None:
     assert payload["conflicts"] and "Overlaps" in payload["conflicts"][0]
 
 
+class _PrimaryBusy:
+    """A Calendar API whose primary calendar is busy across the meeting, and
+    which notes the calendars its free/busy was asked about."""
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def freebusy(self) -> _PrimaryBusy:
+        return self
+
+    def query(self, *, body: dict[str, Any]) -> _PrimaryBusy:
+        self.asked.extend(item["id"] for item in body["items"])
+        return self
+
+    def execute(self) -> dict[str, Any]:
+        busy = {"start": START.isoformat(), "end": (START + timedelta(hours=2)).isoformat()}
+        return {"calendars": {"primary": {"busy": [busy]}, "test-calendar": {"busy": []}}}
+
+
+def test_a_mail_cards_conflicts_come_from_the_primary_calendar() -> None:
+    """The event is written to the test calendar, but "no conflicts" must mean
+    the owner's own calendar is free (M19, D3)."""
+    from app.google.calendar import CalendarClient
+
+    service = _PrimaryBusy()
+    calendar = CalendarClient(service, "test-calendar", dry_run=True)
+    graph, config, _ = _run(_deps(calendar=calendar))
+
+    payload = _interrupt_payload(graph, config)
+    assert payload is not None and payload["conflicts"]
+    assert service.asked == ["primary"]
+
+
+def test_an_approval_binds_the_calendar_events_are_written_to() -> None:
+    from app.google.calendar import CalendarClient
+
+    calendar = CalendarClient(_PrimaryBusy(), "test-calendar", dry_run=True)
+    assert _session(_deps(calendar=calendar)).binding().calendar_id == "test-calendar"
+
+
 def test_malformed_extraction_routes_to_skip_not_to_the_calendar() -> None:
     broken = ExtractionResult(is_meeting=False, confidence=0.0, reasoning="Discarded malformed")
     ledger = FakeLedger()
