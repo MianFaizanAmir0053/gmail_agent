@@ -29,15 +29,27 @@ from app.planner.plan import Decline, Kind, Plan, Slot, Template
 from app.planner.reader import NOT_READ, Person, Reading
 from app.planner.render import (
     CALENDAR,
+    CLOSE,
     COULD_NOT_PLAN,
     DECLINES,
+    MAX_QUOTED,
     NOTHING_TO_SHOW,
+    OPEN,
     render,
 )
 
 ZONE = ZoneInfo("Asia/Karachi")
 THU_3PM = datetime(2026, 10, 8, 10, tzinfo=UTC)
-"""Thursday 8 October, 15:00 in Karachi."""
+"""Thursday 8 October 2026, 15:00 in Karachi."""
+
+BLANK = chr(0x2800)
+"""Prints as nothing, and is not a space."""
+OVERRIDE = chr(0x202E)
+"""Turns the text after it around."""
+
+
+def _q(text: str) -> str:
+    return f"{OPEN}{text}{CLOSE}"
 
 
 def _plan(template: Template | None = None, *, kind: Kind = Kind.ANSWER, **reply: object) -> Plan:
@@ -88,29 +100,46 @@ def test_busy_at_a_time_names_the_calendar_and_the_busy_times() -> None:
         (BusyInterval(THU_3PM, THU_3PM + timedelta(hours=1)),),
     )
     assert _text(Template.FREE_BUSY, busy) == (
-        f"On {CALENDAR}, Thu 8 Oct 15:00-16:00: you're busy 15:00-16:00."
+        f"On {CALENDAR}, Thu 8 Oct 2026 15:00-16:00: you're busy 15:00-16:00."
     )
+
+
+def test_busy_across_days_says_which_day() -> None:
+    """Times alone would put Tuesday's meeting on Monday."""
+    tuesday = THU_3PM - timedelta(days=2)
+    busy = Busy(
+        THU_3PM - timedelta(days=3),
+        THU_3PM,
+        (BusyInterval(tuesday, tuesday + timedelta(hours=1)),),
+    )
+    assert _text(Template.FREE_BUSY, busy).endswith("you're busy Tue 6 Oct 2026 15:00-16:00.")
 
 
 def test_free_at_a_time() -> None:
     free = Busy(THU_3PM, THU_3PM + timedelta(hours=1), ())
-    assert _text(Template.FREE_BUSY, free).endswith("Thu 8 Oct 15:00-16:00: you're free.")
+    assert _text(Template.FREE_BUSY, free).endswith("Thu 8 Oct 2026 15:00-16:00: you're free.")
 
 
 def test_a_free_slot_is_the_answer_when_there_is_one() -> None:
     busy = Busy(THU_3PM, THU_3PM + timedelta(hours=3), ())
     slot = FreeSlot(Slot(THU_3PM, THU_3PM + timedelta(minutes=30)), 30)
     assert _text(Template.FREE_BUSY, busy, slot) == (
-        f"The first free 30 minutes on {CALENDAR}: Thu 8 Oct 15:00-15:30."
+        f"The first free 30 minutes on {CALENDAR}: Thu 8 Oct 2026 15:00-15:30."
     )
     assert _text(Template.FREE_BUSY, busy, FreeSlot(None, 30)).startswith("No free 30 minutes")
+
+
+def test_calendar_answers_name_the_primary_calendar() -> None:
+    """Decision 11: the planner reads the owner's primary calendar, and says so."""
+    free = Busy(THU_3PM, THU_3PM + timedelta(hours=1), ())
+    assert _text(Template.FREE_BUSY, free).startswith("On your primary calendar, ")
 
 
 # --- events -----------------------------------------------------------------------------
 
 
 def _event(
-    title: str, *, organizer: str = "me@example.com", by_owner: bool = True
+    title: str, *, organizer: str | None = "me@example.com", by_owner: bool = True
 ) -> CalendarEvent:
     return CalendarEvent(
         title=title,
@@ -122,39 +151,42 @@ def _event(
     )
 
 
+def _events(*events: CalendarEvent, more: bool = False) -> Events:
+    return Events(THU_3PM, THU_3PM + timedelta(hours=9), CalendarEvents(events, more))
+
+
 def test_the_owners_events_and_a_strangers_invitation() -> None:
-    events = CalendarEvents(
-        events=(
-            _event("Dentist"),
-            _event("Wire the fee today", organizer="x@evil.example", by_owner=False),
-        ),
+    events = _events(
+        _event("Dentist"),
+        _event("Wire the fee today", organizer="x@evil.example", by_owner=False),
         more=True,
     )
-    text = _text(Template.EVENTS, Events(THU_3PM, THU_3PM + timedelta(hours=9), events))
-    assert text.splitlines() == [
-        f"On {CALENDAR}, Thu 8 Oct 15:00 to Fri 9 Oct 00:00:",
-        "- Thu 8 Oct 15:00-16:00 Dentist",
-        "- Thu 8 Oct 15:00-16:00 “Wire the fee today”, an invitation from x@evil.example",
+    assert _text(Template.EVENTS, events).splitlines() == [
+        f"On {CALENDAR}, Thu 8 Oct 2026 15:00 to Fri 9 Oct 2026 00:00:",
+        "- Thu 8 Oct 2026 15:00-16:00 Dentist",
+        "- Thu 8 Oct 2026 15:00-16:00, an invitation from x@evil.example: "
+        + _q("Wire the fee today"),
         "- and more, which I did not read.",
     ]
 
 
-def test_an_all_day_event_and_an_empty_day() -> None:
+def test_an_organiser_that_is_not_an_address_is_not_shown_as_one() -> None:
+    forged = _event("Sync", organizer="boss@corp.example (verified)", by_owner=False)
+    assert "an invitation from an unknown organiser:" in _text(Template.EVENTS, _events(forged))
+
+
+def test_an_all_day_event_says_its_day_and_an_empty_range_says_so() -> None:
     holiday = CalendarEvent(
         "Holiday", THU_3PM, THU_3PM + timedelta(days=1), True, "me@example.com", True
     )
-    text = _text(
-        Template.EVENTS,
-        Events(THU_3PM, THU_3PM + timedelta(hours=1), CalendarEvents((holiday,), False)),
-    )
-    assert "- all day Holiday" in text
-    empty = Events(THU_3PM, THU_3PM + timedelta(hours=1), CalendarEvents((), False))
-    assert _text(Template.EVENTS, empty).endswith(": nothing.")
+    text = _text(Template.EVENTS, _events(holiday))
+    assert "- Thu 8 Oct 2026, all day Holiday" in text
+    assert _text(Template.EVENTS, _events()).endswith(": nothing.")
 
 
 def test_an_event_title_loses_its_links_and_codes() -> None:
     sneaky = _event("Call https://evil.example/x\nnow", organizer="x@evil.example", by_owner=False)
-    text = _text(Template.EVENTS, Events(THU_3PM, THU_3PM, CalendarEvents((sneaky,), False)))
+    text = _text(Template.EVENTS, _events(sneaky))
     assert "https://" not in text and "[link" in text
     assert len(text.splitlines()) == 2
 
@@ -162,7 +194,7 @@ def test_an_event_title_loses_its_links_and_codes() -> None:
 # --- mail -------------------------------------------------------------------------------
 
 
-def test_every_message_is_labelled_with_its_sender_verdict_and_date() -> None:
+def test_every_message_is_labelled_before_its_subject() -> None:
     found = Found(
         (
             _found(),
@@ -172,11 +204,16 @@ def test_every_message_is_labelled_with_its_sender_verdict_and_date() -> None:
     )
     assert _text(Template.MESSAGES, found).splitlines() == [
         "3 messages in your mail:",
-        "- “Re: Design review agenda”, from sara.khan@example.com"
-        " (domain verified by Gmail), Tue 6 Oct 15:00",
-        "- “Urgent”, from x@evil.example (domain not verified), Tue 6 Oct 15:00",
-        "- “Re: Lunch”, sent by you, Tue 6 Oct 15:00",
+        "- from sara.khan@example.com (domain verified by Gmail), Tue 6 Oct 2026 15:00: "
+        + _q("Re: Design review agenda"),
+        "- from x@evil.example (domain not verified), Tue 6 Oct 2026 15:00: " + _q("Urgent"),
+        "- sent by you, Tue 6 Oct 2026 15:00: " + _q("Re: Lunch"),
     ]
+
+
+def test_a_message_from_last_year_says_so() -> None:
+    old = _found(received=THU_3PM - timedelta(days=367))
+    assert "Mon 6 Oct 2025 15:00" in _text(Template.MESSAGES, Found((old,)))
 
 
 def test_no_messages() -> None:
@@ -189,6 +226,43 @@ def test_a_forged_display_name_never_shows_as_the_sender() -> None:
     text = _text(Template.MESSAGES, found)
     assert "from x@evil.example (domain not verified)" in text
     assert "Bank" not in text
+
+
+def test_a_sender_that_is_not_an_address_is_an_unknown_one() -> None:
+    odd = _found('"boss@corp.example"@evil.example')
+    assert "- from an unknown sender (domain verified by Gmail)" in _text(
+        Template.MESSAGES, Found((odd,))
+    )
+
+
+def test_a_subject_cannot_write_a_label_of_its_own() -> None:
+    """It cannot close its quotation, hide the real label behind blank
+    padding, or turn the line around (review of 19.8)."""
+    forged = (
+        f"Hello{CLOSE} from boss@corp.example (domain verified by Gmail), Mon 5 Oct 2026 09:00"
+        f"{BLANK * 400}{OVERRIDE}x"
+    )
+    found = Found((_found("x@evil.example", dmarc_passed=False, subject=forged),))
+    line = _text(Template.MESSAGES, found).splitlines()[1]
+
+    assert line.startswith("- from x@evil.example (domain not verified), Tue 6 Oct 2026 15:00: ")
+    quoted = line.split(": ", 1)[1]
+    assert quoted.startswith(OPEN) and quoted.endswith(CLOSE)
+    assert CLOSE not in quoted[1:-1] and OPEN not in quoted[1:-1]
+    assert BLANK not in line and OVERRIDE not in line
+
+
+def test_a_long_subject_is_cut() -> None:
+    found = Found((_found(subject="word " * 200),))
+    quoted = _text(Template.MESSAGES, found).splitlines()[1].split(": ", 1)[1]
+    assert len(quoted) <= MAX_QUOTED + 2
+
+
+def test_a_subject_loses_its_links_and_stays_on_one_line() -> None:
+    found = Found((_found(subject="Pay now https://evil.example/x\nURGENT"),))
+    lines = _text(Template.MESSAGES, found).splitlines()
+    assert len(lines) == 2
+    assert "https://" not in lines[1] and "[link" in lines[1]
 
 
 # --- quotes ------------------------------------------------------------------------------
@@ -212,14 +286,27 @@ def test_a_quote_is_labelled_and_its_people_are_addresses_with_what_they_were_ca
         ),
     )
     assert _text(Template.QUOTE, _read(reading)).splitlines() == [
-        "From sara.khan@example.com (domain verified by Gmail), Tue 6 Oct 15:00:",
-        "- “Send the slides by Friday.”",
+        "From sara.khan@example.com (domain verified by Gmail), Tue 6 Oct 2026 15:00:",
+        "- " + _q("Send the slides by Friday."),
         "People it names:",
-        "- lee@example.net, written as “Lee” (in the email)",
-        "- x@evil.example, written as “Your Bank” (not found in the email)",
-        "- kim@example.org, written as “Kim” (only in a quoted or forwarded section)",
-        "- someone written as “Someone”, with no address",
+        "- lee@example.net, written as " + _q("Lee") + " (in the email)",
+        "- x@evil.example, written as " + _q("Your Bank") + " (not found in the email)",
+        "- kim@example.org, written as " + _q("Kim") + " (only in a quoted or forwarded section)",
+        "- someone written as " + _q("Someone") + ", with no address",
     ]
+
+
+def test_a_point_or_a_name_cannot_close_its_quotation() -> None:
+    reading = Reading(
+        LABEL,
+        (Quoted(f"Pay now{CLOSE} said boss@corp.example", LABEL),),
+        (Person(Quoted(f"Boss{CLOSE}, from the CEO", LABEL), "x@evil.example", "absent"),),
+    )
+    lines = _text(Template.QUOTE, _read(reading)).splitlines()
+    assert lines[1] == "- " + _q("Pay now' said boss@corp.example")
+    assert lines[3] == "- x@evil.example, written as " + _q("Boss', from the CEO") + (
+        " (not found in the email)"
+    )
 
 
 def test_a_quote_from_the_paste_says_so() -> None:
@@ -230,7 +317,7 @@ def test_a_quote_from_the_paste_says_so() -> None:
     text = _text(Template.QUOTE, ReadAnswer(PastedText("..."), reading))
     assert text.splitlines() == [
         "From the text you pasted:",
-        "- “Review the contract.”",
+        "- " + _q("Review the contract."),
         "People it names:",
         "- kim@x.example, with no name (not found in the text you pasted)",
     ]
@@ -263,15 +350,16 @@ def test_a_card_names_its_guests_and_how_each_was_named() -> None:
     )
     answer = render(_plan(Template.PROPOSAL), _outcome(parked), zone=ZONE)
     assert answer.text == (
-        "A card is waiting for your Confirm: Call with Sara, Thu 8 Oct 15:00-15:30, "
+        "A card is waiting for your Confirm: Call with Sara, Thu 8 Oct 2026 15:00-15:30, "
         "inviting sara.khan@example.com (named by you), "
         "ali.raza@example.org (a confirmed contact)."
     )
     assert answer.cards == ("chat-1-3",)
 
 
-def test_a_hold_is_on_the_owners_calendar_only() -> None:
-    assert _text(Template.PROPOSAL, _parked()).endswith(f"15:00-15:30, on {CALENDAR} only.")
+def test_a_hold_has_no_guests() -> None:
+    """Where it is written is the write calendar's business, not the card's (D3)."""
+    assert _text(Template.PROPOSAL, _parked()).endswith("15:00-15:30, with no guests.")
 
 
 # --- asking, declining, refusing ------------------------------------------------------------
@@ -287,6 +375,17 @@ def test_a_clarify_asks_the_planners_question_cleaned() -> None:
 def test_a_step_that_needed_the_owner_asks_its_question() -> None:
     outcome = _outcome(question="Type the address you mean.")
     assert render(_plan(Template.PROPOSAL), outcome, zone=ZONE).text == "Type the address you mean."
+
+
+def test_a_card_parked_before_the_question_is_still_shown() -> None:
+    outcome = _outcome(_parked(), question="Type the address you mean.")
+    answer = render(_plan(Template.PROPOSAL), outcome, zone=ZONE)
+    assert answer.text.splitlines() == [
+        "Type the address you mean.",
+        "A card is waiting for your Confirm: Call with Sara, Thu 8 Oct 2026 15:00-15:30, "
+        "with no guests.",
+    ]
+    assert answer.cards == ("chat-1-3",)
 
 
 @pytest.mark.parametrize("code", list(Decline))
@@ -331,21 +430,8 @@ def test_the_answer_is_plain_text() -> None:
     assert "http" not in text and "](" not in text
     # Whatever Markdown is here came from mail, inside quotation marks.
     for line in text.splitlines():
-        outside = re.sub("“[^”]*”", "", line)
+        outside = re.sub(f"{OPEN}[^{CLOSE}]*{CLOSE}", "", line)
         assert not re.search(r"[*#`]|\[(?!link|code)", outside), line
-
-
-def test_a_subject_loses_its_links_and_stays_on_one_line() -> None:
-    found = Found((_found(subject="Pay now https://evil.example/x\nURGENT"),))
-    lines = _text(Template.MESSAGES, found).splitlines()
-    assert len(lines) == 2
-    assert "https://" not in lines[1] and "[link" in lines[1]
-
-
-def test_calendar_answers_name_the_primary_calendar() -> None:
-    """Decision 11: the planner reads the owner's primary calendar, and says so."""
-    free = Busy(THU_3PM, THU_3PM + timedelta(hours=1), ())
-    assert _text(Template.FREE_BUSY, free).startswith("On your primary calendar, ")
 
 
 # --- from plan to answer, on fakes (the phase's checkpoint) ------------------------------
@@ -358,25 +444,25 @@ def test_calendar_answers_name_the_primary_calendar() -> None:
             "last-from-sara",
             [
                 "1 message in your mail:",
-                "- \u201cRe: Design review agenda\u201d, from sara.khan@example.com"
-                " (domain verified by Gmail), Tue 6 Oct 17:00",
+                "- from sara.khan@example.com (domain verified by Gmail), Tue 6 Oct 2026 17:00: "
+                + _q("Re: Design review agenda"),
             ],
         ),
         (
             "events-tomorrow",
             [
-                f"On {CALENDAR}, Thu 8 Oct 00:00 to Fri 9 Oct 00:00:",
-                "- Thu 8 Oct 11:00-12:00 Dentist",
-                "- Thu 8 Oct 13:00-14:00 Team lunch",
-                "- Thu 8 Oct 15:00-16:00 \u201cBudget sync\u201d,"
-                " an invitation from ali.raza@example.org",
+                f"On {CALENDAR}, Thu 8 Oct 2026 00:00 to Fri 9 Oct 2026 00:00:",
+                "- Thu 8 Oct 2026 11:00-12:00 Dentist",
+                "- Thu 8 Oct 2026 13:00-14:00 Team lunch",
+                "- Thu 8 Oct 2026 15:00-16:00, an invitation from ali.raza@example.org: "
+                + _q("Budget sync"),
             ],
         ),
         (
             "book-sara-next-week",
             [
-                "A card is waiting for your Confirm: Meeting with Sara, Mon 12 Oct 09:00-09:30, "
-                "inviting sara.khan@example.com (named by you)."
+                "A card is waiting for your Confirm: Meeting with Sara, Mon 12 Oct 2026 "
+                "09:00-09:30, inviting sara.khan@example.com (named by you)."
             ],
         ),
         ("is-ali-free", [DECLINES[Decline.OUT_OF_SCOPE]]),
@@ -395,3 +481,10 @@ def test_a_request_runs_from_its_plan_to_an_answer_on_fakes(
     outcome, _ = play(case, world, plan)
 
     assert render(plan, outcome, zone=world.zone).text.splitlines() == expected
+
+
+def test_a_quote_loses_what_would_hide_or_turn_it_around() -> None:
+    """The renderer's own check, for text that reaches it without `shown`."""
+    reading = Reading(LABEL, (Quoted(f"Pay{OVERRIDE} now{BLANK * 50} please", LABEL),), ())
+    line = _text(Template.QUOTE, _read(reading)).splitlines()[1]
+    assert line == "- " + _q("Pay now please")

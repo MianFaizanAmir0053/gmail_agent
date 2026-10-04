@@ -475,6 +475,11 @@ def test_a_reply_that_does_not_fit_its_kind_is_refused(
         ([FREEBUSY], "events", "reply.template events has no calendar.list_events step"),
         ([FREEBUSY], "proposal", "reply.template proposal has no calendar.propose_hold"),
         ([HOLD], "free_busy", "a proposal is answered with reply.template proposal"),
+        (
+            [SEARCH, {"op": "mail.read", "message_ref": "$s1.0", "ask": "summary"}],
+            "messages",
+            "a read is answered with reply.template quote",
+        ),
     ],
 )
 def test_a_template_with_nothing_to_show_is_refused(

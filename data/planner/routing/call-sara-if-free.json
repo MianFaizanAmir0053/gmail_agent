@@ -9,13 +9,6 @@
         "calendar.freebusy",
         "slots.first_free",
         "calendar.propose_invite"
-      ],
-      [
-        "calendar.freebusy",
-        "calendar.propose_invite"
-      ],
-      [
-        "calendar.propose_invite"
       ]
     ],
     "proposals": [

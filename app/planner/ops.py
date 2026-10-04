@@ -26,8 +26,14 @@ from app.google.calendar import BusyInterval
 from app.google.gmail import BINNED, SEARCH_HEADERS, MessageGoneError, MessageMeta, epoch_window
 from app.planner.plan import Search, Slot
 from app.policy.participants import dmarc_passed
-from app.policy.scrub import redact_secrets
+from app.policy.scrub import ADDRESS, redact_secrets
 from app.tools.calendar_tool import overlaps
+
+SEARCH_LEAVES_OUT = "-in:drafts -in:chats"
+"""Unsent drafts and chats are not mail anyone sent: every search leaves them
+out, as the mail sync's own queries do (`app/mail/messages.py`)."""
+
+_ADDRESS = re.compile(ADDRESS)
 
 SLOT_STEP = timedelta(minutes=15)
 """A free slot starts on a quarter hour, in the owner's zone."""
@@ -91,6 +97,7 @@ def search_query(step: Search) -> str:
         terms.append(_operator("to", step.recipient))
     if step.words:
         terms.extend(_quoted(word) for word in step.words.split())
+    terms.append(SEARCH_LEAVES_OUT)
     terms.append(epoch_window(step.after, step.before) or None)
     return " ".join(term for term in terms if term)
 
@@ -117,8 +124,11 @@ def search(gmail: MailReads, step: Search) -> tuple[FoundMessage, ...]:
             continue
         if meta.label_ids & BINNED:
             continue
+        # A plain address or none: a quoted local part can spell another address.
         sender = parseaddr(meta.headers.get("From", ""))[1].strip().lower()
-        domain = sender.rpartition("@")[2] if "@" in sender else ""
+        if not _ADDRESS.fullmatch(sender):
+            sender = ""
+        domain = sender.rpartition("@")[2]
         headers = [{"name": name, "value": value} for name, value in meta.headers.items()]
         found.append(
             FoundMessage(

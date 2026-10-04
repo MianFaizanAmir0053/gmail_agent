@@ -62,14 +62,15 @@ def test_the_query_is_built_from_typed_fields() -> None:
         before=datetime(2026, 10, 3, tzinfo=UTC),
     )
     assert search_query(step) == (
-        'from:"Sara Khan" to:"me@example.com" "budget" "review" '
+        'from:"Sara Khan" to:"me@example.com" "budget" "review" -in:drafts -in:chats '
         f"after:{int(datetime(2026, 10, 1, tzinfo=UTC).timestamp()) - 1} "
         f"before:{int(datetime(2026, 10, 3, tzinfo=UTC).timestamp())}"
     )
 
 
 def test_a_search_with_no_fields_lists_the_newest_mail() -> None:
-    assert search_query(_search()) == ""
+    """Unsent drafts and chats are left out of every search, as the sync leaves them."""
+    assert search_query(_search()) == "-in:drafts -in:chats"
 
 
 @pytest.mark.parametrize(
@@ -85,12 +86,12 @@ def test_whatever_the_planner_wrote_stays_text(words: str) -> None:
     operator (D3): outside the quotes there are only the operators code wrote."""
     query = search_query(_search(sender=words, words=words))
     outside = re.sub(r'"[^"]*"', "", query).split()
-    assert outside == ["from:"]
+    assert outside == ["from:", "-in:drafts", "-in:chats"]
     assert query.count('"') % 2 == 0
 
 
 def test_a_value_that_is_only_quote_marks_is_left_out() -> None:
-    assert search_query(_search(sender='""', words='" "')) == ""
+    assert search_query(_search(sender='""', words='" "')) == "-in:drafts -in:chats"
 
 
 # --- the search: refs, labels and redacted subjects --------------------------
@@ -325,3 +326,27 @@ def test_working_hours_are_read(text: str, days: set[int], start: time, end: tim
 def test_working_hours_that_cannot_be_read_are_refused(text: str) -> None:
     with pytest.raises(ValueError, match="WORKING_HOURS"):
         WorkingHours.parse(text)
+
+
+def test_a_draft_is_never_found() -> None:
+    """Not mail anyone sent: as the newest "message to Sara" it would mislead."""
+    box = _mailbox()
+    box.put(
+        "m6", labels={"DRAFT"}, at=datetime(2026, 10, 9, 9, tzinfo=UTC), sender="me@example.com"
+    )
+    found = search(_gmail(box), _search(sender="me@example.com"))
+    assert [message.id for message in found] == []
+
+
+def test_a_sender_that_is_not_a_plain_address_is_unknown() -> None:
+    """A quoted local part can spell another address before the real domain."""
+    box = FakeMailbox()
+    box.put(
+        "m1",
+        labels={"INBOX"},
+        at=datetime(2026, 10, 1, 9, tzinfo=UTC),
+        sender='"boss@corp.example"@evil.example',
+        Authentication_Results="mx.google.com; dmarc=pass header.from=evil.example",
+    )
+    (found,) = search(_gmail(box), _search())
+    assert (found.sender, found.dmarc_passed) == ("", False)

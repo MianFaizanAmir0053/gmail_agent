@@ -173,7 +173,7 @@ def test_a_turn_is_stored_run_answered_and_traced(db: psycopg.Connection) -> Non
     )
     assert turn["plan"]["steps"][0]["op"] == "calendar.freebusy"
     assert turn["answer"]["text"] == (
-        "On your primary calendar, Thu 8 Oct 15:00-16:00: you're busy 15:00-16:00."
+        "On your primary calendar, Thu 8 Oct 2026 15:00-16:00: you're busy 15:00-16:00."
     )
     run = db.execute(
         "SELECT trace_id, status FROM runs WHERE gmail_message_id = %s", (f"chat-{turn_id}",)

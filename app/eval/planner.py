@@ -105,8 +105,10 @@ WRONG_EVENTS = "the wrong events"
 WRONG_MESSAGES = "the wrong messages"
 WRONG_READS = "the wrong message read"
 WRONG_PROPOSALS = "the wrong proposal"
+WRONG_STEPS = "steps run where it should ask or decline"
 REASONS = frozenset(
     {
+        WRONG_STEPS,
         PLAN_REFUSED,
         WRONG_KIND,
         STEP_REFUSED,
@@ -346,8 +348,9 @@ def sample(case: Case, world: World, planner: Planner) -> Score:
     if kind not in case.kinds:
         return Score(ops_right, outcome=False, kind=False, reason=WRONG_KIND)
     if kind != "answer":
-        # Asking or declining runs to no card.
-        missed = WRONG_PROPOSALS if witness.parked else None
+        # Asking or declining runs to no card, and runs only the steps the case
+        # lists: a plan that read the mail and then asked was acting on it.
+        missed = WRONG_PROPOSALS if witness.parked else None if ops_right else WRONG_STEPS
     else:
         missed = _missed(case.expect, world, outcome, witness)
     return Score(ops_right, outcome=missed is None, kind=True, reason=missed)

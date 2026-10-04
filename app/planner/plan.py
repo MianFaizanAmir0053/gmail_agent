@@ -637,9 +637,13 @@ def _fits_kind(kind: Kind, ops: Sequence[Op], reply: dict[str, object]) -> None:
 
 
 def _shows_something(template: Template, ops: Sequence[Op]) -> None:
-    """A template shows a step's results, and a proposal is always said to be one."""
+    """A template shows a step's results; a proposal is always said to be one,
+    and a read is always shown."""
     if any(op in RENDERS[Template.PROPOSAL] for op in ops) and template is not Template.PROPOSAL:
         raise InvalidPlanError(f"a proposal is answered with reply.template {Template.PROPOSAL}")
+    # A read costs a model call, and is made to be shown.
+    if Op.READ in ops and template is not Template.QUOTE:
+        raise InvalidPlanError(f"a read is answered with reply.template {Template.QUOTE}")
     if not set(RENDERS[template]) & set(ops):
         shown = " or ".join(RENDERS[template])
         raise InvalidPlanError(f"reply.template {template} has no {shown} step to show")

@@ -668,3 +668,25 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **No cards yet:** until the queue knows chat's proposals (19.12, 19.13), a proposal step is refused with a fixed sentence.
 - **The scheduler's `chat` job** runs every 30 seconds, one tick at a time, and the API wakes it for a new turn (not for a resend). A tick with nothing queued opens no session, so it loads no credentials. Failures are recorded at most every five minutes.
 - 17 deliberate breaks, each caught; two tests the list showed were missing were added first. 2705 tests pass, with lint and mypy clean, and the job's and API's tests pass on Neon.
+
+### Review of tasks 19.1 to 19.8 (2026-10-04)
+
+A fresh-context review of the planner, read against D2 to D7 and D10, found ten problems: one high, four medium and five low. It checked each with a script. All ten were accepted and fixed, and each fix has a test that a deliberate break showed fails without it.
+
+- **High: a sender could forge an answer's label.** A subject could close its own quotation mark, write a fake "from ... (domain verified by Gmail)" label, and push the real label out of sight with blank-looking padding. The renderer now:
+  - puts the label before what it labels, in a list of messages and on a stranger's event;
+  - turns every quotation mark inside quoted text into an apostrophe;
+  - removes characters that show nothing or turn text around;
+  - cuts each quote to 300 characters.
+- **Medium:**
+  - A sender whose `From` is not a plain address, such as a quoted local part that spells another address, is now "an unknown sender", unverified. An organiser that is not an address is "an unknown organiser".
+  - A plan that reads mail must answer with the `quote` template, as a plan that proposes must with `proposal`. Before, a read's answer could be dropped, and the eval scored the plan right.
+  - Dates carry the year, so a message from last October is not yesterday's.
+  - In the eval, a case that must ask or decline counts only when it also ran just the steps it lists. Reading the mail and then asking is acting on it.
+- **Low:**
+  - Search leaves out drafts and chats, as the mail sync's queries do.
+  - Free/busy across several days says each busy time's day, and an all-day event says its day.
+  - A hold's card says "with no guests" rather than naming the primary calendar, since writes go to the write calendar (D3).
+  - A card parked before a step's question is still shown with the question.
+  - `call-sara-if-free` now accepts only the plan that checks before it books.
+- 16 deliberate breaks, each caught. One was missed at first, and a test was added. 2718 tests pass, with lint and mypy clean.

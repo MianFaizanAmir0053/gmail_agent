@@ -22,8 +22,10 @@ paste are listed, each for the owner's Allow (D5).
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.google.calendar import CalendarEvent
@@ -41,7 +43,7 @@ from app.planner.ops import FoundMessage
 from app.planner.origins import FromMessage, FromPaste
 from app.planner.plan import Decline, Kind, Plan, Template
 from app.planner.reader import Person, Reading
-from app.policy.scrub import shown
+from app.policy.scrub import ADDRESS, shown
 
 CALENDAR = "your primary calendar"
 
@@ -57,6 +59,8 @@ DECLINES: dict[Decline, str] = {
 
 COULD_NOT_PLAN = "I could not work out how to do that. Try asking another way."
 NOTHING_TO_SHOW = "There was nothing to show."
+
+_ADDRESS = re.compile(ADDRESS)
 
 GUEST_WORDS = {"typed": "named by you", "contact": "a confirmed contact"}
 """How a card's guests were named (D8), as the answer says it."""
@@ -93,6 +97,10 @@ def render(plan: Plan, outcome: Outcome, *, zone: ZoneInfo) -> Answer:
         lines.append(shown(plan.question) or COULD_NOT_PLAN)
     elif outcome.question is not None:
         lines.append(outcome.question)
+        # A card parked before the question still waits for the owner.
+        lines.extend(
+            _card(ran.result, zone) for ran in outcome.ran if isinstance(ran.result, Parked)
+        )
     elif plan.template is not None:
         lines.extend(_shown_by(plan.template, [ran.result for ran in outcome.ran], zone))
     lines.extend(f"Not done: {refused.reason}" for refused in outcome.refused)
@@ -144,8 +152,10 @@ def _busy(result: Busy, zone: ZoneInfo) -> str:
     when = f"On {CALENDAR}, {_span(result.start, result.end, zone)}"
     if not result.busy:
         return f"{when}: you're free."
+    # Times alone only when the read is one day's: across days, each says its day.
+    one_day = _day(result.start, zone) == _day(result.end - _INSTANT, zone)
     busy = ", ".join(
-        _span(interval.start, interval.end, zone, short=True) for interval in result.busy
+        _span(interval.start, interval.end, zone, short=one_day) for interval in result.busy
     )
     return f"{when}: you're busy {busy}."
 
@@ -171,13 +181,18 @@ def _events(result: Events, zone: ZoneInfo) -> list[str]:
 
 
 def _event(event: CalendarEvent, zone: ZoneInfo) -> str:
-    when = "all day" if event.all_day else _span(event.start, event.end, zone)
+    when = (
+        f"{_day(event.start, zone)}, all day"
+        if event.all_day
+        else _span(event.start, event.end, zone)
+    )
     title = shown(event.title) or "(no title)"
     if event.by_owner:
-        return f"{when} {title}"
-    # A stranger's invitation reaches the calendar by default (D7).
-    organizer = event.organizer or "an unknown organiser"
-    return f"{when} {_quoted(title)}, an invitation from {organizer}"
+        return f"{when} {_plain(title)}"
+    # A stranger's invitation reaches the calendar by default (D7). Its
+    # organiser comes first, so nothing in its title can stand before them.
+    organizer = _address(event.organizer) or "an unknown organiser"
+    return f"{when}, an invitation from {organizer}: {_quoted(title)}"
 
 
 # --- mail ---------------------------------------------------------------------------
@@ -190,7 +205,7 @@ def _messages(result: Found, zone: ZoneInfo) -> list[str]:
     lines = [f"{count} message{'s' if count != 1 else ''} in your mail:"]
     for message in result.messages:
         subject = shown(message.subject) or "(no subject)"
-        lines.append(f"- {_quoted(subject)}, {_from(_label(message), zone)}")
+        lines.append(f"- {_from(_label(message), zone)}: {_quoted(subject)}")
     return lines
 
 
@@ -206,7 +221,7 @@ def _from(label: FromMessage | FromPaste, zone: ZoneInfo) -> str:
     if label.sent:
         return f"sent by you, {when}"
     verdict = "domain verified by Gmail" if label.dmarc_passed else "domain not verified"
-    return f"from {label.sender or 'an unknown sender'} ({verdict}), {when}"
+    return f"from {_address(label.sender) or 'an unknown sender'} ({verdict}), {when}"
 
 
 def _reading(result: ReadAnswer, zone: ZoneInfo) -> list[str]:
@@ -242,10 +257,10 @@ def _person(person: Person, label: FromMessage | FromPaste) -> str:
 
 def _card(result: Parked, zone: ZoneInfo) -> str:
     proposal = result.proposal
-    title = shown(proposal.title) or "(no title)"
+    title = _plain(shown(proposal.title) or "(no title)")
     when = _span(proposal.start, proposal.end, zone)
     if not proposal.guests:
-        whom = f"on {CALENDAR} only"
+        whom = "with no guests"
     else:
         whom = "inviting " + ", ".join(
             f"{guest.address} ({GUEST_WORDS[guest.source]})" for guest in proposal.guests
@@ -256,13 +271,78 @@ def _card(result: Parked, zone: ZoneInfo) -> str:
 # --- words --------------------------------------------------------------------------
 
 
+OPEN, CLOSE, CUT = chr(0x201C), chr(0x201D), chr(0x2026)
+
+_QUOTE_MARKS = str.maketrans(
+    dict.fromkeys(
+        map(
+            chr,
+            (
+                0x22,
+                0x201C,
+                0x201D,
+                0x201E,
+                0x201F,
+                0xAB,
+                0xBB,
+                0x2039,
+                0x203A,
+                0xFF02,
+                0x301D,
+                0x301E,
+            ),
+        ),
+        "'",
+    )
+)
+"""Every quotation mark a quoted text could close its quotation with."""
+
+_BLANK = frozenset(map(chr, (0x2800, 0x3164, 0x115F, 0x1160, 0xFFA0, 0x180E, 0x17B4, 0x17B5)))
+"""Characters that print as nothing yet are not spaces: padding that can push
+what follows out of sight."""
+
+_HIDDEN = ("Cc", "Cf", "Co", "Cn", "Cs")
+"""Unicode categories that show nothing or reorder what is shown: control and
+format characters (bidirectional overrides, zero widths), and the rest."""
+
+MAX_QUOTED = 300
+
+_INSTANT = timedelta(microseconds=1)
+
+
+def _plain(text: str) -> str:
+    """Text shown as it is, but with nothing hidden in it and on one line."""
+    kept = "".join(
+        " " if unicodedata.category(char).startswith("Z") else char
+        for char in text
+        if unicodedata.category(char) not in _HIDDEN and char not in _BLANK
+    )
+    return " ".join(kept.split())
+
+
 def _quoted(text: str) -> str:
-    return f"“{text}”"
+    """Text someone else wrote, in quotation marks it cannot close: its own
+    quotation marks become apostrophes, characters that hide or reorder text
+    go, and it is cut. Nothing in it can pass for a label of the answer's own."""
+    kept = _plain(text.translate(_QUOTE_MARKS))
+    if len(kept) > MAX_QUOTED:
+        kept = kept[: MAX_QUOTED - 1] + CUT
+    return f"{OPEN}{kept or '(nothing)'}{CLOSE}"
+
+
+def _address(text: str | None) -> str | None:
+    """A plain address, or None for anything else in its place."""
+    return text if text and _ADDRESS.fullmatch(text) else None
+
+
+def _day(moment: datetime, zone: ZoneInfo) -> str:
+    local = moment.astimezone(zone)
+    return f"{local:%a} {local.day} {local:%b} {local.year}"
 
 
 def _moment(moment: datetime, zone: ZoneInfo) -> str:
-    local = moment.astimezone(zone)
-    return f"{local:%a} {local.day} {local:%b} {local:%H:%M}"
+    """With the year: a message from last October is not yesterday's."""
+    return f"{_day(moment, zone)} {moment.astimezone(zone):%H:%M}"
 
 
 def _span(start: datetime, end: datetime, zone: ZoneInfo, *, short: bool = False) -> str:
