@@ -22,6 +22,9 @@ header.
     DELETE /api/push-subscriptions   remove one
     POST   /api/pairing/codes        a pairing code for the iPhone fallback (201)
     POST   /api/pairing/redeem       redeem one (204, or 403 whatever the reason)
+    POST   /api/chat                 store a chat turn (202 queued, the same turn
+                                     again for a resend; 409 another zone; 422
+                                     invalid)
 
 The pairing routes answer 404 unless `PAIRING_ENABLED` is set, and only after
 the secret is checked, so a caller without it cannot tell whether they exist.
@@ -36,7 +39,14 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.channel.decide import (
     MAX_CORRECTION_CHARS,
@@ -48,6 +58,8 @@ from app.channel.decide import (
 from app.channel.pairing import IssuedCode, issue_code, redeem
 from app.config import Settings, get_settings
 from app.jobs.scheduler import decision_recorded, wake_decisions
+from app.planner import turns
+from app.planner.turns import MAX_PASTED_CHARS, MAX_TYPED_CHARS
 from app.policy import contacts, control
 from app.policy.hashing import args_key
 from app.store.db import connect_autocommit
@@ -55,6 +67,9 @@ from app.store.db import connect_autocommit
 router = APIRouter(prefix="/api")
 
 MAX_ENDPOINT_CHARS = 2048
+
+NEWLINE = "\n"
+"""Between pieces of pasted text, which the page sends apart."""
 
 
 class DecisionRequest(BaseModel):
@@ -86,6 +101,42 @@ class ContactRequest(BaseModel):
     address: str = Field(min_length=3, max_length=contacts.MAX_ADDRESS_CHARS)
     message_id: str | None = Field(default=None, max_length=128)
     """The proposal it was allowed from, for the record."""
+
+
+class ChatPart(BaseModel):
+    """A piece of what the owner sent, as the page marked it: typed, or
+    arrived by a paste or a drop (M19, D5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(max_length=MAX_PASTED_CHARS)
+    pasted: bool
+
+
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(pattern=r"^[A-Za-z0-9_-]{16,64}$")
+    zone: str = Field(max_length=64)
+    parts: list[ChatPart] = Field(min_length=1, max_length=50)
+
+    @property
+    def typed(self) -> str:
+        return "".join(part.text for part in self.parts if not part.pasted).strip()
+
+    @property
+    def pasted(self) -> str | None:
+        return NEWLINE.join(part.text for part in self.parts if part.pasted).strip() or None
+
+    @model_validator(mode="after")
+    def _within_bounds(self) -> ChatRequest:
+        if not self.typed:
+            raise ValueError("type what you want done")
+        if len(self.typed) > MAX_TYPED_CHARS:
+            raise ValueError(f"a request is at most {MAX_TYPED_CHARS} characters")
+        if len(self.pasted or "") > MAX_PASTED_CHARS:
+            raise ValueError(f"pasted text is at most {MAX_PASTED_CHARS} characters")
+        return self
 
 
 class SubscriptionKeys(BaseModel):
@@ -312,6 +363,30 @@ def _allow_contact(settings: Settings, body: ContactRequest) -> None:
     key = args_key(settings.fernet_key.get_secret_value())
     with connect_autocommit(settings.database_url) as conn:
         contacts.allow(conn, body.address, via="web", key=key, message_id=body.message_id)
+
+
+@router.post("/chat")
+async def post_chat(
+    request: Request, authorization: str | None = Header(default=None)
+) -> JSONResponse:
+    """Store a request for the chat job (M19, D1). A resend with the same key
+    finds the turn already stored. The zone must be the agent's own, so the
+    two sides cannot disagree about what "tomorrow" means."""
+    settings = get_settings()
+    _verify(settings, authorization)
+    body = await _body(request, ChatRequest)
+    if body.zone != settings.user_timezone:
+        return JSONResponse(
+            {"status": "zone_mismatch", "detail": "the web app's zone is not the agent's"},
+            status_code=409,
+        )
+    stored = await run_in_threadpool(_store_turn, settings, body)
+    return JSONResponse({"status": "queued", "turn_id": stored.turn_id}, status_code=202)
+
+
+def _store_turn(settings: Settings, body: ChatRequest) -> turns.Stored:
+    with connect_autocommit(settings.database_url) as conn:
+        return turns.store(conn, key=body.key, typed=body.typed, pasted=body.pasted)
 
 
 @router.post("/push-subscriptions", status_code=204)

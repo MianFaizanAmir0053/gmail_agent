@@ -631,3 +631,20 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **The prompt (`prompts.py`) is final:** the catalogue, which template goes with which steps, the conventions for days, weeks and "after 2pm", reading only the owner's calendar, and seven worked examples on a day of their own. Tests check that each example is a plan `to_plan` accepts, that the examples cover every kind, and that no example is a golden case. The baseline is taken against this prompt (19.16).
 - **The phase's checkpoint:** a test runs golden cases' ideal plans on the eval's world (`play`, now shared with the eval) through to the rendered answer.
 - 21 deliberate breaks, each caught. Two were missed at first, and tests were added. 2651 tests pass, with lint and mypy clean.
+
+### Task 19.9, records, API and spending (2026-10-04)
+
+- **`migrations/013_chat.sql`:**
+  - `chat_turns` keeps each turn's key, its typed request and its paste apart, when it was asked, its status, the checked plan, the rendered answer and a fixed reason. Checks tie `started_at` to leaving the queue and `finished_at` to an end.
+  - `processed_messages.source`, and `proposals.source` with `chat_turn_id`, tied by a check.
+  - `web_reader`'s column grant. It is revoked first, so running the file again leaves exactly this grant. The grant tests apply the file itself before checking, since the database ran it only once.
+- **The answer is stored as JSON**, holding its text, the paste's addresses and the cards. The page's Allow buttons come from the granted answer, so the grant is not widened beyond decision 12.
+- **One change to D1:** the page sends its text as parts, each marked typed or pasted, rather than as character ranges. That spares index arithmetic across JavaScript's UTF-16 and Python's code points.
+- **`POST /api/chat`:**
+  - It answers 202 with the turn's id, and a resend with the same key gets the same turn.
+  - Another zone is refused with 409 before anything is stored.
+  - The typed request must not be blank and holds at most 2,000 characters; the paste holds at most 16,000 in all. A refusal names fields, never the text.
+- **The chat check (`budget.ChatCheck`)** checks, in order: the pause, new work being allowed (the month's cap and every model priced), the owner's day of chat against `CHAT_DAILY_CAP_USD`, and the month leaving `MAIL_RESERVE_USD` for mail. Each stop has a fixed sentence. Like every gate's, the month's total may be a minute old; a turn's ceiling bounds what that minute could add.
+- **The turn's own gate (`models.chat_gate`)** holds `CHAT_TURN_CEILING_USD`, and its calls are metered under `chat-<turn>`. The new settings are in `.env.example`.
+- **Not yet:** the job that runs a turn, wakes on a new one and stops it by the check (19.10).
+- 16 deliberate breaks, each caught. One was missed at first, and a test was added. 2684 tests pass, with lint and mypy clean, and the chat and grant tests pass on Neon (Postgres 18).

@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import psycopg
@@ -43,7 +44,7 @@ from app.extraction.evaluation import GatewayError
 from app.extraction.llm import LlmError, Usage
 from app.extraction.prompts import CUT_NOTE
 from app.obs.pricing import cost_usd, rate_at
-from app.policy.budget import Gate, Spend
+from app.policy.budget import ChatCheck, Gate, Spend
 
 EVALUATE_URL = "https://ai-gateway.vercel.sh/v1/evaluate"
 """The Gateway's evaluation endpoint, the only place it is named (D5)."""
@@ -73,6 +74,8 @@ __all__ = [
     "MeteredModels",
     "advertised",
     "bounded",
+    "chat_check",
+    "chat_gate",
     "client",
     "evaluator",
     "gate",
@@ -89,6 +92,27 @@ def gate(settings: Settings, conn: psycopg.Connection) -> Gate:
         cap_usd=Decimal(str(settings.monthly_budget_usd)),
         ceiling_usd=Decimal(str(settings.message_ceiling_usd)),
         models_in_use=tuple(in_use(settings)),
+    )
+
+
+def chat_gate(settings: Settings, conn: psycopg.Connection) -> Gate:
+    """A chat turn's gate (M19, D9): the month's cap as every gate has it, and
+    the turn's own ceiling, `CHAT_TURN_CEILING_USD`, in place of a message's."""
+    return Gate(
+        conn,
+        cap_usd=Decimal(str(settings.monthly_budget_usd)),
+        ceiling_usd=Decimal(str(settings.chat_turn_ceiling_usd)),
+        models_in_use=tuple(in_use(settings)),
+    )
+
+
+def chat_check(settings: Settings, gate: Gate) -> ChatCheck:
+    """The check a chat turn runs before each model call and each park (D9)."""
+    return ChatCheck(
+        gate,
+        daily_cap_usd=Decimal(str(settings.chat_daily_cap_usd)),
+        mail_reserve_usd=Decimal(str(settings.mail_reserve_usd)),
+        zone=ZoneInfo(settings.user_timezone),
     )
 
 

@@ -149,6 +149,17 @@ class Settings(BaseSettings):
     default production's extraction model. It must be priced, like every
     model in use, and the routing eval's baseline names it."""
 
+    chat_turn_ceiling_usd: float = Field(default=0.10, ge=0, allow_inf_nan=False)
+    """What one chat turn may spend on model calls (D9). A turn that reaches
+    it stops and says so; it can overshoot by one call."""
+
+    chat_daily_cap_usd: float = Field(default=1.00, ge=0, allow_inf_nan=False)
+    """What chat may spend in one of the owner's days, in `user_timezone` (D9)."""
+
+    mail_reserve_usd: float = Field(default=15.0, ge=0, allow_inf_nan=False)
+    """Kept from each month's cap for mail: chat stops while the month's spend
+    leaves less than this, so chat never stops mail late in a month (D9)."""
+
     working_hours: str = "Mon-Fri 09:00-18:00"
     """When the planner may offer a free slot, in `user_timezone`
     (`WorkingHours.parse`). Read at boot, so a typo fails there."""

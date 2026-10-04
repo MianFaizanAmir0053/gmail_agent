@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import psycopg
 
@@ -241,3 +242,67 @@ def _next_month(month: datetime) -> datetime:
     if month.month == 12:
         return month.replace(year=month.year + 1, month=1)
     return month.replace(month=month.month + 1)
+
+
+# --- chat (M19, D9) -----------------------------------------------------------------
+
+CHAT_PREFIX = "chat-"
+"""A chat turn's calls are metered under `chat-<turn>` (D1), so the turn's
+own gate holds it to its ceiling and its day's spend can be summed."""
+
+ChatStop = Literal["paused", "spending", "daily_cap", "mail_reserve"]
+
+CHAT_STOPS: dict[ChatStop, str] = {
+    "paused": "You paused the agent, so I stopped.",
+    "spending": "Model spending is stopped for now, so I stopped.",
+    "daily_cap": "Today's limit on chat spending is reached, so I stopped.",
+    "mail_reserve": "What is left of this month's budget is kept for your mail, so I stopped.",
+}
+"""What a stopped turn says, for each part of the chat check."""
+
+TURN_CEILING_STOP = "This request reached its spending limit, so I stopped."
+
+
+def chat_message_id(turn_id: int) -> str:
+    return f"{CHAT_PREFIX}{turn_id}"
+
+
+@dataclass(frozen=True)
+class ChatCheck:
+    """The check before each chat model call and each park (D9), in order:
+    the owner has not paused; new work is allowed (the month's cap, and every
+    model priced); the owner's day of chat is under its cap; and the month
+    leaves `mail_reserve_usd` for mail."""
+
+    gate: Gate
+    daily_cap_usd: Decimal
+    mail_reserve_usd: Decimal
+    zone: ZoneInfo
+
+    def stop(self, now: datetime | None = None) -> ChatStop | None:
+        """Why a chat turn must stop now, or None."""
+        from app.policy import control
+
+        at = now or self.gate.clock()
+        if control.is_paused(self.gate.conn):
+            return "paused"
+        if not self.gate.allows_new_work(at):
+            return "spending"
+        if self.day_spend(at) >= self.daily_cap_usd:
+            return "daily_cap"
+        if self.gate.month_spend(at) + self.mail_reserve_usd >= self.gate.cap_usd:
+            return "mail_reserve"
+        return None
+
+    def day_spend(self, now: datetime) -> Decimal:
+        """What chat spent in the owner's day, as their zone counts it."""
+        start = now.astimezone(self.zone).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        row = self.gate.conn.execute(
+            """
+            SELECT coalesce(sum(cost_usd), 0) FROM model_spend
+             WHERE message_id LIKE %s AND at >= %s AND at < %s
+            """,
+            (f"{CHAT_PREFIX}%", start.astimezone(UTC), end.astimezone(UTC)),
+        ).fetchone()
+        return Decimal(row[0]) if row else Decimal(0)

@@ -1922,11 +1922,11 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - **Settings:** `PLANNER_MODEL`, `CHAT_TURN_CEILING_USD`, `CHAT_DAILY_CAP_USD`, `MAIL_RESERVE_USD`, `WORKING_HOURS`.
 
 **Acceptance criteria:**
-- [ ] The migration applies twice.
-- [ ] `web_reader` reads only the granted columns.
-- [ ] A resend makes no second turn.
-- [ ] A zone mismatch is refused.
-- [ ] Each part of the chat check stops a turn with its reason.
+- [x] The migration applies twice.
+- [x] `web_reader` reads only the granted columns.
+- [x] A resend makes no second turn.
+- [x] A zone mismatch is refused.
+- [x] Each part of the chat check stops a turn with its reason.
 
 **Verification:** `uv run pytest tests/test_chat_api.py tests/test_chat_spend.py tests/test_web_reader.py`; Neon.
 

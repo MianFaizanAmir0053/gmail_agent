@@ -97,3 +97,53 @@ def test_the_web_reader_cannot_write(conn: psycopg.Connection, statement: str) -
     _as_web_reader(conn)
     with pytest.raises(psycopg.errors.InsufficientPrivilege), conn.transaction():
         conn.execute(statement)
+
+
+# --- chat turns (M19, D12) -------------------------------------------------------------
+
+CHAT_MIGRATION = MIGRATION.parent / "013_chat.sql"
+
+READABLE_TURN = ("id", "status", "asked_at", "typed", "answer", "reason")
+"""What the chat page shows: a turn's state, the request, the answer, and why
+it stopped. Decision 12 widened M16's rule for exactly these."""
+
+UNREADABLE_TURN = ("pasted", "plan", "idempotency_key", "started_at", "finished_at")
+
+
+@pytest.mark.integration
+def test_the_chat_migration_can_be_run_again(conn: psycopg.Connection) -> None:
+    sql = CHAT_MIGRATION.read_text(encoding="utf-8")
+    conn.execute(sql)
+    conn.execute(sql)
+
+
+def _as_web_reader_after_the_chat_migration(conn: psycopg.Connection) -> None:
+    """The migration as the file says it now, then the role: the database
+    applied it once, and a test of the grant must test the file."""
+    conn.execute(CHAT_MIGRATION.read_text(encoding="utf-8"))
+    _as_web_reader(conn)
+
+
+@pytest.mark.integration
+def test_the_web_reader_reads_a_turns_granted_columns(conn: psycopg.Connection) -> None:
+    _as_web_reader_after_the_chat_migration(conn)
+    conn.execute(f"SELECT {', '.join(READABLE_TURN)} FROM chat_turns")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("column", UNREADABLE_TURN)
+def test_the_web_reader_never_reads_the_paste_or_the_plan(
+    conn: psycopg.Connection, column: str
+) -> None:
+    _as_web_reader_after_the_chat_migration(conn)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), conn.transaction():
+        conn.execute(f"SELECT {column} FROM chat_turns")
+
+
+@pytest.mark.integration
+def test_the_web_reader_cannot_store_a_turn(conn: psycopg.Connection) -> None:
+    _as_web_reader_after_the_chat_migration(conn)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), conn.transaction():
+        conn.execute(
+            "INSERT INTO chat_turns (idempotency_key, typed) VALUES ('k' || repeat('x', 20), 'hi')"
+        )
