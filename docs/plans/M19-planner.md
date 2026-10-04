@@ -565,3 +565,17 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **`contacts.find`, a detail beyond D3's "ignoring case and dots":** a name names a confirmed contact when each of its words is a word of the address's local part, or its letters are all of them. "Sara" finds sara.khan@, "Bilal Ahmed" finds bilalahmed@, and "Sar" finds nothing. A Gmail contact is stored without dots (`guest_key`), so "Sara" alone does not find sarakhan@gmail.com, and the owner types the address. Several matches or none end the turn with a fixed question (`Unclear`).
 - **The fake mailbox** now reads quoted terms, `from:` and `to:`, and still refuses an unquoted word, which would be a bug in whatever built the query.
 - 25 deliberate breaks, each caught. 2523 tests pass, with lint and mypy clean.
+
+### Task 19.6, the executor, origins, and typed against pasted (2026-10-04)
+
+- **`app/planner/origins.py`:** the four origins in D4's order, and `computed`, which gives a computed value the least trusted origin among its inputs. Typed addresses are found with `scrub.ADDRESS` and compared by `guest_key`, less the owner's own and their aliases. Pasted addresses are listed for an Allow, less the owner's and those the owner typed.
+- **`app/planner/execute.py`:** `execute` runs a checked plan one step at a time and returns what ran, each result with its origin, what was refused and why, a question if a step needed the owner, and the pasted addresses.
+- **D4's rules, checked before each step.** A read takes only a message a search found, or the paste. Free time is looked for only in the calendar's own free/busy. A slot is one the owner typed, or one the calendar showed free. A guest is an address the owner typed, or a confirmed contact, whether the planner wrote it or `contacts.find` found it. Each rule has a test on a plan built by hand, one `to_plan` would refuse, so the executor's check is shown to hold without the schema's.
+- **A search's fields and a proposal's title** can only be what the planner wrote: no reference can fill them. The plan's types hold that rule, and a test holds the types.
+- **When a step cannot go on:**
+  - A step that breaks a rule is refused with a fixed reason, and so is every step that needs its result. The others still run.
+  - A Gmail or calendar failure refuses its step; the log names only the exception's type.
+  - A name that matched no confirmed contact, or several, ends the turn with its question.
+- **Proposals are handed to `park`**, which 19.13 wires to the queue; nothing here writes to a calendar. The owner is never their own guest, so an invite of only the owner parks with no guests. A slot already past is refused, and so is a proposal whose free-slot step found nothing.
+- **The reader** is a protocol here; 19.7 builds it.
+- 23 deliberate breaks, each caught; one was missed at first, and a test was added for it. 2556 tests pass, with lint and mypy clean.

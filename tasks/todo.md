@@ -1865,10 +1865,10 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - The planner is given the typed request only. Typed addresses are found by `scrub.ADDRESS`, without the owner's own; pasted addresses are listed for an Allow.
 
 **Acceptance criteria:**
-- [ ] Each D4 rule has a test that fails without it.
-- [ ] A value computed from mail inputs is mail.
-- [ ] An invented address fails.
-- [ ] A pasted address never reaches a plan.
+- [x] Each D4 rule has a test that fails without it.
+- [x] A value computed from mail inputs is mail.
+- [x] An invented address fails.
+- [x] A pasted address never reaches a plan.
 
 **Verification:** `uv run pytest tests/test_planner_execute.py`.
 
