@@ -19,28 +19,37 @@ import { banners, parseSwitches, type Switches } from "@/lib/switches";
  */
 export function SwitchHeader({ initial }: { initial: Switches | null }) {
   const [current, setCurrent] = useState(initial);
+  const [seen, setSeen] = useState(initial);
+  const [renders, setRenders] = useState(0);
   const pathname = usePathname();
   const shownFor = useRef(pathname);
-  const renders = useRef(0);
+  const latestRender = useRef(renders);
 
   // Every server render wins: after Pause or Resume, or a refresh, the layout
-  // renders again with a fresh read, which is always a new object.
-  useEffect(() => {
-    renders.current += 1;
+  // renders again with a fresh read, which is always a new object. Adjusted
+  // while rendering, as React advises for state that follows a prop, rather
+  // than in an effect, which would render twice.
+  if (initial !== seen) {
+    setSeen(initial);
     setCurrent(initial);
-  }, [initial]);
+    setRenders(renders + 1);
+  }
+
+  useEffect(() => {
+    latestRender.current = renders;
+  }, [renders]);
 
   useEffect(() => {
     if (shownFor.current === pathname) return;
     shownFor.current = pathname;
     let live = true;
     // A read that a server render overtook is older than what it shows.
-    const asOf = renders.current;
+    const asOf = latestRender.current;
     fetch("/api/switches", { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
       .then((body: unknown) => {
         const read = parseSwitches(body);
-        if (live && read !== null && renders.current === asOf) setCurrent(read);
+        if (live && read !== null && latestRender.current === asOf) setCurrent(read);
       })
       .catch(() => {
         // Keep what is shown; the next navigation tries again.
