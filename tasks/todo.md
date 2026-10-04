@@ -1794,8 +1794,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - The schema goes through the project's schema cleaner (`response_json_schema`). Whether the API accepts it is recorded once a development key exists.
 
 **Acceptance criteria:**
-- [ ] Each refusal in D2 has a test.
-- [ ] The cleaned schema has no union, no `$defs` and no `additionalProperties`.
+- [x] Each refusal in D2 has a test.
+- [x] The cleaned schema has no union, no `$defs` and no `additionalProperties`.
 
 **Verification:** `uv run pytest tests/test_planner_plan.py`.
 
@@ -1816,11 +1816,11 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 
 **Verification:** `uv run pytest tests/test_planner_eval.py`.
 
-**Dependencies:** 19.2 · **Files:** `data/planner/routing/`, `app/eval/planner.py`, `tasks.ps1`, tests · **Scope:** L
+**Dependencies:** 19.2, and built after 19.6: the harness scores a plan by running it through the executor · **Files:** `data/planner/routing/`, `app/eval/planner.py`, `tasks.ps1`, tests · **Scope:** L
 
 ### Checkpoint: the ground
 
-- [ ] Checks green. The eval harness scores the ideal plans at 100%.
+- [ ] Checks green. The eval harness scores the ideal plans at 100% (after 19.3, which follows 19.6).
 
 ## Phase 2 · Reads and answers
 

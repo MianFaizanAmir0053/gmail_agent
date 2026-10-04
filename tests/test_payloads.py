@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic.json_schema import SkipJsonSchema
 
 from app.extraction.payloads import (
     ClassifyPayload,
     ExtractionPayload,
     InvalidPayloadError,
     required_fields,
+    response_json_schema,
     to_extraction_result,
 )
 
@@ -51,6 +54,67 @@ def test_payloads_reject_unknown_fields() -> None:
         ClassifyPayload.model_validate(
             {"is_meeting": True, "confidence": 0.5, "reasoning": "", "surprise": 1}
         )
+
+
+# --- the schema the API is sent ----------------------------------------------
+
+
+def _without_additional_properties(node: Any) -> Any:
+    if isinstance(node, dict):
+        return {
+            key: _without_additional_properties(value)
+            for key, value in node.items()
+            if key != "additionalProperties"
+        }
+    return node
+
+
+@pytest.mark.parametrize("model", [ClassifyPayload, ExtractionPayload])
+def test_extractions_schemas_lose_only_additional_properties(model: type[BaseModel]) -> None:
+    """The frozen extraction baseline was measured with these exact schemas."""
+    raw = model.model_json_schema()
+    assert response_json_schema(model) == _without_additional_properties(raw)
+
+
+class _Inner(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    when: str
+
+
+class _Outer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    inner: _Inner = Field(description="the inner one")
+    many: list[_Inner]
+    default: str
+    title: str | SkipJsonSchema[None] = None
+
+
+def test_a_nested_model_is_written_out_where_it_is_used() -> None:
+    schema = response_json_schema(_Outer)
+    assert "$defs" not in schema
+    inner = schema["properties"]["inner"]
+    assert inner["properties"] == {"when": {"title": "When", "type": "string"}}
+    assert inner["description"] == "the inner one"
+    assert schema["properties"]["many"]["items"]["required"] == ["when"]
+
+
+def test_keywords_go_but_fields_with_their_names_stay() -> None:
+    """`default` goes as a keyword; a field called `default` is a field."""
+    schema = response_json_schema(_Outer)
+    assert set(schema["properties"]) == {"inner", "many", "default", "title"}
+    assert "default" not in schema["properties"]["title"]
+    assert schema["required"] == ["inner", "many", "default"]
+
+
+class _Loop(BaseModel):
+    again: list[_Loop]
+
+
+def test_a_model_that_contains_itself_cannot_be_written_out() -> None:
+    with pytest.raises(ValueError, match="contains itself"):
+        response_json_schema(_Loop)
 
 
 # --- timezone arithmetic ---------------------------------------------------

@@ -173,7 +173,7 @@ Read on the day, by a research agent, from primary sources.
 - **`calendar.freebusy(start, end)`**, on the primary calendar.
 
 **Helpers** (pure code, no I/O):
-- **`slots.first_free(busy_ref, window_start, window_end, minutes)`.** Working hours come from `WORKING_HOURS`, Monday to Friday, 09:00 to 18:00 by default.
+- **`slots.first_free(busy_ref, minutes)`.** It looks within the range of the free/busy step that `busy_ref` names. Working hours come from `WORKING_HOURS`, Monday to Friday, 09:00 to 18:00 by default.
 - **`contacts.find(name)`** matches a name against the confirmed contacts' addresses, the part before the at-sign, ignoring case and dots. One match is a guest the owner already allowed. Several, or none, end the turn with a `clarify` reply: "which address?" or "type the address". Mail is never searched for an address.
 
 **Proposals** (never run without the owner's Confirm): `calendar.propose_hold(title, slot)` (T1) and `calendar.propose_invite(title, slot, guests)` (T2). Each parks a proposal on the queue (D8).
@@ -527,3 +527,20 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **M15's cost report** loses its search projection. Its planner line now says chat is metered per turn and capped (D9).
 - **Kept:** the corpus search (`app/rag/search.py`) for the retrieval eval and the demo, which now says the planner uses Gmail's own search.
 - 2373 tests pass, with lint and mypy clean.
+
+### Task 19.2, the plan's schema and its validation (2026-10-04)
+
+- **`app/planner/plan.py`:** the model writes a `PlanPayload`, and `to_plan` checks it and gives it types (`Plan`), in the way extraction's payload becomes an `ExtractionResult`. A refusal raises `InvalidPlanError`, whose message names the step, the field and the problem, never a value.
+- **The schema:** each step field is optional in it (`SkipJsonSchema[None]`) and required by code per operation (`FIELDS`). The project's cleaner (`response_json_schema`) now writes each nested model and enum out where it is used and drops `default`, so the plan's schema has no union, no `$defs`, no `$ref` and no `additionalProperties`. The cleaner walks schemas, not names, so a field called `title` or `default` stays. Extraction's two schemas come out as before (tested), so the frozen baseline's request is unchanged.
+- **Details the spec left open:**
+  - `$paste` names the owner's pasted text for `mail.read`. A plan that names it when nothing was pasted is refused.
+  - One `timezone` for the whole plan. A search's `after` and `before` are dates, taken as midnight in that zone.
+  - Guests are `guests` (addresses) or `guest_refs` (`contacts.find` steps), so no field takes two kinds of value.
+  - The templates are D7's five. The decline codes are `cannot_send`, `cannot_change`, `email_says` and `out_of_scope`.
+  - An answer runs at least one step, and a clarify or a decline runs none.
+  - A template must have a step whose result it shows, and a plan that proposes answers with the `proposal` template.
+  - Limits: three reads (D6), ten results a search, 200 characters of text, a 31-day range, a 24-hour slot.
+- **One change to D3:** `slots.first_free` takes no window of its own. It looks within its free/busy step's range. A window wider than that range would count time never read as free.
+- **Not yet:** whether the API accepts the schema is recorded once a development key exists (19.16).
+- **Order:** 19.3's harness scores a plan by running it through the executor, so it is built after 19.6.
+- 38 deliberate breaks, one per rule, each caught. 2462 tests pass, with lint and mypy clean.

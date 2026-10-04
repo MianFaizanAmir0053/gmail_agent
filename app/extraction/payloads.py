@@ -32,34 +32,65 @@ class InvalidPayloadError(ValueError):
     """The model produced structurally valid JSON that cannot become an event."""
 
 
+_DROPPED = frozenset({"additionalProperties", "default"})
+"""Keywords removed wherever a schema has them.
+
+- `additionalProperties`: `extra="forbid"` is worth keeping on the payload
+  models -- it is what makes `model_validate_json` reject a response with junk
+  fields -- but it makes Pydantic emit `additionalProperties: false`, and the
+  endpoint 400s on that key. So we validate strictly on our side.
+- `default`: an optional field's `null` default tells the model nothing.
+"""
+
+_SCHEMA_LISTS = frozenset({"anyOf", "allOf", "oneOf", "prefixItems"})
+
+
 def response_json_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """Pydantic's JSON schema, cleaned of keys the API rejects.
+    """Pydantic's JSON schema, cleaned for the endpoint.
 
-    `extra="forbid"` is worth keeping on the payload models -- it is what makes
-    `model_validate_json` reject a response with junk fields -- but it makes
-    Pydantic emit `additionalProperties: false`, and the endpoint 400s on that
-    key. So we validate strictly on our side and send a scrubbed schema.
+    Two changes: the keywords in `_DROPPED` go, and each nested model or enum
+    is written out where it is used, so the schema has no `$defs` and no
+    `$ref`. The planner's schema is sent flat (M19, D2): the less of JSON
+    Schema a request leans on, the less the endpoint can reject.
 
-    Only that one key is removed. Stripping by name is blunt: schema keywords
-    and field names share a namespace, and a first attempt that also dropped
-    `title` as "documentation noise" deleted `properties.title` -- a real field
-    -- leaving it listed in `required` and nowhere else. Anything added here
-    must be safe against colliding with a payload field name.
+    The walk knows where field names sit -- the keys of `properties` -- and
+    removes keywords only from schemas. Schema keywords and field names share
+    a namespace, and a first attempt that stripped by name everywhere, dropping
+    `title` as "documentation noise", deleted `properties.title` -- a real field
+    -- leaving it listed in `required` and nowhere else.
     """
-    cleaned: dict[str, Any] = _strip_additional_properties(model.model_json_schema())
+    raw = model.model_json_schema()
+    definitions: dict[str, Any] = raw.pop("$defs", {})
+    return _clean(raw, definitions, ())
+
+
+def _clean(
+    schema: dict[str, Any], definitions: dict[str, Any], inside: tuple[str, ...]
+) -> dict[str, Any]:
+    """One schema, its references written out. `inside` names the definitions
+    being written out around it, so a model that contains itself is refused
+    rather than written out forever."""
+    if "$ref" in schema:
+        name = schema["$ref"].removeprefix("#/$defs/")
+        if name in inside:
+            raise ValueError(f"{name} contains itself, so it cannot be written out")
+        # Pydantic puts a field's own description beside the reference.
+        used = definitions[name] | {k: v for k, v in schema.items() if k != "$ref"}
+        return _clean(used, definitions, (*inside, name))
+
+    cleaned: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _DROPPED:
+            continue
+        if key == "properties":
+            cleaned[key] = {field: _clean(sub, definitions, inside) for field, sub in value.items()}
+        elif key == "items" and isinstance(value, dict):
+            cleaned[key] = _clean(value, definitions, inside)
+        elif key in _SCHEMA_LISTS:
+            cleaned[key] = [_clean(sub, definitions, inside) for sub in value]
+        else:
+            cleaned[key] = value
     return cleaned
-
-
-def _strip_additional_properties(node: Any) -> Any:
-    if isinstance(node, dict):
-        return {
-            key: _strip_additional_properties(value)
-            for key, value in node.items()
-            if key != "additionalProperties"
-        }
-    if isinstance(node, list):
-        return [_strip_additional_properties(item) for item in node]
-    return node
 
 
 def required_fields(model: type[BaseModel]) -> set[str]:
