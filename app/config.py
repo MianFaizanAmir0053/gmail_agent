@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     otherwise. See `migrations/004_pgvector.sql` for why it is not 3072."""
 
     retrieval_mode: Literal["vector", "hybrid"] = "vector"
-    """How `search_context` ranks (M12).
+    """How the corpus search ranks (M12).
 
     `vector` is the default because it is what the measurement supports, not
     because fusion was never built. Over 29 hand-labelled queries the keyword

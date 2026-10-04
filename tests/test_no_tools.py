@@ -1,13 +1,15 @@
-"""No model that reads mail holds a tool (M18, D4).
+"""No model holds a tool (M18, D4; M19, D13).
 
 A structural test rather than a data-flow guess:
+- `structured_call` takes no tools and no dispatcher at all, so no caller can
+  hand a model a tool, and no tool's result can go back to a model;
+- every call to it, from extraction and from the planner, passes no
+  `**kwargs` that could carry them;
 - the extraction pipeline takes no searcher;
-- no call to `structured_call` from `app/extraction/` passes tools or a
-  dispatcher, which are keyword-only there, so a positional argument cannot
-  carry them;
 - the graph's dependencies hold no reviewer.
 
-M19's planner, which will hold tools, lives outside `app/extraction/`.
+M18 kept the tool loop "for M19"; M19's planner plans once and never sees a
+result, so the loop went with it.
 """
 
 from __future__ import annotations
@@ -22,24 +24,36 @@ from app.extraction.llm import structured_call
 from app.extraction.pipeline import ExtractionPipeline, build_pipeline
 from app.graph.nodes import Deps
 
-EXTRACTION = Path(__file__).resolve().parents[1] / "app" / "extraction"
+APP = Path(__file__).resolve().parents[1] / "app"
+MODEL_CALLERS = (APP / "extraction", APP / "planner")
+"""The packages whose code calls a model."""
 
 
 def _structured_calls() -> Iterator[tuple[str, ast.Call]]:
-    for path in sorted(EXTRACTION.glob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text("utf-8"))):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = (
-                func.id
-                if isinstance(func, ast.Name)
-                else func.attr
-                if isinstance(func, ast.Attribute)
-                else None
-            )
-            if name == "structured_call":
-                yield path.name, node
+    for package in MODEL_CALLERS:
+        for path in sorted(package.glob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text("utf-8"))):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else func.attr
+                    if isinstance(func, ast.Attribute)
+                    else None
+                )
+                if name == "structured_call":
+                    yield f"{package.name}/{path.name}", node
+
+
+def test_structured_call_takes_no_tools() -> None:
+    parameters = inspect.signature(structured_call).parameters
+    assert not {"tools", "dispatch", "max_tool_turns"} & set(parameters)
+
+
+def test_the_search_tool_is_gone() -> None:
+    assert not (APP / "tools" / "search_context.py").exists()
 
 
 def test_the_extraction_pipeline_takes_no_searcher() -> None:
@@ -47,23 +61,15 @@ def test_the_extraction_pipeline_takes_no_searcher() -> None:
     assert "searcher" not in inspect.signature(build_pipeline).parameters
 
 
-def test_tools_and_a_dispatcher_can_only_be_passed_by_name() -> None:
-    parameters = inspect.signature(structured_call).parameters
-    for name in ("tools", "dispatch"):
-        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
-
-
-def test_extraction_calls_structured_call() -> None:
+def test_model_callers_call_structured_call() -> None:
     """Keeps the next test from passing because it found nothing to check."""
     assert len(list(_structured_calls())) >= 2
 
 
-def test_no_call_from_extraction_passes_tools_or_a_dispatcher() -> None:
-    for filename, call in _structured_calls():
+def test_no_call_passes_keyword_arguments_it_could_hide_tools_in() -> None:
+    for where, call in _structured_calls():
         names = {keyword.arg for keyword in call.keywords}
-        where = f"{filename}:{call.lineno}"
-        assert not names & {"tools", "dispatch"}, where
-        assert None not in names, f"{where} passes **kwargs, which could carry tools"
+        assert None not in names, f"{where}:{call.lineno} passes **kwargs"
 
 
 def test_the_graph_holds_no_reviewer() -> None:

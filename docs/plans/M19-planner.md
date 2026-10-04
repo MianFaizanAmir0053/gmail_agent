@@ -519,3 +519,11 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - Four rounds of the owner's decisions, a research agent's cited summary, a codebase survey, and two adversarial reviews.
 - The owner approved the spec on condition of the second review, whose findings are folded in above.
 - The second review made two rules stricter than decisions 5 and 13, recorded under Decisions for the owner.
+
+### Task 19.1, the tool loop removed (2026-10-04)
+
+- **Removed:** `structured_call`'s `tools`, `dispatch` and `max_tool_turns`, with the loop that fed each result back to the model; `app/tools/search_context.py`; and their tests (`test_tool_loop.py`, `test_search_context_tool.py`). `structured_call` is now one call and one answer, its request byte-identical to the old path without tools.
+- **The structural test** (`tests/test_no_tools.py`) was rewritten first and failed on the old code. It now asserts that `structured_call` takes no tools at all and that the search tool is gone. It scans every model caller in `app/extraction/` and `app/planner/` for `**kwargs`, and still guards the pipeline's searcher and the graph's reviewer.
+- **M15's cost report** loses its search projection. Its planner line now says chat is metered per turn and capped (D9).
+- **Kept:** the corpus search (`app/rag/search.py`) for the retrieval eval and the demo, which now says the planner uses Gmail's own search.
+- 2373 tests pass, with lint and mypy clean.

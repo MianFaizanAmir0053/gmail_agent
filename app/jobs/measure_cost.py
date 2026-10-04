@@ -28,7 +28,6 @@ import psycopg
 from app.extraction.prompts import CLASSIFY_SYSTEM, EXTRACT_SYSTEM
 from app.obs.pricing import PRICING_CHECKED_ON, cost_usd
 from app.rag.chunk import MAX_CHARS
-from app.rag.search import DEFAULT_LIMIT, SNIPPET_CHARS
 
 REFERENCE_DATES = {
     "2026": datetime(2026, 12, 15, tzinfo=UTC),
@@ -169,10 +168,6 @@ def cost_report(
         mean_classify_input - _prompt_tokens(CLASSIFY_SYSTEM) + _prompt_tokens(EXTRACT_SYSTEM),
         _prompt_tokens(EXTRACT_SYSTEM),
     )
-    mean_extract_input = _mean(s.input_tokens for s in extract) if measured else bound_input
-    search_extra_input = (mean_extract_input or 0.0) + DEFAULT_LIMIT * (
-        SNIPPET_CHARS / CHARS_PER_TOKEN
-    )
 
     triage: dict[str, Any] = {"label": "measured" if classify else "unmeasured"}
     extraction: dict[str, Any] = {
@@ -183,7 +178,6 @@ def cost_report(
     projection: dict[str, dict[str, float]] = {
         "v1_observe_mode": {},
         "m18_embeddings": {},
-        "m18_search_context": {},
         "v1_total": {},
     }
 
@@ -206,17 +200,12 @@ def cost_report(
             per_extraction = float(bound)
             extraction[f"{year}_upper_bound"] = per_extraction
 
-        search = cost_usd(extraction_model, at=at, input_tokens=round(search_extra_input))
-        per_search = float(search) if search is not None else 0.0
-
         meetings_per_month = 30 * inbound_per_day * meeting_rate * extractions_per_meeting
         v1 = 30 * inbound_per_day * per_triage + meetings_per_month * per_extraction
         embed = embeddings.per_month()
-        search_month = meetings_per_month * per_search
         projection["v1_observe_mode"][year] = v1
         projection["m18_embeddings"][year] = embed
-        projection["m18_search_context"][year] = search_month
-        projection["v1_total"][year] = v1 + embed + search_month
+        projection["v1_total"][year] = v1 + embed
 
     priced_now = sum(_price(s, s.started_at) for s in spans)
     reconciliation: dict[str, Any] = {
@@ -246,11 +235,10 @@ def cost_report(
         "labels": {
             "v1_observe_mode": "projection: measured per-message costs x measured volume x 30",
             "m18_embeddings": f"estimate: at ${EMBEDDING_RATE_PER_MTOK}/M tokens (see module doc)",
-            "m18_search_context": (
-                "estimate: one search per extraction, prompt re-sent; "
-                "returns with M19's planner, not M18"
+            "v2_planner": (
+                "not included: M19's chat is metered per turn and capped, "
+                "at most $25 a month (M19, D9)"
             ),
-            "v2_planner": "unknown until M19; not included",
         },
         "reconciliation": reconciliation,
         "decision": {
@@ -305,9 +293,6 @@ def to_markdown(report: dict[str, Any], *, since: datetime, until: datetime) -> 
         f"| + embeddings when M18 re-enables ingestion | "
         f"{money(projection['m18_embeddings']['2026'])} | "
         f"{money(projection['m18_embeddings']['2027'])} | estimate |",
-        f"| + search_context when M19's planner brings it back | "
-        f"{money(projection['m18_search_context']['2026'])} | "
-        f"{money(projection['m18_search_context']['2027'])} | estimate |",
         f"| **v1 total per month** | **{money(projection['v1_total']['2026'])}** | "
         f"**{money(projection['v1_total']['2027'])}** | projection |",
         f"| Hosting + database | {money(decision['hosting_and_database'])} | "

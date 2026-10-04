@@ -1779,8 +1779,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - M15's cost report loses its line about search coming back.
 
 **Acceptance criteria:**
-- [ ] The structural test fails while a `tools` argument exists, and passes after.
-- [ ] Nothing else imports what was removed; checks green.
+- [x] The structural test fails while a `tools` argument exists, and passes after.
+- [x] Nothing else imports what was removed; checks green.
 
 **Verification:** `uv run pytest tests/test_no_tools.py tests/test_pipeline.py`; `.\tasks.ps1 check`.
 

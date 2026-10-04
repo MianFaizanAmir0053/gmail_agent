@@ -64,7 +64,7 @@ M15 ─┬─► M16 ─────────────────┬─�
 | [M16](M16-web-channel.md) | Web channel | 8d | ◐ built, pairing included (switched off); deployed to Vercel; phone tests wait for the owner's end tests |
 | [M17](M17-action-policy.md) | Action policy | 5d | ◐ built and reviewed; the exit criterion waits for the owner's end tests |
 | [M18](M18-untrusted-input.md) | Untrusted input | 4d | ◐ built through 18.15 and reviewed; the model runs wait for a development key, the exit criteria for the owner |
-| [M19](M19-planner.md) | Planner | 7d | ◐ specified 2026-10-04, after one review round; waiting for approval |
+| [M19](M19-planner.md) | Planner | 8d | ◐ approved 2026-10-04 after two review rounds; building (tasks 19.1–19.17) |
 | [M20](M20-mail-sync.md) | Mail sync | 4d | ◐ built and reviewed; the exit criterion waits for the owner's end tests |
 | M21 | Loose ends | 7d | ☐ not specified |
 | M22 | Connector gateway | 4d | ☐ not specified |

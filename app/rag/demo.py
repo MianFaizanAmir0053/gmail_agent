@@ -2,11 +2,11 @@
 
     python -m app.rag.demo "Ahmed suggested we do the review Thursday at 3pm"
 
-Once (M11) this ran the same extraction twice, with and without the
-`search_context` tool. Since M18 no model that reads mail holds a tool
-(decision 3): the extraction runs as production runs it, and the search runs
-on its own, showing what M19's planner -- which reads the owner's request,
-not the mail -- will have to work with.
+Once (M11) this ran the same extraction twice, with and without a search
+tool. Since M18 no model that reads mail holds a tool, and since M19 no model
+holds one at all: the extraction runs as production runs it, and the corpus
+search runs on its own. The planner searches with Gmail's own search (M19,
+decision 6), not this corpus, which stays for the retrieval eval.
 
 The text is an argument rather than a fixture because a convincing example
 names a real person from your own mailbox, and a real address does not belong
@@ -67,7 +67,7 @@ def main() -> None:
 
     with connect(settings.database_url) as conn:
         search = build_context_search(conn, settings, gate=meter)
-        print("\n--- search_context, on its own ---")
+        print("\n--- corpus search, on its own ---")
         for hit in search(args.body):
             print(f"  {hit}")
 

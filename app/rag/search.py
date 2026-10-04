@@ -248,7 +248,7 @@ on it should be the real thing.
 
 @dataclass(slots=True)
 class ContextSearch:
-    """Everything `search_context` needs, injected so tests can fake it."""
+    """Everything a corpus search needs, injected so tests can fake it."""
 
     conn: psycopg.Connection
     client: EmbeddingClientLike
