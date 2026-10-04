@@ -8,12 +8,47 @@ three nodes into a graph run.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from datetime import time
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkingHours:
+    """When a free slot may be offered (M19, D3): the days, Monday as 0, and
+    the hours, in the owner's zone."""
+
+    days: frozenset[int]
+    start: time
+    end: time
+
+    @classmethod
+    def parse(cls, text: str) -> WorkingHours:
+        """`Mon-Fri 09:00-18:00`: days or ranges of days, comma-separated, then
+        the hours. A range may wrap the week: `Sun-Thu`."""
+        problem = f"WORKING_HOURS must look like 'Mon-Fri 09:00-18:00', not {text!r}"
+        days_text, _, hours_text = text.strip().lower().partition(" ")
+        opens, _, closes = hours_text.strip().partition("-")
+        days: set[int] = set()
+        try:
+            for part in days_text.split(","):
+                first, _, last = part.partition("-")
+                begin = _DAY_NAMES.index(first)
+                span = (_DAY_NAMES.index(last) - begin) % 7 if last else 0
+                days.update((begin + offset) % 7 for offset in range(span + 1))
+            start, end = time.fromisoformat(opens), time.fromisoformat(closes)
+        except ValueError:
+            raise ValueError(problem) from None
+        if start >= end:
+            raise ValueError(problem)
+        return cls(frozenset(days), start, end)
 
 
 class Settings(BaseSettings):
@@ -107,6 +142,11 @@ class Settings(BaseSettings):
     measure_exclude_senders: list[str] = Field(default_factory=list)
     """Senders the M15 measurement ignores, as a JSON list. For the owner's
     own test mail, such as the planted day-1 meeting."""
+
+    # --- The planner (M19) ---------------------------------------------------
+    working_hours: str = "Mon-Fri 09:00-18:00"
+    """When the planner may offer a free slot, in `user_timezone`
+    (`WorkingHours.parse`). Read at boot, so a typo fails there."""
 
     # --- Google (M01) -------------------------------------------------------
     google_client_secrets_path: str | None = None
@@ -212,6 +252,17 @@ class Settings(BaseSettings):
                 "sends it as the VAPID subject"
             )
         return origin
+
+    @field_validator("working_hours")
+    @classmethod
+    def _working_hours_read(cls, value: str) -> str:
+        WorkingHours.parse(value)
+        return value
+
+    @property
+    def hours(self) -> WorkingHours:
+        """`working_hours`, read."""
+        return WorkingHours.parse(self.working_hours)
 
     @field_validator(
         "telegram_bot_token",

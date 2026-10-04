@@ -62,6 +62,11 @@ SYNC_HEADERS = (
 bulk signals. Unlike `METADATA_HEADERS` there is no Subject -- a subject can
 carry a one-time code, and nothing stores one until M18 can strip it."""
 
+SEARCH_HEADERS = ("From", "Subject", "Authentication-Results")
+"""What the planner's search reads of each message it finds (M19, D3): who
+wrote it, Gmail's own verdict on their domain, and the subject, which is
+redacted of codes and links before it is kept."""
+
 GUEST_HEADERS = ("From", "To", "Cc", "Authentication-Results")
 """What the recipient rule reads from a thread (M17, D4): who wrote, to whom,
 and Gmail's own verdict on the sender's domain."""
@@ -710,8 +715,11 @@ class GmailClient:
             raise
         return to_history_page(response)
 
-    def message_metadata(self, message_id: str) -> MessageMeta:
-        """A message's labels, time and six headers, through the field mask.
+    def message_metadata(
+        self, message_id: str, headers: tuple[str, ...] = SYNC_HEADERS
+    ) -> MessageMeta:
+        """A message's labels, time and the named headers -- the sync's six
+        unless told otherwise -- through the field mask.
 
         Raises `MessageGoneError` for a 404.
         """
@@ -722,7 +730,7 @@ class GmailClient:
                 userId="me",
                 id=message_id,
                 format="metadata",
-                metadataHeaders=list(SYNC_HEADERS),
+                metadataHeaders=list(headers),
                 fields=SYNC_FIELDS,
             )
         )
@@ -732,7 +740,7 @@ class GmailClient:
             if _status(exc) == 404:
                 raise MessageGoneError(message_id) from exc
             raise
-        return to_message_meta(response, SYNC_HEADERS)
+        return to_message_meta(response, headers)
 
     def message_ids(
         self, query: str, *, after: datetime | None = None, before: datetime | None = None

@@ -1849,8 +1849,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - `contacts.find` against the confirmed contacts only.
 
 **Acceptance criteria:**
-- [ ] Each operation covered on fakes, including one, several and no contact matches.
-- [ ] No Gmail syntax comes from the planner.
+- [x] Each operation covered on fakes, including one, several and no contact matches.
+- [x] No Gmail syntax comes from the planner.
 
 **Verification:** `uv run pytest tests/test_planner_ops.py`.
 

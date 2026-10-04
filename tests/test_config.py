@@ -209,3 +209,19 @@ def test_a_spending_limit_must_be_a_real_amount(name: str, value: float) -> None
             gemini_api_key="k",
             **limit,
         )
+
+
+def test_working_hours_default_to_a_weekday_office() -> None:
+    hours = _settings().hours
+    assert (hours.days, hours.start.hour, hours.end.hour) == (frozenset(range(5)), 9, 18)
+
+
+def test_working_hours_that_cannot_be_read_fail_at_boot() -> None:
+    """Not on the first chat turn that asks for a free slot (M19, D3)."""
+    with pytest.raises(ValidationError, match="WORKING_HOURS"):
+        Settings(
+            _env_file=None,
+            database_url="postgresql://localhost/test",
+            gemini_api_key="test-key",
+            working_hours="weekdays 9 to 6",
+        )

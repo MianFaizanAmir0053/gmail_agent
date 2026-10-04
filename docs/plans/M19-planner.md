@@ -553,3 +553,15 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **`list_events`** reads one page of 50, earliest first, each repeat of a recurring event on its own, and says whether there were more. Each event has its title, its start and end, whether it lasts all day, its organiser, and whether Google says the organiser is the owner. It leaves out cancelled events and those the owner declined. All-day events run from midnight to midnight in the calendar's own zone.
 - **Scopes:** `events.list` on the primary is covered by `calendar.events`, which the agent already holds.
 - 12 deliberate breaks, each caught. 2476 tests pass, with lint and mypy clean.
+
+### Task 19.5, the read operations and helpers (2026-10-04)
+
+- **`app/planner/ops.py`:** `search`, `first_free` and `find_contact`. The calendar's reads are the client's own (19.4). Nothing here gives a value its origin; the executor does (19.6).
+- **`mail.search`:**
+  - Code builds the query. Each value the planner wrote goes inside quote marks with its own quote marks removed, so Gmail reads none of it as an operator. Dates become epoch seconds (`epoch_window`), since Gmail reads a bare date as Pacific midnight.
+  - Each message found is read as metadata through the field mask: `From`, `Subject` and `Authentication-Results` only (`SEARCH_HEADERS`). It comes back with its sender's address and never the display name, Gmail's DMARC verdict (`participants.dmarc_passed`), whether the owner sent it (`SENT`), Gmail's own date, and the subject through `redact_secrets`.
+  - A message that left the mailbox or went to the bin between the listing and the read is left out.
+- **`slots.first_free`** offers the earliest free time inside working hours in the owner's zone. It starts on a quarter hour, never before now, and never outside its free/busy step's range. `WORKING_HOURS` (default `Mon-Fri 09:00-18:00`) is read at boot, so a typo fails there.
+- **`contacts.find`, a detail beyond D3's "ignoring case and dots":** a name names a confirmed contact when each of its words is a word of the address's local part, or its letters are all of them. "Sara" finds sara.khan@, "Bilal Ahmed" finds bilalahmed@, and "Sar" finds nothing. A Gmail contact is stored without dots (`guest_key`), so "Sara" alone does not find sarakhan@gmail.com, and the owner types the address. Several matches or none end the turn with a fixed question (`Unclear`).
+- **The fake mailbox** now reads quoted terms, `from:` and `to:`, and still refuses an unquoted word, which would be a bug in whatever built the query.
+- 25 deliberate breaks, each caught. 2523 tests pass, with lint and mypy clean.
