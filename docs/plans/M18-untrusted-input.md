@@ -439,3 +439,31 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
 - **Already safe, unchanged.** M16, M17 and M20 record only exception types: the scheduler's `job_runs`, the worker, the sync and the feed. Registry refusals are fixed words.
 - **Tests.** Eleven new tests; `tests/stored_text.py` holds the one seeded error they share: a code and a link on its first line, and a sentence of email on its second. Thirteen deliberate breaks were each caught. They covered every storage path, both halves of `error_text`, the chained cause, the skip phrase, the purge, its fixed words and the new fixed reason. 1937 tests pass on a local Postgres 16, with lint and mypy clean.
 - **A tool note.** A script that restores files on Windows must write bytes. Text mode turned the restored files' LF into CRLF once; they were converted back before the commit.
+
+### Review of phase 3, and the fixes (2026-10-04)
+
+`/code-review` at high effort, fresh context, over `6c009be..HEAD` (18.4 to 18.10, the Edit fix, and phase 1's review fixes). Nine findings; findings are described in words here, never as payloads.
+
+- **Fixed, with a test each that fails without it:**
+  - **Credential phrases named topics.** A meeting about MFA, API keys, two-step verification, a new password policy or a security key was set aside whole as credential mail, and lost without a word. The owner chose "delivery wording only": a phrase now has to hand over a secret. A factor counts with a code ("2FA code"), or as "your two-factor sign in". A key, a token or a secret counts when it is "your" one. "Password reset" counts as a link, a code or a request, and "password is" counts only as "your password is". All ten credential fixtures still sort as credential mail, and twelve meeting wordings on those topics now flow.
+  - **A code split three and three passed for a time range.** The clock pattern let its first digit go, so near a cue word about a third of such codes were kept. A range now needs a dash, a four-digit end (the start may be a three-digit morning time, as in "930-1030"), and an end later the same day within twelve hours. A space-joined pair, and a pair that runs backwards, are codes.
+  - **A CSS escape past the last code point raised,** so a sender could fail their own message on every fetch. It decodes to U+FFFD, as the CSS spec does: zero, a surrogate or a number past Unicode.
+  - **The visible-text walk recursed once per level.** Markup nested a few thousand deep raised `RecursionError`, with the same effect. It is now a loop over a stack, in the same document order; a check against the old module confirmed the old walk failed and the new one reads the text.
+  - **Headers could overflow the prompt's room.** Only the body gives way, so a huge subject or a list of about 1,300 recipients made Jev's path refuse the state, and the message failed. Each header line (From, To, Subject) is cut to 2,000 characters (`HEADER_ROOM`), ending in " [cut]".
+  - **The guest check kept its own copy of the scrubber's address pattern.** One pattern (`scrub.ADDRESS`) now serves both.
+  - **Found alongside, a gap in 18.10:** Jev's error for an unusable answer quoted the answer, which is the model's output. It now names only the value's type.
+- **Accepted:**
+  - A zero height or width counts as hidden even without `overflow:hidden`. A browser would draw that text, so the model can miss a rare visible line. It never reads text the owner cannot see.
+  - The prompt scrubs the whole body again before cutting it. Cutting first could split a code at the cut, and the cost is bounded by the feed's rule.
+  - Telegram reads the allowed contacts on a connection of its own for each card. Telegram is not in use; a session's connection can be passed when it is.
+- **Process.** The review's findings quoted code-shaped example strings, and auto mode then blocked the shell and subagents for the rest of the session. The fixes were written in that state and run after the owner left auto mode. Review skills now get the no-quote rule in their arguments.
+- **Checks.** Eleven deliberate breaks were each caught. They covered:
+  - the topic word restored, and the factor sign-in phrase dropped;
+  - a three-digit range end, no dash needed, a range running backwards, and no short start;
+  - the escape check;
+  - the walk's order;
+  - the header cut;
+  - Jev's error;
+  - the shared pattern.
+
+  1977 tests pass on a local Postgres 16, with lint and mypy clean.

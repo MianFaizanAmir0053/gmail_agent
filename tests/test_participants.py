@@ -425,6 +425,14 @@ def test_every_source_has_words_and_two_are_warnings() -> None:
     assert {"quoted", "absent"} == WARNINGS
 
 
+def test_guests_are_found_with_the_scrubbers_own_address_pattern() -> None:
+    """One pattern, so an address the scrubber keeps is always one the guest
+    check finds, and a later change to it cannot drift (phase-3 review)."""
+    from app.policy import participants, scrub
+
+    assert participants._ADDRESS.pattern == scrub.ADDRESS
+
+
 def test_the_web_card_says_the_same_words() -> None:
     """`dashboard/src/lib/guests.ts` mirrors the words and Telegram's note."""
     from pathlib import Path

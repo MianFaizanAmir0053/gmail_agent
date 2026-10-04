@@ -1647,7 +1647,26 @@ The payload stores them, and notes when the email has a quoted or forwarded sect
 
 ### Checkpoint: what the owner sees
 
-- [ ] Checks green, Python and web; Neon.
+- [x] Checks green, Python and web; Neon. (2026-10-04, at `f7d17d8`: 1937 tests on a local Postgres 16, lint and mypy clean; the web app's 144 tests, typecheck and build at `de3d38d`, untouched since; the obs, purge, ingestion, graph and retries suites on Neon, 39 passed, one after Neon dropped the connection.)
+- [ ] Review of 18.4–18.10, at the owner's choice: `/code-review`, `/security-review`, `/simplify`, each in fresh context.
+
+### Phase-3 review fixes (2026-10-04)
+
+**Description:** `/code-review` (high, `6c009be..HEAD`) found nine problems. Fixed:
+- **Credential phrases** name a secret handed over, not a topic (the owner's choice). A meeting about MFA, API keys, two-step verification or a new password policy was skipped whole.
+- **Time ranges** need a four-digit end and a dash, running forward within twelve hours. A code split three and three passed for a range.
+- **A CSS escape past Unicode** decodes to U+FFFD instead of raising, and failing the message.
+- **The visible-text walk** is a loop, so markup nested past the recursion limit is read.
+- **Each header line** (From, To, Subject) is cut to 2,000 characters, so headers cannot overflow the prompt's room. Jev's refusal of an oversized state is never reached.
+- **One address pattern**, shared by the scrubber and the guest check.
+- Found alongside: Jev's unusable-answer error no longer quotes the answer (D7).
+
+Accepted, with reasons in the spec's running notes: a zero height without `overflow:hidden` counts as hidden; the scrub runs again over the whole body at assembly; Telegram reads the allowed contacts on a connection of its own.
+
+**Acceptance criteria:**
+- [x] Each fix has a test that fails without it: eleven deliberate breaks, each caught; the old walk was seen to raise on deep markup.
+- [x] Checks green, locally; the credential and meeting fixtures still sort as before.
+- [ ] `/security-review` and `/simplify` run, with the no-quote rule in their args, and their findings handled.
 
 ## Phase 4 · The injection suite and the evals
 

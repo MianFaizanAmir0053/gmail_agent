@@ -232,11 +232,28 @@ def _prepared(email: EmailMessage) -> tuple[str, str]:
     return scrub(email.subject), scrub(email.body_text)
 
 
+HEADER_ROOM = 2_000
+"""Characters of one header line (From, To, Subject) a prompt carries. Only
+the body gives way to fit the room, so without this a sender could fill the
+room with a subject, or a list of recipients, that nothing could cut
+(phase-3 review). A real subject, or the To and Cc of a meeting, fits."""
+
+HEADER_CUT = " [cut]"
+
+
+def _header(text: str) -> str:
+    """One header line, cut to `HEADER_ROOM` and defused."""
+    if len(text) > HEADER_ROOM:
+        text = text[: HEADER_ROOM - len(HEADER_CUT)] + HEADER_CUT
+    return defuse(text)
+
+
 def email_block(email: EmailMessage, *, marker: str, body_room: int | None = None) -> str:
     """The email as the model reads it, every field the sender controls between
     the call's markers. With `body_room`, a longer body is cut to that many
     characters, `CUT_NOTE` included, before the closing marker is added, so the
-    closing marker is never what gives way."""
+    closing marker is never what gives way. Each header line is cut to
+    `HEADER_ROOM`, so the headers always leave the body its room."""
     subject, body = _prepared(email)
     body = defuse(body)
     if body_room is not None and len(body) > body_room:
@@ -244,9 +261,9 @@ def email_block(email: EmailMessage, *, marker: str, body_room: int | None = Non
     recipients = ", ".join(email.recipients) or "(none)"
     return (
         f"<email-{marker}>\n"
-        f"From: {defuse(email.sender)}\n"
-        f"To: {defuse(recipients)}\n"
-        f"Subject: {defuse(subject)}\n"
+        f"From: {_header(email.sender)}\n"
+        f"To: {_header(recipients)}\n"
+        f"Subject: {_header(subject)}\n"
         f"Received: {email.received_at:%Y-%m-%d %H:%M} UTC\n"
         "Body:\n"
         f"{body}\n"

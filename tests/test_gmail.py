@@ -208,6 +208,32 @@ def test_a_hiding_style_written_another_way_is_still_hidden(style: str) -> None:
     assert extract_body(_html(f'<p>Shown</p><div style="{style}">secret</div>')) == "Shown"
 
 
+@pytest.mark.parametrize("escape", ["\\FFFFFF", "\\110000", "\\0", "\\D800"])
+def test_a_css_escape_past_unicode_is_read_not_raised(escape: str) -> None:
+    """Six hex digits reach past the last code point. Decoded as U+FFFD, as the
+    CSS spec decodes it, rather than failing the message (phase-3 review)."""
+    markup = f'<p style="color:{escape} red">Meet Tuesday 3pm</p>'
+    assert extract_body(_html(markup)) == "Meet Tuesday 3pm"
+
+
+def test_an_escaped_hiding_style_past_unicode_hides_nothing_else() -> None:
+    markup = '<p>Shown</p><div style="display:\\FFFFFFnone">also shown</div>'
+    assert extract_body(_html(markup)) == "Shown\nalso shown"
+
+
+def test_markup_nested_past_the_recursion_limit_is_still_read() -> None:
+    """html5lib keeps every level, so the walk is a loop, not recursion: a
+    sender could otherwise fail their own message (phase-3 review)."""
+    depth = 5_000
+    markup = "<div>" * depth + "Meet Tuesday 3pm" + "</div>" * depth + "<p>Room 4</p>"
+    assert extract_body(_html(markup)) == "Meet Tuesday 3pm\nRoom 4"
+
+
+def test_a_hidden_childs_tail_still_shows_in_order() -> None:
+    markup = '<p>One <span style="display:none">secret</span>two <b>three</b> four</p><p>five</p>'
+    assert extract_body(_html(markup)) == "One two three four\nfive"
+
+
 def test_a_preheader_hidden_with_display_none_does_not_show() -> None:
     markup = (
         '<span style="display:none;max-height:0;overflow:hidden">Preview secret</span><p>Hi</p>'

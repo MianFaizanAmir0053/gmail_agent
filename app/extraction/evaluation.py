@@ -81,7 +81,9 @@ def _probability(body: dict[str, Any]) -> float:
     value = answer.get("probability") if isinstance(answer, dict) else None
     # bool is an int subclass, so True would otherwise read as certainty.
     if isinstance(value, bool) or not isinstance(value, int | float) or not 0 <= value <= 1:
-        raise LlmError(f"Evaluation returned no usable probability: {answer!r}")
+        # What kind of value, never the answer itself: it is the model's
+        # output, which can quote the email, and this error is stored (M18, D7).
+        raise LlmError(f"Evaluation returned no usable probability ({type(value).__name__})")
     return float(value)
 
 

@@ -43,6 +43,7 @@ from email.utils import getaddresses, parseaddr
 from typing import Any, Literal
 
 from app.contracts import EmailMessage
+from app.policy.scrub import ADDRESS
 from app.rag.clean import split_quoted
 
 GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
@@ -75,9 +76,9 @@ SOURCE_WORDS: dict[Source, str] = {
 
 WARNINGS: frozenset[Source] = frozenset({"quoted", "absent"})
 
-_ADDRESS = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}")
-"""An address in text. Length-bounded, as the scrubber's is, so a long run
-of word characters cannot make matching quadratic."""
+_ADDRESS = re.compile(ADDRESS)
+"""An address in text: the scrubber's own pattern, so a guest whose address
+the scrubber kept is always found."""
 
 
 def guest_key(address: str) -> str:

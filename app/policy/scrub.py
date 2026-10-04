@@ -102,32 +102,39 @@ line break, so "sign-in", "sign in" and "signin" are all one phrase. At most
 one newline, so a phrase does not span a blank line between two paragraphs
 (M18, finding 9)."""
 
+_SECRET_NAMES = (
+    rf"recovery{_GAP}keys?|(?:api|personal{_GAP}access|access|bearer){_GAP}(?:keys?|tokens?|secrets?)"
+    rf"|(?:client|secret|private){_GAP}(?:keys?|secrets?)"
+)
+_FACTOR = rf"(?:(?:two|2){_GAP}(?:factor|step)|2fa|mfa|multi{_GAP}factor)"
+
 _STRONG_PHRASES = (
     rf"verification{_GAP}(?:codes?|links?)",
     rf"confirmation{_GAP}codes?",
     rf"one{_GAP}time{_GAP}(?:pass)?(?:codes?|words?|pins?)",
     rf"single{_GAP}use{_GAP}(?:codes?|passwords?)",
     rf"(?:sign|log){_GAP}(?:in|on){_GAP}(?:codes?|links?)",
-    rf"security{_GAP}(?:codes?|keys?)",
+    rf"security{_GAP}codes?",
     rf"authentication{_GAP}codes?",
-    rf"recovery{_GAP}(?:codes?|keys?)",
+    rf"recovery{_GAP}codes?",
     rf"backup{_GAP}codes?",
     rf"magic{_GAP}links?",
-    rf"reset{_GAP}(?:your{_GAP}|the{_GAP})?password",
-    rf"password{_GAP}reset",
-    rf"forgot(?:ten)?{_GAP}(?:your{_GAP})?password",
-    rf"(?:temporary|new){_GAP}password",
-    rf"(?:your{_GAP})?password{_GAP}is",
-    rf"(?:two|2){_GAP}(?:factor|step){_GAP}(?:verification|authentication)?",
-    r"2fa",
-    rf"multi{_GAP}factor",
-    r"mfa",
-    rf"api{_GAP}(?:keys?|tokens?|secrets?)",
-    rf"access{_GAP}tokens?",
-    rf"(?:client|secret|private){_GAP}(?:keys?|secrets?)",
-    rf"bearer{_GAP}tokens?",
+    rf"reset{_GAP}your{_GAP}password",
+    rf"password{_GAP}reset{_GAP}(?:codes?|links?|requests?)",
+    rf"forgot(?:ten)?{_GAP}your{_GAP}password",
+    rf"temporary{_GAP}password",
+    rf"your{_GAP}(?:new{_GAP}|temporary{_GAP})?password{_GAP}is",
+    rf"your{_GAP}new{_GAP}password",
+    rf"{_FACTOR}{_GAP}(?:(?:verification|authentication){_GAP})?codes?",
+    rf"your{_GAP}{_FACTOR}{_GAP}(?:sign|log){_GAP}(?:in|on)",
+    rf"your{_GAP}(?:new{_GAP})?(?:{_SECRET_NAMES})",
     r"otp",
 )
+"""Wordings that hand over a secret, not ones that name a topic (the owner's
+choice, 2026-10-04). A meeting about MFA, API keys or a new password policy is
+mail to read: skipping it whole lost the meeting without a word. So a factor
+counts with a code ("your 2FA code"), and a key, a token or a secret counts
+when it is "your" one. What such mail carries, the scrubber still removes."""
 _STRONG = re.compile(r"\b(?:" + "|".join(_STRONG_PHRASES) + r")\b", re.IGNORECASE)
 
 _CUE = re.compile(r"\b(?:codes?|otp|passcodes?|pins?|verification)\b", re.IGNORECASE)
@@ -148,13 +155,15 @@ _SIGN_IN_PATH = re.compile(
     re.IGNORECASE,
 )
 
-_FROZEN = re.compile(
-    r"\[link: [^\]\n]*\]|\[link\]|\[code removed\]|[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}"
-)
+ADDRESS = r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}"
+"""An email address in text. The local and domain parts are length-bounded so
+a long run of word characters without an at-sign cannot make matching
+quadratic (M18, finding 8). `app/policy/participants.py` finds guests with the
+same pattern, so an address the scrubber keeps is one the guest check finds."""
+
+_FROZEN = re.compile(r"\[link: [^\]\n]*\]|\[link\]|\[code removed\]|" + ADDRESS)
 """What the code pass must not read: link markers, removed-code markers (whose
-"code" would otherwise be a cue), and email addresses (a guest's address). The
-local and domain parts are length-bounded so a long run of word characters
-without an at-sign cannot make matching quadratic (M18, finding 8)."""
+"code" would otherwise be a cue), and email addresses (a guest's address)."""
 
 _DIGITS = re.compile(rf"(?<![\w+#{_DASHES}])\d+(?:[ \t{_DASHES}]\d+)*(?!\w)")
 _DIGITS_STRICT = re.compile(rf"(?<!\d)\d+(?:[ \t{_DASHES}]\d+)*")
@@ -189,9 +198,18 @@ _TIME_TOKEN = re.compile(
 """An alphanumeric token that is really a time: `9h30`, `14:30`, `1430hrs`,
 `1030am`, `0900utc`."""
 _ORDINAL = re.compile(r"\d+(?:st|nd|rd|th)", re.IGNORECASE)
-_CLOCK = re.compile(r"[0-2]?\d[0-5]\d")
-"""A four-digit 24-hour clock time, 0000 to 2359, for a time range like
-`1430-1530` (M18, finding 7)."""
+_CLOCK = re.compile(r"(?:[01]\d|2[0-3])[0-5]\d")
+"""A four-digit 24-hour clock time, 0000 to 2359: either end of a time range
+like `1430-1530` (M18, finding 7)."""
+_SHORT_CLOCK = re.compile(r"\d[0-5]\d")
+"""A three-digit morning time, 000 to 959: only ever the start of a range, as
+in `930-1030`. With both ends allowed three digits, any code split three and
+three passed for a range (phase-3 review)."""
+_DASH_CHARS = frozenset("-" + "".join(map(chr, range(0x2010, 0x2016))) + chr(0x2212))
+"""The characters `_DASHES` names, as a set: built with `chr`, so this file
+stays ASCII."""
+_LONGEST_RANGE = 12 * 60
+"""Minutes. A range runs forward within one day, and no longer than this."""
 
 _HOLD_OPEN = chr(0xE000)
 _HOLD_CLOSE = chr(0xE001)
@@ -516,7 +534,7 @@ def _is_digit_code(token: str, before: str, after: str, *, strict: bool) -> bool
     if len(groups) == 2:
         if max(len(group) for group in groups) <= 2:
             return False  # a short date: 10-05
-        if all(_CLOCK.fullmatch(group) for group in groups):
+        if _is_time_range(token, groups):
             return False  # a time range: 1430-1530 (M18, finding 7)
         if all(len(group) == 4 and 1900 <= int(group) <= 2099 for group in groups):
             return False  # a year range: 2025-2026
@@ -534,6 +552,22 @@ def _is_digit_code(token: str, before: str, after: str, *, strict: bool) -> bool
         ):
             return False  # a time: at 1430, 1430 hrs
     return not (_PHONE_BEFORE.search(before) or _LABEL_BEFORE.search(before))
+
+
+def _is_time_range(token: str, groups: list[str]) -> bool:
+    """Two clock times joined by a dash, the second later the same day and at
+    most twelve hours on: `1430-1530`, `930-1030`. The end has four digits and
+    a space never joins a range, so near a cue `123-456` and `1030 1130` are
+    codes, and so is `2041-1135`, which runs backwards."""
+    first, last = groups
+    if token[len(first)] not in _DASH_CHARS:
+        return False
+    if not (_CLOCK.fullmatch(first) or _SHORT_CLOCK.fullmatch(first)):
+        return False
+    if not _CLOCK.fullmatch(last):
+        return False
+    start, end = (int(group[:-2]) * 60 + int(group[-2:]) for group in groups)
+    return 0 < end - start <= _LONGEST_RANGE
 
 
 def _hold(text: str, held: list[str]) -> str:

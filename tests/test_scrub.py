@@ -93,19 +93,44 @@ def test_no_meeting_fixture_is_taken_for_credential_mail(case: dict[str, Any]) -
         "backup codes",
         "magic link",
         "reset your password",
-        "password reset",
+        "password reset link",
+        "password reset request",
         "forgot your password",
         "temporary password",
-        "two-factor",
-        "2FA",
-        "two-step verification",
-        "multi-factor",
+        "two-factor code",
+        "2FA code",
+        "two-step verification code",
+        "multi-factor authentication code",
+        "MFA code",
         "OTP",
     ],
 )
 def test_each_strong_phrase_flags_a_message_in_the_subject_or_the_body(phrase: str) -> None:
     assert is_credential(f"About your {phrase}", "Thanks.")
     assert is_credential("Hello", f"Here is the {phrase.upper()} you asked for.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Can we meet Thursday at 3pm to plan the MFA rollout?",
+        "Sync on API keys rotation, Tue 10am",
+        "Kickoff for the new password policy, Monday 9am",
+        "Workshop: two-step verification training, Friday 2pm",
+        "2FA enforcement review on Wednesday",
+        "Multi-factor rollout retro, Thu 4pm",
+        "Security key distribution session at 11",
+        "Review the password reset flow, Tue 2pm",
+        "Disaster recovery key decisions, Mon 10am",
+        "Access token expiry design review",
+        "Client secret rotation plan, Fri 9am",
+        "The Wi-Fi password is on the whiteboard",
+    ],
+)
+def test_a_meeting_about_a_security_topic_is_not_credential_mail(text: str) -> None:
+    """A topic is not a secret handed over (the owner's choice, 2026-10-04):
+    skipped whole, the meeting was lost without a word."""
+    assert not is_credential(text, text)
 
 
 def test_a_phrase_split_across_a_line_break_still_counts() -> None:
@@ -394,10 +419,33 @@ def test_a_backslash_cannot_disguise_a_meeting_host() -> None:
 
 @pytest.mark.parametrize(
     "kept",
-    ["1430-1530", "2025-2026", "1030am", "0900UTC", "1430hrs", "14h30"],
+    ["1430-1530", "0930-1045", "930-1030", "2025-2026", "1030am", "0900UTC", "1430hrs", "14h30"],
 )
 def test_times_and_year_ranges_survive_beside_a_cue(kept: str) -> None:
     assert scrub(f"your code and the slot {kept}") == f"your code and the slot {kept}"
+
+
+def test_a_time_range_may_use_an_en_dash() -> None:
+    kept = "1430" + chr(0x2013) + "1530"
+    assert scrub(f"your code and the slot {kept}") == f"your code and the slot {kept}"
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ("123", " ", "456"),
+        ("123", "-", "456"),
+        ("104", " ", "233"),
+        ("2041", "-", "1135"),
+        ("1030", " ", "1130"),
+    ],
+)
+def test_a_code_split_in_two_is_never_read_as_a_time_range(parts: tuple[str, str, str]) -> None:
+    """A range is two four-digit times joined by a dash, the second later the
+    same day (phase-3 review): three and three digits, a space, or a range
+    that runs backwards is a code."""
+    code = "".join(parts)
+    assert scrub(f"your code is {code}") == "your code is [code removed]"
 
 
 def test_a_code_split_one_digit_per_cell_is_removed() -> None:
@@ -426,11 +474,16 @@ def test_a_credential_subject_keeps_no_link_not_even_a_meeting_one() -> None:
     [
         "Your API key",
         "Your access token is ready",
+        "Your new personal access token",
+        "Your client secret",
+        "Your recovery key",
         "Here is your confirmation code",
-        "Set up MFA",
+        "Your MFA code",
         "Your verification link",
-        "two-step authentication",
+        "two-step authentication code",
+        "Finish your two-factor sign in",
         "Your new password",
+        "Your password is below",
     ],
 )
 def test_more_secret_wordings_are_recognised(subject: str) -> None:

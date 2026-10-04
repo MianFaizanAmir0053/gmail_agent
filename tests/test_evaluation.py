@@ -127,6 +127,19 @@ def test_a_missing_answer_is_an_error() -> None:
         _classify(FakeEvaluator([{"model": JEV, "answers": {}, "usage": {}}]))
 
 
+def test_an_unusable_answer_is_never_quoted_in_the_error() -> None:
+    """The answer is the model's output, which can quote the email, and the
+    error is stored (M18, D7)."""
+    body = _answer(0.9)
+    body["answers"]["calendar_event"] = {
+        "probability": "high",
+        "reasoning": "Hi Sara, the offsite moved to Thursday.",
+    }
+    with pytest.raises(LlmError) as caught:
+        _classify(FakeEvaluator([body]))
+    assert "offsite" not in str(caught.value)
+
+
 # --- usage -----------------------------------------------------------------
 
 
@@ -209,6 +222,23 @@ def test_a_long_email_reaches_jev_cut_with_its_closing_marker() -> None:
     assert len(state) <= STATE_CHAR_LIMIT
     assert state.rstrip().endswith(f"</email-{marker.group(1)}>")
     assert "cut" in result.reasoning
+
+
+def test_huge_headers_reach_jev_within_its_limit() -> None:
+    """Each header line is cut to its own room, so the state the pipeline
+    builds always fits, and Jev's refusal is never what a sender reaches
+    (phase-3 review)."""
+    evaluator = FakeEvaluator([_answer(0.2)])
+    huge = _email().model_copy(
+        update={
+            "subject": "Planning " * 3_000,
+            "recipients": [f"guest{n}@example.com" for n in range(1_300)],
+        }
+    )
+
+    _pipeline([], evaluator)(huge, now_utc=NOW, user_timezone="Asia/Karachi")
+
+    assert len(evaluator.requests[0]["state"]) <= STATE_CHAR_LIMIT
 
 
 # --- the HTTP layer --------------------------------------------------------

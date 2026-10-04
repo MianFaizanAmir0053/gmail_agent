@@ -16,7 +16,13 @@ from app.eval.dataset import load_fixtures
 from app.extraction.llm import BlockedError, LlmError, TruncatedError, structured_call
 from app.extraction.payloads import ClassifyPayload, ExtractionPayload, response_json_schema
 from app.extraction.pipeline import ExtractionPipeline
-from app.extraction.prompts import CLASSIFY_SYSTEM, CUT_NOTE, EXTRACT_SYSTEM, user_content
+from app.extraction.prompts import (
+    CLASSIFY_SYSTEM,
+    CUT_NOTE,
+    EXTRACT_SYSTEM,
+    HEADER_CUT,
+    user_content,
+)
 from app.google.gmail import to_email_message
 from app.policy.scrub import CREDENTIAL_NOTICE
 
@@ -277,6 +283,27 @@ def test_a_body_cut_to_fit_keeps_its_closing_marker() -> None:
     assert len(content) <= 5_000
     assert CUT_NOTE in content
     assert content.rstrip().endswith(f"</email-{marker}>")
+
+
+@pytest.mark.parametrize(
+    "huge",
+    [
+        {"subject": "Planning " * 3_000},
+        {"recipients": [f"guest{n}@example.com" for n in range(1_300)]},
+        {"sender": "a" * 30_000 + "@example.com"},
+    ],
+    ids=["subject", "recipients", "sender"],
+)
+def test_huge_headers_still_fit_the_room(huge: dict[str, Any]) -> None:
+    """Only the body gives way, so each header line is cut to its own room:
+    a sender cannot make the prompt overflow with headers (phase-3 review)."""
+    email = _email().model_copy(update=huge)
+    content = user_content(email, now_utc=NOW, user_timezone="UTC", room=23_000)
+    _, _, marker = _markers(content)
+    assert len(content) <= 23_000
+    assert HEADER_CUT in content
+    assert content.rstrip().endswith(f"</email-{marker}>")
+    assert "Wednesday 4pm" in content  # the body keeps its room
 
 
 def test_a_checkpoint_made_before_m18_is_scrubbed_at_assembly() -> None:

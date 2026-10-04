@@ -394,10 +394,21 @@ def _css_value(raw: str) -> str:
     whitespace removed, lower-cased. `display:/**/none` and `display:\\6e one`
     both come back `none`."""
     without_comments = _CSS_COMMENT.sub("", raw)
-    decoded = _CSS_ESCAPE.sub(
-        lambda m: chr(int(m.group(1), 16)) if m.group(1) else m.group(2), without_comments
-    )
+    decoded = _CSS_ESCAPE.sub(_css_escape, without_comments)
     return _CSS_IMPORTANT.sub("", decoded).strip().lower()
+
+
+def _css_escape(match: re.Match[str]) -> str:
+    """One CSS escape, decoded as the CSS Syntax spec decodes it: zero, a
+    surrogate, or a number past the last code point is U+FFFD. Six hex digits
+    reach past it, and `chr` would raise, so any sender could fail their own
+    message on every fetch (phase-3 review)."""
+    if match.group(1) is None:
+        return match.group(2)
+    point = int(match.group(1), 16)
+    if point == 0 or 0xD800 <= point <= 0xDFFF or point > 0x10FFFF:
+        return chr(0xFFFD)
+    return chr(point)
 
 
 def _hides(attrs: dict[str, str | None]) -> bool:
@@ -445,30 +456,52 @@ def _protect_pre(text: str) -> str:
     return text.replace(" ", _PRE_SPACE).replace("\t", _PRE_SPACE).replace("\n", _PRE_NEWLINE)
 
 
-def _walk_visible(element: Any, chunks: list[str], in_pre: bool) -> None:
-    name = element.tag
-    if not isinstance(name, str):
-        # A comment or processing instruction: never shown, and its `.text` is
-        # the comment body, which must not reach the model.
-        return
-    tag = name.replace(_HTML_NS, "")
-    if tag in _ALWAYS_HIDDEN or _hides(element.attrib):
-        return
-    pre = in_pre or tag == "pre"
-    if tag in _BLOCK or tag in _LINE_BREAK:
-        chunks.append("\n")
-    elif tag in _CELL:
-        chunks.append(" ")
-    if element.text:
-        chunks.append(_protect_pre(element.text) if pre else _SPACES.sub(" ", element.text))
-    for child in element:
-        _walk_visible(child, chunks, pre)
-        if child.tail:
-            chunks.append(_protect_pre(child.tail) if pre else _SPACES.sub(" ", child.tail))
-    if tag in _BLOCK:
-        chunks.append("\n")
-    elif tag in _CELL:
-        chunks.append(" ")
+def _visible_text(text: str, pre: bool) -> str:
+    return _protect_pre(text) if pre else _SPACES.sub(" ", text)
+
+
+def _walk_visible(root: Any, chunks: list[str]) -> None:
+    """Append the text a reader sees under `root`, in document order.
+
+    A loop over a stack of work, not recursion: an email can nest elements
+    deeper than Python's recursion limit, and html5lib keeps every level, so a
+    recursive walk let any sender fail their own message (phase-3 review).
+    Each item is an element still to open, with whether it sits in `<pre>`, or
+    text already decided: a closing break, or a child's tail, which shows even
+    when the child is hidden.
+    """
+    stack: list[tuple[Any, bool] | str] = [(root, False)]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            chunks.append(item)
+            continue
+        element, in_pre = item
+        name = element.tag
+        if not isinstance(name, str):
+            # A comment or processing instruction: never shown, and its `.text`
+            # is the comment body, which must not reach the model.
+            continue
+        tag = name.replace(_HTML_NS, "")
+        if tag in _ALWAYS_HIDDEN or _hides(element.attrib):
+            continue
+        pre = in_pre or tag == "pre"
+        if tag in _BLOCK or tag in _LINE_BREAK:
+            chunks.append("\n")
+        elif tag in _CELL:
+            chunks.append(" ")
+        if element.text:
+            chunks.append(_visible_text(element.text, pre))
+        # Pushed in reverse, so each comes off in document order: a child, then
+        # its tail, then the next child, and the element's closing break last.
+        if tag in _BLOCK:
+            stack.append("\n")
+        elif tag in _CELL:
+            stack.append(" ")
+        for child in reversed(list(element)):
+            if child.tail:
+                stack.append(_visible_text(child.tail, pre))
+            stack.append((child, pre))
 
 
 def _html_to_text(markup: str) -> str:
@@ -481,7 +514,7 @@ def _html_to_text(markup: str) -> str:
 
     document = html5lib.parse(markup, namespaceHTMLElements=False)
     chunks: list[str] = []
-    _walk_visible(document, chunks, in_pre=False)
+    _walk_visible(document, chunks)
     lines = [_SPACES.sub(" ", line).strip() for line in "".join(chunks).split("\n")]
     collapsed = re.sub(r"\n{2,}", "\n", "\n".join(lines)).strip()
     return collapsed.replace(_PRE_SPACE, " ").replace(_PRE_NEWLINE, "\n")
