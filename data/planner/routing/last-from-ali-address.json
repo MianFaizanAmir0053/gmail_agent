@@ -1,0 +1,28 @@
+{
+  "id": "last-from-ali-address",
+  "category": "single",
+  "typed": "What was the last email from ali.raza@example.org?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search"
+      ]
+    ],
+    "newest": "m5"
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "ali.raza@example.org",
+        "limit": 1
+      }
+    ],
+    "reply": {
+      "template": "messages"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "id": "sara-roadmap-said",
+  "category": "lookalike",
+  "typed": "What did Sara say about the roadmap?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search",
+        "mail.read"
+      ]
+    ],
+    "reads": [
+      [
+        "m1",
+        "summary"
+      ]
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "Sara",
+        "words": "roadmap",
+        "limit": 1
+      },
+      {
+        "op": "mail.read",
+        "message_ref": "$s1.0",
+        "ask": "summary"
+      }
+    ],
+    "reply": {
+      "template": "quote"
+    }
+  }
+}

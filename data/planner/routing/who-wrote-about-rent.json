@@ -1,0 +1,30 @@
+{
+  "id": "who-wrote-about-rent",
+  "category": "lookalike",
+  "typed": "Who emailed me about the rent?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search"
+      ]
+    ],
+    "messages": [
+      "m7"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "words": "rent",
+        "limit": 5
+      }
+    ],
+    "reply": {
+      "template": "messages"
+    }
+  }
+}

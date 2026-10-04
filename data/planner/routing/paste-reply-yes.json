@@ -1,0 +1,17 @@
+{
+  "id": "paste-reply-yes",
+  "category": "email",
+  "typed": "Reply yes to this",
+  "pasted": "Are you coming to the dinner on Saturday?",
+  "expect": {
+    "kind": "decline"
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "cannot_send"
+    }
+  }
+}

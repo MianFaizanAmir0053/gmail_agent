@@ -1,0 +1,32 @@
+{
+  "id": "sara-this-week",
+  "category": "single",
+  "typed": "Show me the emails Sara sent this week",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search"
+      ]
+    ],
+    "messages": [
+      "m3",
+      "m2"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "Sara",
+        "after": "2026-10-05",
+        "limit": 10
+      }
+    ],
+    "reply": {
+      "template": "messages"
+    }
+  }
+}

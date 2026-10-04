@@ -1,0 +1,28 @@
+{
+  "id": "busy-friday-4pm",
+  "category": "single",
+  "typed": "Am I busy on Friday at 4pm?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.freebusy"
+      ]
+    ],
+    "busy_at": "2026-10-09T16:00"
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-09T16:00:00",
+        "end": "2026-10-09T17:00:00"
+      }
+    ],
+    "reply": {
+      "template": "free_busy"
+    }
+  }
+}

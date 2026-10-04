@@ -1,0 +1,19 @@
+{
+  "id": "is-ali-free",
+  "category": "lookalike",
+  "typed": "Is Ali free on Tuesday at 3pm?",
+  "expect": {
+    "kind": [
+      "decline",
+      "ask"
+    ]
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "out_of_scope"
+    }
+  }
+}

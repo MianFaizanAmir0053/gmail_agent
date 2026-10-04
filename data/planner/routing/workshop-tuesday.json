@@ -1,0 +1,66 @@
+{
+  "id": "workshop-tuesday",
+  "category": "multistep",
+  "typed": "Schedule a 2 hour workshop on Tuesday with Sara and ali.raza@example.org",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "contacts.find",
+        "calendar.freebusy",
+        "slots.first_free",
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-13T09:00",
+        "end": "2026-10-13T11:00",
+        "guests": [
+          [
+            "ali.raza@example.org",
+            "typed"
+          ],
+          [
+            "sara.khan@example.com",
+            "contact"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "contacts.find",
+        "name": "Sara"
+      },
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-13T00:00:00",
+        "end": "2026-10-14T00:00:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s2",
+        "minutes": 120
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Workshop",
+        "slot_ref": "$s3",
+        "guests": [
+          "ali.raza@example.org"
+        ],
+        "guest_refs": [
+          "$s1"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "free-tomorrow-3pm",
+  "category": "single",
+  "typed": "Am I free tomorrow at 3pm?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.freebusy"
+      ]
+    ],
+    "busy_at": "2026-10-08T15:00"
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-08T15:00:00",
+        "end": "2026-10-08T16:00:00"
+      }
+    ],
+    "reply": {
+      "template": "free_busy"
+    }
+  }
+}

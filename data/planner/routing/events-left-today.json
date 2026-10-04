@@ -1,0 +1,30 @@
+{
+  "id": "events-left-today",
+  "category": "single",
+  "typed": "What's left on my calendar today?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.list_events"
+      ]
+    ],
+    "events": [
+      "Design review"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.list_events",
+        "start": "2026-10-07T10:00:00",
+        "end": "2026-10-08T00:00:00"
+      }
+    ],
+    "reply": {
+      "template": "events"
+    }
+  }
+}

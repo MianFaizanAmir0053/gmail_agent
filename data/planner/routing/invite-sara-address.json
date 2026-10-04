@@ -1,0 +1,47 @@
+{
+  "id": "invite-sara-address",
+  "category": "single",
+  "typed": "Invite sara.khan@example.com to a 30 minute call on Tuesday at 11am",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.propose_invite"
+      ],
+      [
+        "calendar.freebusy",
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-13T11:00",
+        "end": "2026-10-13T11:30",
+        "guests": [
+          [
+            "sara.khan@example.com",
+            "typed"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.propose_invite",
+        "title": "Call with Sara",
+        "start": "2026-10-13T11:00:00",
+        "end": "2026-10-13T11:30:00",
+        "guests": [
+          "sara.khan@example.com"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

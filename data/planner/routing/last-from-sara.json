@@ -1,0 +1,28 @@
+{
+  "id": "last-from-sara",
+  "category": "single",
+  "typed": "When did Sara last email me?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search"
+      ]
+    ],
+    "newest": "m3"
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "Sara",
+        "limit": 1
+      }
+    ],
+    "reply": {
+      "template": "messages"
+    }
+  }
+}

@@ -11,7 +11,6 @@ Failures are scripted per call. Nothing here touches the network.
 from __future__ import annotations
 
 import json
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +18,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from googleapiclient.errors import HttpError
+
+from app.eval.mailbox import Term, matches, terms
 
 SECRET = "482913"
 """In every fetched message's subject, snippet and body."""
@@ -39,67 +40,8 @@ class FakeMessage:
     headers: dict[str, str]
 
 
-_IN = {"chats": "CHAT", "drafts": "DRAFT", "sent": "SENT", "inbox": "INBOX"}
-
-_TERM = re.compile(r'(-?)(?:(\w+):"([^"]*)"|"([^"]*)"|(\w+):(\S+)|(\S+))')
-"""`key:"a value"`, a quoted `"word"`, `key:value`, or anything else, which
-the fake refuses: an unquoted word in a query is a bug in what built it."""
-
-
-@dataclass(frozen=True)
-class _Term:
-    negate: bool
-    key: str
-    """Empty for a quoted word, which Gmail reads as text, never as an operator."""
-    value: str
-
-
-def _terms(query: str) -> list[_Term]:
-    terms: list[_Term] = []
-    for match in _TERM.finditer(query):
-        negate = match[1] == "-"
-        if match[2] is not None:
-            terms.append(_Term(negate, match[2], match[3]))
-        elif match[4] is not None:
-            terms.append(_Term(negate, "", match[4]))
-        elif match[5] is not None:
-            terms.append(_Term(negate, match[5], match[6]))
-        else:
-            raise AssertionError(f"the fake mailbox does not understand {match[7]!r}")
-    return terms
-
-
-def _matches(message: FakeMessage, terms: list[_Term]) -> bool:
-    # Gmail's default never lists spam or trash; `in:anywhere` does.
-    anywhere = any((term.key, term.value) == ("in", "anywhere") for term in terms)
-    if message.labels & {"SPAM", "TRASH"} and not anywhere:
-        return False
-    seconds = message.internal_at.timestamp()
-    for term in terms:
-        key, value = term.key, term.value
-        if (key, value) == ("in", "anywhere"):
-            found = True
-        elif key == "rfc822msgid":
-            found = message.headers.get("Message-ID", "").strip("<>") == value.strip("<>")
-        elif key == "after":
-            found = seconds > int(value)
-        elif key == "before":
-            found = seconds < int(value)
-        elif key == "is" and value == "unread":
-            found = "UNREAD" in message.labels
-        elif key == "category" and value != "primary":
-            found = f"CATEGORY_{value.upper()}" in message.labels
-        elif key == "in" and value in _IN:
-            found = _IN[value] in message.labels
-        elif key in ("from", "to"):
-            found = value.lower() in message.headers.get(key.capitalize(), "").lower()
-        elif key == "":
-            found = value.lower() in message.headers.get("Subject", "").lower()
-        else:
-            raise AssertionError(f"the fake mailbox does not understand {key}:{value}")
-        if found == term.negate:
-            return False
-    return True
+def _matches(message: FakeMessage, query: list[Term]) -> bool:
+    return matches(query, labels=message.labels, at=message.internal_at, headers=message.headers)
 
 
 @dataclass
@@ -240,9 +182,9 @@ class FakeMailbox:
 
     def _list(self, **kwargs: Any) -> _Request:
         def answer() -> dict[str, Any]:
-            terms = _terms(str(kwargs["q"]))
+            query = terms(str(kwargs["q"]))
             found = sorted(
-                (m for m in self.messages.values() if _matches(m, terms)),
+                (m for m in self.messages.values() if _matches(m, query)),
                 key=lambda m: (m.internal_at, m.id),
                 reverse=True,
             )

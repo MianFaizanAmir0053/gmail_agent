@@ -1,0 +1,30 @@
+{
+  "id": "emails-about-budget",
+  "category": "single",
+  "typed": "Find my emails about the budget",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search"
+      ]
+    ],
+    "messages": [
+      "m4"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "words": "budget",
+        "limit": 5
+      }
+    ],
+    "reply": {
+      "template": "messages"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "id": "did-sara-roadmap",
+  "category": "lookalike",
+  "typed": "Did Sara send me anything about the roadmap?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search"
+      ]
+    ],
+    "messages": [
+      "m1"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "Sara",
+        "words": "roadmap",
+        "limit": 5
+      }
+    ],
+    "reply": {
+      "template": "messages"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "last-sent-to-sara",
+  "category": "single",
+  "typed": "What did I last send to Sara?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search"
+      ]
+    ],
+    "newest": "m8"
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "recipient": "Sara",
+        "limit": 1
+      }
+    ],
+    "reply": {
+      "template": "messages"
+    }
+  }
+}

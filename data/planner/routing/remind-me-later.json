@@ -1,0 +1,19 @@
+{
+  "id": "remind-me-later",
+  "category": "missing",
+  "typed": "Remind me about it later",
+  "expect": {
+    "kind": [
+      "ask",
+      "decline"
+    ]
+  },
+  "ideal": {
+    "kind": "clarify",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "question": "What should I remind you about, and when?"
+    }
+  }
+}

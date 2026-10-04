@@ -1,0 +1,16 @@
+{
+  "id": "cancel-dentist",
+  "category": "unsupported",
+  "typed": "Cancel my dentist appointment",
+  "expect": {
+    "kind": "decline"
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "cannot_change"
+    }
+  }
+}

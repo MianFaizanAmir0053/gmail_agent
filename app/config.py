@@ -144,6 +144,11 @@ class Settings(BaseSettings):
     own test mail, such as the planted day-1 meeting."""
 
     # --- The planner (M19) ---------------------------------------------------
+    planner_model: str = "gemini-3.6-flash"
+    """The model that turns the owner's typed request into a plan (D2): by
+    default production's extraction model. It must be priced, like every
+    model in use, and the routing eval's baseline names it."""
+
     working_hours: str = "Mon-Fri 09:00-18:00"
     """When the planner may offer a free slot, in `user_timezone`
     (`WorkingHours.parse`). Read at boot, so a typo fails there."""

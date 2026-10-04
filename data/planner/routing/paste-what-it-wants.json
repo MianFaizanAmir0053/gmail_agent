@@ -1,0 +1,34 @@
+{
+  "id": "paste-what-it-wants",
+  "category": "email",
+  "typed": "What does this email want from me?",
+  "pasted": "Hi, could you review the attached contract and send your comments by Friday?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.read"
+      ]
+    ],
+    "reads": [
+      [
+        "$paste",
+        "asks_of_owner"
+      ]
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.read",
+        "message_ref": "$paste",
+        "ask": "asks_of_owner"
+      }
+    ],
+    "reply": {
+      "template": "quote"
+    }
+  }
+}

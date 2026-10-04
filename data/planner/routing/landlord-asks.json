@@ -1,0 +1,39 @@
+{
+  "id": "landlord-asks",
+  "category": "single",
+  "typed": "What does the landlord's email want me to do?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search",
+        "mail.read"
+      ]
+    ],
+    "reads": [
+      [
+        "m7",
+        "asks_of_owner"
+      ]
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "landlord",
+        "limit": 1
+      },
+      {
+        "op": "mail.read",
+        "message_ref": "$s1.0",
+        "ask": "asks_of_owner"
+      }
+    ],
+    "reply": {
+      "template": "quote"
+    }
+  }
+}

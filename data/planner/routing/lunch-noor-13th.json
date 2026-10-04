@@ -1,0 +1,47 @@
+{
+  "id": "lunch-noor-13th",
+  "category": "single",
+  "typed": "Book lunch with dr.noor@clinic.example on Tuesday the 13th from 1 to 2pm",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.propose_invite"
+      ],
+      [
+        "calendar.freebusy",
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-13T13:00",
+        "end": "2026-10-13T14:00",
+        "guests": [
+          [
+            "dr.noor@clinic.example",
+            "typed"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.propose_invite",
+        "title": "Lunch with Dr Noor",
+        "start": "2026-10-13T13:00:00",
+        "end": "2026-10-13T14:00:00",
+        "guests": [
+          "dr.noor@clinic.example"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

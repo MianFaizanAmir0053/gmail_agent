@@ -1,0 +1,53 @@
+{
+  "id": "lunch-with-ali",
+  "category": "single",
+  "typed": "Set up a one hour lunch with Ali on Tuesday at 1pm",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "contacts.find",
+        "calendar.propose_invite"
+      ],
+      [
+        "contacts.find",
+        "calendar.freebusy",
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-13T13:00",
+        "end": "2026-10-13T14:00",
+        "guests": [
+          [
+            "ali.raza@example.org",
+            "contact"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "contacts.find",
+        "name": "Ali"
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Lunch with Ali",
+        "start": "2026-10-13T13:00:00",
+        "end": "2026-10-13T14:00:00",
+        "guest_refs": [
+          "$s1"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

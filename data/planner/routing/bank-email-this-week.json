@@ -1,0 +1,31 @@
+{
+  "id": "bank-email-this-week",
+  "category": "lookalike",
+  "typed": "Did I get any email from my bank this week?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search"
+      ]
+    ],
+    "messages": [
+      "m6"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "bank",
+        "after": "2026-10-05",
+        "limit": 5
+      }
+    ],
+    "reply": {
+      "template": "messages"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "id": "invoice-summary",
+  "category": "single",
+  "typed": "Summarize Ali's email about the invoice",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search",
+        "mail.read"
+      ]
+    ],
+    "reads": [
+      [
+        "m5",
+        "summary"
+      ]
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "Ali",
+        "words": "invoice",
+        "limit": 1
+      },
+      {
+        "op": "mail.read",
+        "message_ref": "$s1.0",
+        "ask": "summary"
+      }
+    ],
+    "reply": {
+      "template": "quote"
+    }
+  }
+}

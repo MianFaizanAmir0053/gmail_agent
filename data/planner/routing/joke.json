@@ -1,0 +1,16 @@
+{
+  "id": "joke",
+  "category": "irrelevance",
+  "typed": "Tell me a joke",
+  "expect": {
+    "kind": "decline"
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "out_of_scope"
+    }
+  }
+}

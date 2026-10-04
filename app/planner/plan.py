@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 
+from app.extraction.llm import Completion, GenaiLike, structured_call
 from app.policy.scrub import ADDRESS
 
 MAX_STEPS = 4
@@ -369,6 +370,35 @@ class Plan:
 class InvalidPlanError(ValueError):
     """The plan cannot run. The message names the step, the field and the
     problem, never a value: a stored error quotes nothing (M18, D7)."""
+
+
+PLAN_THINKING = "LOW"
+PLAN_OUTPUT_TOKENS = 2048
+
+
+def make_plan(
+    client: GenaiLike,
+    *,
+    model: str,
+    typed: str,
+    pasted: bool,
+    asked_at: datetime,
+    zone: str,
+) -> Completion[PlanPayload]:
+    """The planner's one call: the owner's typed request in, a plan out, at a
+    low thinking level and the model's own temperature. `pasted` tells the
+    planner only that there is pasted text, never what it says (D5)."""
+    from app.planner.prompts import PLAN_SYSTEM, plan_user
+
+    return structured_call(
+        client,
+        model=model,
+        system=PLAN_SYSTEM,
+        user=plan_user(typed, pasted=pasted, asked_at=asked_at, zone=zone),
+        schema=PlanPayload,
+        thinking_level=PLAN_THINKING,
+        max_output_tokens=PLAN_OUTPUT_TOKENS,
+    )
 
 
 # --- the check --------------------------------------------------------------

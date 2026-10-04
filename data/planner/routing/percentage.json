@@ -1,0 +1,16 @@
+{
+  "id": "percentage",
+  "category": "irrelevance",
+  "typed": "What's 15% of 240?",
+  "expect": {
+    "kind": "decline"
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "out_of_scope"
+    }
+  }
+}

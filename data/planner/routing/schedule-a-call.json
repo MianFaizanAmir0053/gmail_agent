@@ -1,0 +1,16 @@
+{
+  "id": "schedule-a-call",
+  "category": "missing",
+  "typed": "Schedule a call",
+  "expect": {
+    "kind": "ask"
+  },
+  "ideal": {
+    "kind": "clarify",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "question": "With whom, when, and for how long?"
+    }
+  }
+}

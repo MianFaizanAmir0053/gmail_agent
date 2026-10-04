@@ -225,3 +225,11 @@ def test_working_hours_that_cannot_be_read_fail_at_boot() -> None:
             gemini_api_key="test-key",
             working_hours="weekdays 9 to 6",
         )
+
+
+def test_the_planners_model_is_one_in_use() -> None:
+    """So the gate prices it, and `/health` names it if it is not (M19, D2)."""
+    from app.policy.models import in_use
+
+    settings = _settings()
+    assert settings.planner_model in in_use(settings)

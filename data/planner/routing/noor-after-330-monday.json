@@ -1,0 +1,59 @@
+{
+  "id": "noor-after-330-monday",
+  "category": "multistep",
+  "typed": "Book 30 minutes with Noor on Monday after 3:30pm, when I'm free",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "contacts.find",
+        "calendar.freebusy",
+        "slots.first_free",
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-12T15:30",
+        "end": "2026-10-12T16:00",
+        "guests": [
+          [
+            "dr.noor@clinic.example",
+            "contact"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "contacts.find",
+        "name": "Noor"
+      },
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-12T15:30:00",
+        "end": "2026-10-13T00:00:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s2",
+        "minutes": 30
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Meeting with Noor",
+        "slot_ref": "$s3",
+        "guest_refs": [
+          "$s1"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

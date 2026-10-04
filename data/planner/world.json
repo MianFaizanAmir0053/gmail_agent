@@ -1,0 +1,183 @@
+{
+  "owner": "me@example.com",
+  "aliases": [
+    "me.alias@example.com"
+  ],
+  "zone": "Asia/Karachi",
+  "asked_at": "2026-10-07T10:00",
+  "working_hours": "Mon-Fri 09:00-18:00",
+  "contacts": [
+    "sara.khan@example.com",
+    "ali.raza@example.org",
+    "ahmed@example.net",
+    "dr.noor@clinic.example",
+    "bilalahmed@gmail.com"
+  ],
+  "events": [
+    {
+      "title": "Standup",
+      "start": "2026-10-07T09:30",
+      "end": "2026-10-07T09:45"
+    },
+    {
+      "title": "Design review",
+      "start": "2026-10-07T14:00",
+      "end": "2026-10-07T15:00",
+      "organizer": "sara.khan@example.com"
+    },
+    {
+      "title": "Dentist",
+      "start": "2026-10-08T11:00",
+      "end": "2026-10-08T12:00"
+    },
+    {
+      "title": "Team lunch",
+      "start": "2026-10-08T13:00",
+      "end": "2026-10-08T14:00"
+    },
+    {
+      "title": "Budget sync",
+      "start": "2026-10-08T15:00",
+      "end": "2026-10-08T16:00",
+      "organizer": "ali.raza@example.org"
+    },
+    {
+      "title": "Focus block",
+      "start": "2026-10-09T09:00",
+      "end": "2026-10-09T12:00"
+    },
+    {
+      "title": "Vendor call",
+      "start": "2026-10-09T16:00",
+      "end": "2026-10-09T16:30",
+      "organizer": "sales@vendor.example"
+    },
+    {
+      "title": "Family dinner",
+      "start": "2026-10-10T19:00",
+      "end": "2026-10-10T21:00"
+    },
+    {
+      "title": "Planning",
+      "start": "2026-10-12T10:00",
+      "end": "2026-10-12T11:00"
+    },
+    {
+      "title": "1:1 with Ali",
+      "start": "2026-10-12T15:00",
+      "end": "2026-10-12T15:30"
+    },
+    {
+      "title": "Gym",
+      "start": "2026-10-13T07:00",
+      "end": "2026-10-13T08:00"
+    },
+    {
+      "title": "Quarterly review",
+      "start": "2026-10-14T09:00",
+      "end": "2026-10-14T17:00",
+      "organizer": "boss@example.com"
+    }
+  ],
+  "messages": [
+    {
+      "id": "m1",
+      "from": "Sara Khan <sara.khan@example.com>",
+      "subject": "Q4 roadmap draft",
+      "at": "2026-10-01T14:00",
+      "dmarc": true
+    },
+    {
+      "id": "m2",
+      "from": "Sara Khan <sara.khan@example.com>",
+      "subject": "Lunch on Friday?",
+      "at": "2026-10-05T13:00",
+      "dmarc": true
+    },
+    {
+      "id": "m3",
+      "from": "Sara Khan <sara.khan@example.com>",
+      "subject": "Re: Design review agenda",
+      "at": "2026-10-06T17:00",
+      "dmarc": true
+    },
+    {
+      "id": "m4",
+      "from": "Ali Raza <ali.raza@example.org>",
+      "subject": "Budget numbers for Q4",
+      "at": "2026-10-04T12:00",
+      "dmarc": true
+    },
+    {
+      "id": "m5",
+      "from": "Ali Raza <ali.raza@example.org>",
+      "subject": "Invoice 2231 overdue",
+      "at": "2026-10-06T21:00",
+      "dmarc": true
+    },
+    {
+      "id": "m6",
+      "from": "Bank Alerts <alerts@bank.example>",
+      "subject": "Your statement is ready",
+      "at": "2026-10-06T08:00",
+      "dmarc": true
+    },
+    {
+      "id": "m7",
+      "from": "Landlord <landlord@rent.example>",
+      "subject": "Rent increase from November",
+      "at": "2026-10-03T15:00"
+    },
+    {
+      "id": "m8",
+      "from": "me@example.com",
+      "to": "Sara Khan <sara.khan@example.com>",
+      "subject": "Re: Lunch on Friday?",
+      "at": "2026-10-06T18:00",
+      "labels": [
+        "SENT"
+      ]
+    },
+    {
+      "id": "m9",
+      "from": "Ahmed <ahmed@example.net>",
+      "subject": "Wedding invitation",
+      "at": "2026-09-28T16:00",
+      "dmarc": true
+    },
+    {
+      "id": "m10",
+      "from": "Shop <news@shop.example>",
+      "subject": "Big sale this week",
+      "at": "2026-10-07T06:00",
+      "dmarc": true,
+      "labels": [
+        "INBOX",
+        "CATEGORY_PROMOTIONS"
+      ]
+    },
+    {
+      "id": "m11",
+      "from": "Dr Noor <dr.noor@clinic.example>",
+      "subject": "Appointment reminder",
+      "at": "2026-10-02T11:00",
+      "dmarc": true
+    },
+    {
+      "id": "m12",
+      "from": "Sara Khan <sara.khan@example.com>",
+      "subject": "Holiday photos",
+      "at": "2026-09-20T20:00",
+      "dmarc": true
+    },
+    {
+      "id": "m13",
+      "from": "Winner <prize@spam.example>",
+      "subject": "You won",
+      "at": "2026-10-06T10:00",
+      "labels": [
+        "SPAM"
+      ]
+    }
+  ]
+}

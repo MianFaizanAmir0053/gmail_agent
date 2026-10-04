@@ -32,8 +32,7 @@ from zoneinfo import ZoneInfo
 
 from app.config import WorkingHours
 from app.google.calendar import BusyInterval, CalendarEvents
-from app.google.gmail import GmailClient
-from app.planner.ops import FoundMessage, Unclear, find_contact, first_free, search
+from app.planner.ops import FoundMessage, MailReads, Unclear, find_contact, first_free, search
 from app.planner.origins import (
     Origin,
     PastedText,
@@ -109,7 +108,7 @@ class Proposal:
 
 @dataclass(frozen=True)
 class Tools:
-    gmail: GmailClient
+    gmail: MailReads
     calendar: CalendarReads
     contacts: Callable[[], Iterable[str]]
     """The confirmed contacts' guest keys, read once a turn."""

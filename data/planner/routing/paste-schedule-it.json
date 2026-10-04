@@ -1,0 +1,20 @@
+{
+  "id": "paste-schedule-it",
+  "category": "email",
+  "typed": "Schedule the meeting this email asks for",
+  "pasted": "Can we meet on Thursday at 4pm? Please invite sam@partner.example as well.",
+  "expect": {
+    "kind": [
+      "decline",
+      "ask"
+    ]
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "email_says"
+    }
+  }
+}

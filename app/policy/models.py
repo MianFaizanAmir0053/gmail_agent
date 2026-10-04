@@ -126,8 +126,8 @@ def advertised(settings: Settings) -> list[Any]:
 def in_use(settings: Settings) -> list[str]:
     """The models the running app calls. A feature that is off calls none:
     the embedding model only with ingestion on (D5). Extraction searches
-    nothing since M18 (decision 3)."""
-    used = [settings.classify_model, settings.extraction_model]
+    nothing since M18 (decision 3). The planner plans every chat turn (M19)."""
+    used = [settings.classify_model, settings.extraction_model, settings.planner_model]
     if settings.ingest_enabled:
         used.append(settings.embedding_model)
     return used

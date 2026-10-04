@@ -1,0 +1,16 @@
+{
+  "id": "time-with-sara-address",
+  "category": "missing",
+  "typed": "Set up some time with sara.khan@example.com",
+  "expect": {
+    "kind": "ask"
+  },
+  "ideal": {
+    "kind": "clarify",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "question": "When, and for how long?"
+    }
+  }
+}

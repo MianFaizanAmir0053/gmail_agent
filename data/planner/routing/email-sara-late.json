@@ -1,0 +1,16 @@
+{
+  "id": "email-sara-late",
+  "category": "unsupported",
+  "typed": "Email Sara that I'll be ten minutes late",
+  "expect": {
+    "kind": "decline"
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "cannot_send"
+    }
+  }
+}

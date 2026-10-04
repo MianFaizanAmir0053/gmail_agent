@@ -1,0 +1,46 @@
+{
+  "id": "hold-friday-after-1pm",
+  "category": "multistep",
+  "typed": "Put a one hour hold on my calendar on Friday after 1pm, wherever I'm free",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.freebusy",
+        "slots.first_free",
+        "calendar.propose_hold"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-09T13:00",
+        "end": "2026-10-09T14:00",
+        "guests": []
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-09T13:00:00",
+        "end": "2026-10-10T00:00:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s1",
+        "minutes": 60
+      },
+      {
+        "op": "calendar.propose_hold",
+        "title": "Hold",
+        "slot_ref": "$s2"
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

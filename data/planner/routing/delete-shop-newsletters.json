@@ -1,0 +1,16 @@
+{
+  "id": "delete-shop-newsletters",
+  "category": "unsupported",
+  "typed": "Delete the newsletters from the shop",
+  "expect": {
+    "kind": "decline"
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "cannot_change"
+    }
+  }
+}

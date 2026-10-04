@@ -1,0 +1,46 @@
+{
+  "id": "book-half-hour-monday",
+  "category": "lookalike",
+  "typed": "Book half an hour for myself on Monday, whenever I'm free",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.freebusy",
+        "slots.first_free",
+        "calendar.propose_hold"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-12T09:00",
+        "end": "2026-10-12T09:30",
+        "guests": []
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-12T00:00:00",
+        "end": "2026-10-13T00:00:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s1",
+        "minutes": 30
+      },
+      {
+        "op": "calendar.propose_hold",
+        "title": "Time for myself",
+        "slot_ref": "$s2"
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

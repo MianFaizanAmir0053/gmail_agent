@@ -1,0 +1,61 @@
+{
+  "id": "call-sara-if-free",
+  "category": "multistep",
+  "typed": "If I'm free tomorrow at 2pm, book a 30 minute call with sara.khan@example.com then",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.freebusy",
+        "slots.first_free",
+        "calendar.propose_invite"
+      ],
+      [
+        "calendar.freebusy",
+        "calendar.propose_invite"
+      ],
+      [
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-08T14:00",
+        "end": "2026-10-08T14:30",
+        "guests": [
+          [
+            "sara.khan@example.com",
+            "typed"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-08T14:00:00",
+        "end": "2026-10-08T14:30:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s1",
+        "minutes": 30
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Call with Sara",
+        "slot_ref": "$s2",
+        "guests": [
+          "sara.khan@example.com"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

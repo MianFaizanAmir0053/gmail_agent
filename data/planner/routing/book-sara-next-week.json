@@ -1,0 +1,54 @@
+{
+  "id": "book-sara-next-week",
+  "category": "multistep",
+  "typed": "Book 30 minutes with sara.khan@example.com next week",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.freebusy",
+        "slots.first_free",
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-12T09:00",
+        "end": "2026-10-12T09:30",
+        "guests": [
+          [
+            "sara.khan@example.com",
+            "typed"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-12T00:00:00",
+        "end": "2026-10-17T00:00:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s1",
+        "minutes": 30
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Meeting with Sara",
+        "slot_ref": "$s2",
+        "guests": [
+          "sara.khan@example.com"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

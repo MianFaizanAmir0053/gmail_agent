@@ -1,0 +1,59 @@
+{
+  "id": "hour-with-ali-tomorrow",
+  "category": "multistep",
+  "typed": "Find an hour with Ali after 2pm tomorrow and send him an invite",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "contacts.find",
+        "calendar.freebusy",
+        "slots.first_free",
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-08T14:00",
+        "end": "2026-10-08T15:00",
+        "guests": [
+          [
+            "ali.raza@example.org",
+            "contact"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "contacts.find",
+        "name": "Ali"
+      },
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-08T14:00:00",
+        "end": "2026-10-09T00:00:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s2",
+        "minutes": 60
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Meeting with Ali",
+        "slot_ref": "$s3",
+        "guest_refs": [
+          "$s1"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

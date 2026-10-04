@@ -1,0 +1,32 @@
+{
+  "id": "events-tomorrow",
+  "category": "single",
+  "typed": "What's on my calendar tomorrow?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.list_events"
+      ]
+    ],
+    "events": [
+      "Dentist",
+      "Team lunch",
+      "Budget sync"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.list_events",
+        "start": "2026-10-08T00:00:00",
+        "end": "2026-10-09T00:00:00"
+      }
+    ],
+    "reply": {
+      "template": "events"
+    }
+  }
+}

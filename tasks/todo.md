@@ -1810,9 +1810,9 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - The run itself waits for a development key and for 19.8, when the prompt is final.
 
 **Acceptance criteria:**
-- [ ] A fake model that returns each case's ideal plan scores 100%.
-- [ ] One that renumbers references still scores.
-- [ ] One that picks a wrong slot fails the outcome.
+- [x] A fake model that returns each case's ideal plan scores 100%.
+- [x] One that renumbers references still scores.
+- [x] One that picks a wrong slot fails the outcome.
 
 **Verification:** `uv run pytest tests/test_planner_eval.py`.
 
@@ -1820,7 +1820,7 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 
 ### Checkpoint: the ground
 
-- [ ] Checks green. The eval harness scores the ideal plans at 100% (after 19.3, which follows 19.6).
+- [x] Checks green. The eval harness scores the ideal plans at 100% (after 19.3, which follows 19.6).
 
 ## Phase 2 · Reads and answers
 

@@ -1,0 +1,35 @@
+{
+  "id": "hold-focus-tuesday",
+  "category": "single",
+  "typed": "Block Tuesday from 2 to 4pm for focus time",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.propose_hold"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-13T14:00",
+        "end": "2026-10-13T16:00",
+        "guests": []
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.propose_hold",
+        "title": "Focus time",
+        "start": "2026-10-13T14:00:00",
+        "end": "2026-10-13T16:00:00"
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

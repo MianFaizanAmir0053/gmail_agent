@@ -1,0 +1,16 @@
+{
+  "id": "am-i-free",
+  "category": "missing",
+  "typed": "Am I free?",
+  "expect": {
+    "kind": "ask"
+  },
+  "ideal": {
+    "kind": "clarify",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "question": "Free when?"
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "id": "free-half-hour-monday",
+  "category": "lookalike",
+  "typed": "Find me a free half hour on Monday",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.freebusy",
+        "slots.first_free"
+      ]
+    ],
+    "free_slot": [
+      "2026-10-12T09:00",
+      "2026-10-12T09:30"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-12T00:00:00",
+        "end": "2026-10-13T00:00:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s1",
+        "minutes": 30
+      }
+    ],
+    "reply": {
+      "template": "free_busy"
+    }
+  }
+}

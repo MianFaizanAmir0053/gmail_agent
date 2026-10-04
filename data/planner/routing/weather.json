@@ -1,0 +1,16 @@
+{
+  "id": "weather",
+  "category": "irrelevance",
+  "typed": "What's the weather like tomorrow?",
+  "expect": {
+    "kind": "decline"
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "out_of_scope"
+    }
+  }
+}

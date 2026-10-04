@@ -1,0 +1,40 @@
+{
+  "id": "wedding-people",
+  "category": "single",
+  "typed": "Who is mentioned in Ahmed's wedding invitation?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.search",
+        "mail.read"
+      ]
+    ],
+    "reads": [
+      [
+        "m9",
+        "people"
+      ]
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.search",
+        "sender": "Ahmed",
+        "words": "wedding",
+        "limit": 1
+      },
+      {
+        "op": "mail.read",
+        "message_ref": "$s1.0",
+        "ask": "people"
+      }
+    ],
+    "reply": {
+      "template": "quote"
+    }
+  }
+}

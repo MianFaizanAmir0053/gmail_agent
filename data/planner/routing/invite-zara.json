@@ -1,0 +1,37 @@
+{
+  "id": "invite-zara",
+  "category": "missing",
+  "typed": "Invite Zara to lunch on Tuesday at 1pm for an hour",
+  "expect": {
+    "kind": "ask",
+    "ops": [
+      [],
+      [
+        "contacts.find",
+        "calendar.propose_invite"
+      ]
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "contacts.find",
+        "name": "Zara"
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Lunch with Zara",
+        "start": "2026-10-13T13:00:00",
+        "end": "2026-10-13T14:00:00",
+        "guest_refs": [
+          "$s1"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

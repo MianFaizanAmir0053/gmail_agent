@@ -579,3 +579,24 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **Proposals are handed to `park`**, which 19.13 wires to the queue; nothing here writes to a calendar. The owner is never their own guest, so an invite of only the owner parks with no guests. A slot already past is refused, and so is a proposal whose free-slot step found nothing.
 - **The reader** is a protocol here; 19.7 builds it.
 - 23 deliberate breaks, each caught; one was missed at first, and a test was added for it. 2556 tests pass, with lint and mypy clean.
+
+### Task 19.3, the routing golden set and its harness (2026-10-04)
+
+- **Built after 19.6,** since a plan is scored by running it through the executor.
+- **`data/planner/`:**
+  - `world.json` is one world every case shares: 13 messages, 12 events, five confirmed contacts, and the owner asking on Wednesday 7 October 2026 at 10:00 in Karachi.
+  - 64 cases in D10's seven categories: 21 single operations, 8 look-alikes, 8 scheduling in several steps, 5 irrelevant requests, 7 with missing details, 8 unsupported actions and 7 about what an email says. 26 must ask or decline.
+  - Each case carries its ideal plan, which the harness's tests score. The README says how to write one, and that no case may be a worked example in the prompt.
+- **`app/eval/planner.py`** scores each sample by what its run did:
+  - **Operations:** the plan's operations, as a multiset, are one of the case's right sets.
+  - **Outcome:** the facts the case names hold: the time a free/busy read covers, the free slot, the events listed, the messages found, the message read and what was asked of it, and each card's slot and its guests by address and source. Nothing else is refused or parked. Free text is never compared.
+  - **Kind:** an answer, an ask (a clarify plan, or a step's question) or a decline, as the case says.
+  - **The bar** is 95%, 90% and 100% for asks and declines. A must-ask case counts only when it also parked nothing. Wilson intervals are recorded beside each rate.
+  - **The baseline** needs every case at five samples, no errors, and the bar met. Its hash covers the planner's call (the schema and check, the prompt, `llm.py`, the schema cleaner, the metered client), the world, the cases and the model. `.\tasks.ps1 planner-eval` runs it.
+- **Built for it:**
+  - `app/eval/mailbox.py` is the query reader the mail sync's fake and the eval share. A quoted word now also matches `From` and `To`, as Gmail's do.
+  - The search takes any mail reader, so the eval runs the real query builder.
+  - The planner's call (`make_plan`) and a draft prompt (`app/planner/prompts.py`), finished in 19.8.
+  - `PLANNER_MODEL`, which `models.in_use()` now counts.
+- **The run itself** waits for a development key and for 19.8.
+- 26 deliberate breaks, each caught. Two were missed at first, and their tests were fixed. 2595 tests pass, with lint and mypy clean.

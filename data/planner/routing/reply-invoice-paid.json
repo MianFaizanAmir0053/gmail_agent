@@ -1,0 +1,16 @@
+{
+  "id": "reply-invoice-paid",
+  "category": "unsupported",
+  "typed": "Reply to Ali's invoice email and tell him it's paid",
+  "expect": {
+    "kind": "decline"
+  },
+  "ideal": {
+    "kind": "decline",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "decline_code": "cannot_send"
+    }
+  }
+}

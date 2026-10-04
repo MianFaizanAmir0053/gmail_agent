@@ -1,0 +1,16 @@
+{
+  "id": "meeting-sara-no-time",
+  "category": "missing",
+  "typed": "Book a meeting with Sara",
+  "expect": {
+    "kind": "ask"
+  },
+  "ideal": {
+    "kind": "clarify",
+    "timezone": "Asia/Karachi",
+    "steps": [],
+    "reply": {
+      "question": "When should it be, and for how long?"
+    }
+  }
+}

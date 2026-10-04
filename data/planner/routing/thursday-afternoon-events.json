@@ -1,0 +1,31 @@
+{
+  "id": "thursday-afternoon-events",
+  "category": "lookalike",
+  "typed": "What's on my calendar on Thursday afternoon?",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.list_events"
+      ]
+    ],
+    "events": [
+      "Team lunch",
+      "Budget sync"
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.list_events",
+        "start": "2026-10-08T12:00:00",
+        "end": "2026-10-08T18:00:00"
+      }
+    ],
+    "reply": {
+      "template": "events"
+    }
+  }
+}

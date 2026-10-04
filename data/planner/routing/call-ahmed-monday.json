@@ -1,0 +1,54 @@
+{
+  "id": "call-ahmed-monday",
+  "category": "multistep",
+  "typed": "Set up a 45 minute call with ahmed@example.net on Monday, whenever I'm free",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "calendar.freebusy",
+        "slots.first_free",
+        "calendar.propose_invite"
+      ]
+    ],
+    "proposals": [
+      {
+        "start": "2026-10-12T09:00",
+        "end": "2026-10-12T09:45",
+        "guests": [
+          [
+            "ahmed@example.net",
+            "typed"
+          ]
+        ]
+      }
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "calendar.freebusy",
+        "start": "2026-10-12T00:00:00",
+        "end": "2026-10-13T00:00:00"
+      },
+      {
+        "op": "slots.first_free",
+        "busy_ref": "$s1",
+        "minutes": 45
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Call with Ahmed",
+        "slot_ref": "$s2",
+        "guests": [
+          "ahmed@example.net"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

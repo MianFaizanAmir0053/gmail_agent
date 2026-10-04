@@ -18,11 +18,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from app.config import WorkingHours
 from app.google.calendar import BusyInterval
-from app.google.gmail import BINNED, SEARCH_HEADERS, GmailClient, MessageGoneError, epoch_window
+from app.google.gmail import BINNED, SEARCH_HEADERS, MessageGoneError, MessageMeta, epoch_window
 from app.planner.plan import Search, Slot
 from app.policy.participants import dmarc_passed
 from app.policy.scrub import redact_secrets
@@ -55,6 +56,14 @@ class FoundMessage:
     subject: str
     """With every code and link removed: a metadata read never sees the body,
     so it cannot tell credential mail, and treats every subject as one."""
+
+
+class MailReads(Protocol):
+    """What a search needs of Gmail: `GmailClient`, or the eval's fake."""
+
+    def search(self, query: str, limit: int = 200) -> list[str]: ...
+
+    def message_metadata(self, message_id: str, headers: tuple[str, ...] = ...) -> MessageMeta: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +105,7 @@ def _quoted(value: str) -> str | None:
     return f'"{text}"' if text else None
 
 
-def search(gmail: GmailClient, step: Search) -> tuple[FoundMessage, ...]:
+def search(gmail: MailReads, step: Search) -> tuple[FoundMessage, ...]:
     """The newest messages matching the step, at most its limit. Spam and
     trash are never listed (Gmail's default); a message that left the mailbox
     between the listing and the read is left out."""

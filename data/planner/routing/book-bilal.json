@@ -1,0 +1,37 @@
+{
+  "id": "book-bilal",
+  "category": "missing",
+  "typed": "Book 30 minutes with Bilal on Monday at 4pm",
+  "expect": {
+    "kind": "ask",
+    "ops": [
+      [],
+      [
+        "contacts.find",
+        "calendar.propose_invite"
+      ]
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "contacts.find",
+        "name": "Bilal"
+      },
+      {
+        "op": "calendar.propose_invite",
+        "title": "Meeting with Bilal",
+        "start": "2026-10-12T16:00:00",
+        "end": "2026-10-12T16:30:00",
+        "guest_refs": [
+          "$s1"
+        ]
+      }
+    ],
+    "reply": {
+      "template": "proposal"
+    }
+  }
+}

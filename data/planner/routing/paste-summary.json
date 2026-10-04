@@ -1,0 +1,34 @@
+{
+  "id": "paste-summary",
+  "category": "single",
+  "typed": "Summarize this for me",
+  "pasted": "Hi all, the offsite moves to the 20th. Lunch is on the company, and please book your own travel.",
+  "expect": {
+    "kind": "answer",
+    "ops": [
+      [
+        "mail.read"
+      ]
+    ],
+    "reads": [
+      [
+        "$paste",
+        "summary"
+      ]
+    ]
+  },
+  "ideal": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+      {
+        "op": "mail.read",
+        "message_ref": "$paste",
+        "ask": "summary"
+      }
+    ],
+    "reply": {
+      "template": "quote"
+    }
+  }
+}

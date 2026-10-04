@@ -10,7 +10,7 @@ param(
         'eval', 'reauth', 'smoke', 'fernet', 'migrate', 'models',
         'poll', 'approve', 'telegram', 'serve', 'report', 'measure', 'reprice', 'vapid',
         'ingest', 'search', 'retrieval-eval', 'publish', 'pause', 'resume', 'status',
-        'injection-eval')]
+        'injection-eval', 'planner-eval')]
     [string]$Task = 'check',
 
     # Extra args forwarded to the underlying command, e.g.
@@ -47,6 +47,9 @@ switch ($Task) {
     # The injection suite's model half (M18, D8): five samples a case, on the
     # development key. `--baseline` writes the run CI checks.
     'injection-eval' { uv run python -m app.eval.injection @Rest }
+    # The tool-routing eval (M19, D10): five samples a case, on the
+    # development key. `--baseline` writes the run CI checks.
+    'planner-eval' { uv run python -m app.eval.planner @Rest }
 
     'migrate' { uv run python -m app.store.db }
     'models'  { uv run python -m app.extraction.models @Rest }
