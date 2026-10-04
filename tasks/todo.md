@@ -1320,7 +1320,7 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 **Description:** Migration `011_mail_sync.sql` (D8): `gmail_messages` and its indexes, `gmail_cursors`, `gmail_fetch_queue`.
 
 **Acceptance criteria:**
-- [ ] It applies and can be re-run; `web_reader` reads none of it.
+- [x] It applies and can be re-run; `web_reader` reads none of it.
 
 **Verification:** the integration tests on Neon.
 
@@ -1337,9 +1337,9 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 - `CursorExpired` for a history `404`, and `MessageGone` for a fetch `404`.
 
 **Acceptance criteria:**
-- [ ] Every call is covered against a fake service, both `404`s included.
-- [ ] Every metadata request carries the field mask and exactly the six headers; none asks for a body, snippet or subject.
-- [ ] The pacer holds the sync to 2,000 units a minute.
+- [x] Every call is covered against a fake service, both `404`s included.
+- [x] Every metadata request carries the field mask and exactly the six headers; none asks for a body, snippet or subject.
+- [x] The pacer holds the sync to 2,000 units a minute.
 
 **Verification:** `uv run pytest tests/test_gmail.py tests/test_mail_quota.py`.
 
@@ -1350,9 +1350,9 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 **Description:** `app/mail/messages.py` (D1): classify (direction, `to_self`, category, the raw bulk signals), store idempotently, apply label additions and removals, and recompute direction and category.
 
 **Acceptance criteria:**
-- [ ] `SENT` gives `out`; mail from the owner to the owner is `to_self`; categories map; no category is `primary`; Promotions, Social, drafts, chats, spam and trash are not stored.
-- [ ] Storing twice changes nothing; a label change applies without a fetch.
-- [ ] A seeded subject, snippet and body never reach the table.
+- [x] `SENT` gives `out`; mail from the owner to the owner is `to_self`; categories map; no category is `primary`; Promotions, Social, drafts, chats, spam and trash are not stored.
+- [x] Storing twice changes nothing; a label change applies without a fetch.
+- [x] A seeded subject, snippet and body never reach the table.
 
 **Verification:** `uv run pytest tests/test_mail_messages.py`; Neon.
 
@@ -1370,8 +1370,8 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 - the scheduler's `mail_sync` job every 2 minutes.
 
 **Acceptance criteria:**
-- [ ] Each sync case in the spec's tests passes against a fake service.
-- [ ] A crash mid-pass costs at most one page; a catch-up resumes after a restart.
+- [x] Each sync case in the spec's tests passes against a fake service.
+- [x] A crash mid-pass costs at most one page; a catch-up resumes after a restart.
 
 **Verification:** `uv run pytest tests/test_mail_sync.py tests/test_scheduler.py`; Neon.
 
@@ -1382,8 +1382,8 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 **Description:** Both run in the background, within the sync's quota share, after the incremental pass (D3). The backfill goes one epoch-second day at a time, newest first, from `feed_from` back to 90 days, resuming from `backfill_until`. The queue drops messages older than 90 days; five strikes mark a message `unreadable`.
 
 **Acceptance criteria:**
-- [ ] The backfill resumes after a restart, stops at 90 days, and never stores mail newer than `feed_from`.
-- [ ] Outages charge no strike.
+- [x] The backfill resumes after a restart, stops at 90 days, and never stores mail newer than `feed_from`.
+- [x] Outages charge no strike.
 
 **Verification:** `uv run pytest tests/test_mail_sync.py`.
 
@@ -1391,7 +1391,7 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 
 ### Checkpoint: the mailbox is seen
 
-- [ ] Checks green; Neon.
+- [x] Checks green; Neon.
 
 ### Task 20.6: The pipeline's feed, the switch-over, and stranded claims
 
@@ -1404,8 +1404,8 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 - The new reasons join the purge's fixed reasons.
 
 **Acceptance criteria:**
-- [ ] Every feed case in the spec's tests passes, Google Groups mail included.
-- [ ] Nothing older than `feed_from` less an hour, and nothing older than 7 days, reaches the pipeline.
+- [x] Every feed case in the spec's tests passes, Google Groups mail included.
+- [x] Nothing older than `feed_from` less an hour, and nothing older than 7 days, reaches the pipeline.
 
 **Verification:** `uv run pytest tests/test_poll.py tests/test_mail_feed.py tests/test_graph.py tests/test_ledger.py tests/test_purge.py`; Neon.
 
@@ -1416,8 +1416,8 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 **Description:** The daily `mail_recall` job (D5): sync recall with repair, feed recall leaving out paused and capped hours, the too-old check, and category agreement both ways. `/health` returns 503 when no pass has reached the end of history for three intervals, and shows its bearer-only fields (D6).
 
 **Acceptance criteria:**
-- [ ] Each recall case in the spec's tests passes.
-- [ ] A lagging or dead sync gives 503; a fresh boot does not.
+- [x] Each recall case in the spec's tests passes.
+- [x] A lagging or dead sync gives 503; a fresh boot does not.
 
 **Verification:** `uv run pytest tests/test_mail_recall.py tests/test_api.py tests/test_liveness.py`.
 
@@ -1428,9 +1428,9 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 **Description:** The purge (D7); `python -m app.mail.sync --once|--status|--show|--catch-up|--check-feed` (D8); `docs/DEPLOY.md` and the README.
 
 **Acceptance criteria:**
-- [ ] Day 179 kept, day 181 deleted; gone rows a week after `gone_at`; ledger rows untouched.
-- [ ] Each CLI command works against a fake service and Neon.
-- [ ] A read-through against the spec finds no step outside the docs.
+- [x] Day 179 kept, day 181 deleted; gone rows a week after `gone_at`; ledger rows untouched.
+- [x] Each CLI command works against a fake service and Neon.
+- [x] A read-through against the spec finds no step outside the docs. (2026-10-04: a fresh-context read-through found seven gaps, all closed: `OWNER_ALIASES` in §2, re-running `011` by hand, the false alarm and the push tags in §10.4, the laptop forms of every command, how to find a message's id, and an exit-criterion-3 procedure that works. `--show` now takes the Message-ID from "Show original".)
 
 **Verification:** `uv run pytest tests/test_purge.py tests/test_mail_cli.py`; Neon; the read-through.
 
@@ -1438,8 +1438,10 @@ Spec: [`docs/plans/M20-mail-sync.md`](../docs/plans/M20-mail-sync.md), revised a
 
 ### Checkpoint: M20 built
 
-- [ ] Python checks green, locally and in CI.
-- [ ] Fresh-context review of the module.
+*Ticked on 2026-10-04 from the record. The module was built, reviewed and merged into `v2-plan` at `0bdea3b`. Two fresh-context reviews followed on 2026-10-02, and their fixes are in the spec's running notes. Its tests pass, locally on Postgres 16 and in CI (run 37196126748). The boxes had never been ticked.*
+
+- [x] Python checks green, locally and in CI.
+- [x] Fresh-context review of the module.
 - [ ] The exit criterion waits for the owner's end tests.
 
 ---

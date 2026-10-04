@@ -139,6 +139,7 @@ through `fly ssh console` resolve them the same way the server does.
 | `GOOGLE_TOKEN_STANDBY_PATH` | `/app/secrets/token-standby.enc` (the token itself comes on day 4, §5) |
 | `TEST_CALENDAR_ID` | The throwaway calendar. `graph_session` refuses to start without it |
 | `OWNER_EMAIL` | Your address |
+| `OWNER_ALIASES` | Every other address you send from, as a JSON list, `["you@work.example"]`, or `[]`. Mail between your addresses is your own (§10.1) |
 | `USER_TIMEZONE` | e.g. `Asia/Karachi` |
 | `DRY_RUN` | `true`: it goes off only for the end tests (§11.8) |
 | `INGEST_ENABLED` | `false`, until the owner turns it on after M18 (§13.4) |
@@ -503,9 +504,14 @@ mail from that record, read or not. Spec:
 
 - Migration `011_mail_sync.sql` applies at boot with `MIGRATE_ON_BOOT=true`,
   or by hand with `python -m app.store.db`. It is additive and can be re-run.
+  Both skip a file they have applied before. Production never had the
+  earlier `011`; a development or test database that applied it is brought
+  up to date by running the file itself again:
+  `psql "$DATABASE_URL" -f migrations/011_mail_sync.sql`.
 - No new secret or setting. `OWNER_EMAIL` and `OWNER_ALIASES` matter more
   than before: mail from any of them to any of them is the owner's own
-  (`to_self`) and is never fed to the pipeline.
+  (`to_self`) and is never fed to the pipeline. `OWNER_ALIASES` must list
+  every address you send from (§2), in `prod.env` on the laptop too (§12).
 - Feeding read mail as well as unread means one-time-code and password-reset
   mail in Primary now reaches the classifier. When the classifier finds no
   meeting, the ledger records "not a meeting", not the model's reasoning.
@@ -566,7 +572,10 @@ says).
   lets each pass reach the end of history. A run that tried three fetches or
   more and fetched none is recorded not ok ("every fetch failed"), and
   `/health` returns 503 ("every mail sync fetch has failed for three
-  intervals") until a run fetches a message again.
+  intervals") until a run fetches a message again. A known false alarm:
+  three messages that each fail on their own can hold this for hours on a
+  quiet night, until new mail is fetched. `--status` shows the fetch queue;
+  `--retry-unreadable` queues them again once the cause is fixed.
 - **A stale sync holds the feed.** While no pass has caught up for 30
   minutes, the feed offers nothing: the stored labels may be out of date. A
   message the owner trashed or marked as spam meanwhile is also caught by
@@ -590,30 +599,44 @@ says).
   stalled" (mail met the feed's rule for over an hour without being
   processed, not counting time paused or stopped by the spending cap; the
   fetch queue held a message back for over six hours; or the age rule
-  skipped mail under a day old).
+  skipped mail under a day old). Each has a push tag of its own
+  (`mail-sync`, `mail-feed`): open the web app once on each phone after the
+  deploy, so its service worker knows them.
 - **Too old:** mail first reached more than seven days after it arrived --
   after a long outage, restored from the trash, held by a pause -- is
   recorded SKIPPED ("too old when reached"), never processed.
 
 ### 10.5 The command line
 
-On the instance, through `fly ssh console`. Every command waits for a
-scheduled run to finish first, and the scheduled run skips its turn while a
-command holds the lock.
+Every command waits for a scheduled run to finish first, and the scheduled
+run skips its turn while a command holds the lock.
+
+On the laptop (§12), in the `..\mailagent-prod` worktree:
+
+```powershell
+uv run --env-file <prod.env> python -m app.mail.sync --status
+uv run --env-file <prod.env> python -m app.mail.sync --show "<Message-ID>"
+uv run --env-file <prod.env> python -m app.mail.sync --once
+uv run --env-file <prod.env> python -m app.mail.sync --catch-up
+uv run --env-file <prod.env> python -m app.mail.sync --retry-unreadable
+uv run --env-file <prod.env> python -m app.mail.sync --check-feed
+```
+
+On Fly, the same through `fly ssh console`:
 
 ```bash
 fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --status'"
-fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --show <message id>'"
-fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --once'"
-fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --catch-up'"
-fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --retry-unreadable'"
-fly ssh console -C "sh -c 'cd /app && python -m app.mail.sync --check-feed'"
 ```
+
+**Finding a message's id.** Gmail's own id appears nowhere in its interface.
+Open the message, then **⋮ → Show original**, and copy the **Message ID**
+line. `--show` takes it, angle brackets or not, and finds the message, in
+the trash too.
 
 | Option | What it does |
 |---|---|
-| `--status` | The cursor, `feed_from`, the backfill, queue and catch-up, counts by direction, category and how rows arrived, the latest too-old records, the last recalls |
-| `--show <id>` | One row's metadata, its ledger status and any queue entry. No content: none is stored |
+| `--status` | When the cursor last reached the end of history, `feed_from`, the backfill, queue and catch-up, counts by direction, category and how rows arrived, the latest too-old records, the last recalls |
+| `--show <id>` | One row's metadata, its ledger status and any queue entry. No content: none is stored. The id is Gmail's, or the Message-ID from "Show original". It says "not stored" for a message Gmail has but the sync does not, and "no message with this Message-ID in Gmail" for one Gmail does not have |
 | `--once` | One run, as the scheduler does |
 | `--catch-up` | Records a gap from an hour before the last caught-up pass to now, as if the cursor had expired, and queues unreadable mail again. The scheduled runs work it off |
 | `--retry-unreadable` | Queues every unreadable message again with no strikes, within the backfill's 90 days. Run it once whatever failed them is fixed |
@@ -647,12 +670,25 @@ in `/health`.
 
 ### 10.8 The owner's end tests (exit criterion)
 
-1. Send a message; within one sync interval `--show <id>` shows it as `out`.
+Each `--show` below takes the message's Message-ID from "Show original"
+(10.5).
+
+1. Send a message; within one sync interval `--show` shows it as `out`.
 2. Open a new Primary message on the phone before the next tick: it is still
-   processed (`approve --list`, or its ledger row). A Promotions message is
-   not stored (`--show` says "not stored").
-3. Trash a recent Primary message, then run `--catch-up`: the gap is worked
-   off (`--status`), the message's labels show TRASH, and it is never fed.
+   processed (`approve --list`, or the ledger line of `--show`). A
+   Promotions message is not stored: `--show` says "not stored". A mistyped
+   Message-ID says "no message with this Message-ID in Gmail" instead, so it
+   cannot pass for one.
+3. A message trashed during a gap is never fed. The live sync must not see
+   the trash, so the agent is stopped while it happens:
+   1. Pause the agent from the web app's header.
+   2. Ask someone to send a new Primary message; wait until `--show` finds
+      it stored.
+   3. Stop the agent (§12), and trash the message in Gmail.
+   4. Run `--catch-up`, start the agent again, and Resume.
+
+   The gap is worked off (`--status`), the message's labels show TRASH
+   (`--show`), and it has no ledger row and no proposal.
 4. `--check-feed` passes once the backfill has reached its first day.
 5. `mail_recall_sync`, `mail_recall_feed` and `mail_recall_categories` are
    `ok` in `job_runs` for seven days running.
@@ -1030,7 +1066,7 @@ Then commit `results/injection-baseline.json`. CI fails while the baseline was m
 **M20**
 
 - [ ] Migration 011 applied; `OWNER_EMAIL` and `OWNER_ALIASES` complete
-- [ ] First run: `--status` shows the cursor, `feed_from` at the mailbox's present (a fresh database, §10.2), the switch-over listed
+- [ ] First run: `--status` shows when the cursor last reached the end of history, `feed_from` at the mailbox's present (a fresh database, §10.2), the switch-over listed
 - [ ] `/health` 200, and with the bearer `mail_sync.cursor_age_seconds` under two minutes
 - [ ] No `measure` run while the backfill or a catch-up is in progress
 - [ ] The exit criterion (10.8), then seven clean days of recall

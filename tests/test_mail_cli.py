@@ -121,6 +121,49 @@ def test_show_prints_one_rows_metadata_and_no_content(
     assert run_main("--show", "nope")[0] == 1
 
 
+def test_show_finds_a_message_by_the_message_id_gmail_shows(
+    run_main: Any, mail: psycopg.Connection
+) -> None:
+    """Gmail's own id appears nowhere in its interface; "Show original" shows
+    the Message-ID header, angle brackets and all."""
+    run_main.box.deliver("m1", labels=PRIMARY, at=NOW, Message_ID="<abc.123@mail.example>")
+    run_main("--once")
+
+    code, out = run_main("--show", "<abc.123@mail.example>")
+
+    assert code == 0
+    assert "message_id: m1" in out and "direction: in" in out
+
+
+def test_show_tells_an_unknown_message_id_from_one_not_stored(
+    run_main: Any, mail: psycopg.Connection
+) -> None:
+    """A Promotions message is in Gmail but not stored; a mistyped Message-ID
+    is in neither, and must not pass for the first."""
+    run_main.box.put(
+        "promo",
+        labels={"INBOX", "CATEGORY_PROMOTIONS"},
+        at=NOW,
+        Message_ID="<promo@mail.example>",
+    )
+
+    code, out = run_main("--show", "promo@mail.example")
+    assert (code, "promo: not stored" in out) == (1, True)
+
+    code, out = run_main("--show", "typo@mail.example")
+    assert (code, "no message with this Message-ID in Gmail" in out) == (1, True)
+
+
+def test_show_finds_a_trashed_message_too(run_main: Any, mail: psycopg.Connection) -> None:
+    run_main.box.deliver("m1", labels=PRIMARY, at=NOW, Message_ID="<gone@mail.example>")
+    run_main("--once")
+    run_main.box.messages["m1"].labels = {"TRASH"}
+
+    code, out = run_main("--show", "gone@mail.example")
+
+    assert code == 0 and "message_id: m1" in out
+
+
 def test_catch_up_records_a_gap_and_the_next_runs_work_it_off(
     run_main: Any, mail: psycopg.Connection
 ) -> None:

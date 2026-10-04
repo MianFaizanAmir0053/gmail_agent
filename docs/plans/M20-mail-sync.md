@@ -494,3 +494,19 @@ Two fresh-context reviews of the built module, one of the sync engine and one of
 - A socket timeout bounds each wait on the socket, not a whole attempt, and httplib2 reconnects once on a dropped connection. A trickling answer can outlast the cap.
 - A 429 that outlasts the client's retries, while the profile read still answers, strikes the message. Five strikes take a sustained rate limit, and `--retry-unreadable` undoes them.
 - Three messages that each fail on their own keep `/health` at 503 until a fetch succeeds, which can be hours on a quiet night. A false alarm is preferred to a silent miss.
+
+### The runbook's read-through, and `--show` by Message-ID (2026-10-04)
+
+Task 20.8's read-through had never been recorded. A fresh-context reader compared this spec, its running notes and `docs/DEPLOY.md` §10. Every command and flag the runbook names exists as documented. Seven gaps are now closed:
+
+- **Exit criterion 3's procedure proved nothing.** A message trashed before `--catch-up` is seen by the live sync, not by the catch-up. §10.8 now pauses the agent and waits for a new message to be stored, stops the agent, trashes the message, then runs `--catch-up` and restarts.
+- **`--show` needed Gmail's id, which Gmail's interface never shows,** and a mistyped id passed the Promotions check as "not stored". It now also takes the Message-ID from "Show original" (`find_by_header`: Gmail's `rfc822msgid:` search, the trash included). It says "no message with this Message-ID in Gmail" when Gmail has none, so a typo cannot pass for a message the sync left out. There are three new tests, and the fake mailbox learned both search terms.
+- **The runbook now also says:**
+  - the laptop form of every `app.mail.sync` command (§10.5);
+  - `OWNER_ALIASES` in §2's table, with its JSON-list form;
+  - how to bring a development database that applied the earlier `011` up to date (§10.1);
+  - the known false alarm of three messages failing on their own (§10.4);
+  - that each phone must open the web app once for the `mail-sync` and `mail-feed` push tags (§10.4).
+- The checklist's "`--status` shows the cursor" now says what it prints: when the cursor last reached the end of history.
+
+The task list's boxes for 20.1 to 20.8 were ticked on the same day from this record. The exit criterion waits for the owner's end tests.

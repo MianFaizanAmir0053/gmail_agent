@@ -1107,6 +1107,15 @@ def print_message(conn: psycopg.Connection, message_id: str, out: Out = print) -
     return True
 
 
+def find_by_header(gmail: GmailClient, header_id: str) -> list[str]:
+    """The Gmail ids of the message whose Message-ID header is `header_id`.
+
+    That header is what Gmail's "Show original" shows, and the owner can copy
+    it; Gmail's own id appears nowhere in its interface. Spam and trash are
+    searched too, so a message trashed for the end tests is still found."""
+    return gmail.search(f"rfc822msgid:{header_id.strip().strip('<>')} in:anywhere", limit=5)
+
+
 def force_catch_up(
     conn: psycopg.Connection, gmail: GmailClient, *, now: datetime | None = None
 ) -> Gap:
@@ -1269,7 +1278,11 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_argument(
         "--status", action="store_true", help="The records, as counts and times only."
     )
-    commands.add_argument("--show", metavar="MESSAGE_ID", help="One row's metadata.")
+    commands.add_argument(
+        "--show",
+        metavar="ID",
+        help="One row's metadata, by Gmail id or by the Message-ID from 'Show original'.",
+    )
     commands.add_argument(
         "--catch-up",
         action="store_true",
@@ -1300,7 +1313,14 @@ def main(argv: list[str] | None = None) -> int:
             print_status(conn)
             return 0
         if args.show:
-            return 0 if print_message(conn, args.show) else 1
+            ids = [args.show]
+            if "@" in args.show:
+                # A Message-ID header, from Gmail's "Show original".
+                ids = find_by_header(sync_client(settings), args.show)
+                if not ids:
+                    print(f"{args.show}: no message with this Message-ID in Gmail")
+                    return 1
+            return 0 if all([print_message(conn, found) for found in ids]) else 1
         if args.catch_up:
             gap = force_catch_up(conn, sync_client(settings))
             print(

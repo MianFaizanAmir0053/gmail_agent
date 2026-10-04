@@ -42,13 +42,18 @@ _IN = {"chats": "CHAT", "drafts": "DRAFT", "sent": "SENT", "inbox": "INBOX"}
 
 
 def _matches(message: FakeMessage, terms: list[str]) -> bool:
-    if message.labels & {"SPAM", "TRASH"}:  # Gmail's default: never listed
+    # Gmail's default never lists spam or trash; `in:anywhere` does.
+    if message.labels & {"SPAM", "TRASH"} and "in:anywhere" not in terms:
         return False
     seconds = message.internal_at.timestamp()
     for term in terms:
         negate = term.startswith("-")
         key, _, value = term.lstrip("-").partition(":")
-        if key == "after":
+        if term == "in:anywhere":
+            found = True
+        elif key == "rfc822msgid":
+            found = message.headers.get("Message-ID", "").strip("<>") == value.strip("<>")
+        elif key == "after":
             found = seconds > int(value)
         elif key == "before":
             found = seconds < int(value)
