@@ -235,3 +235,48 @@ review fixes (17.15–17.18). `DRY_RUN` stays `true`.
 
 - Codes in other languages: the phrases are English, and a miss found later adds its phrase (spec, Open questions).
 - Ingestion in production stays off until the owner turns it on after M18, with the chunks re-indexed.
+
+---
+
+# Implementation Plan: M19 · The planner
+
+## Overview
+
+A chat page where the owner asks about mail and the calendar, and asks for
+meetings. The planner plans once from the owner's typed words and never sees
+a result. Code runs the plan and tracks every value's origin; a reader with
+no tools reads mail; answers are rendered by code and labelled. Proposals
+from chat share the mail queue. The spec is
+[`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved on
+2026-10-04 after two adversarial rounds; the tasks are 19.1–19.17 in
+[`todo.md`](todo.md). `DRY_RUN` stays `true`.
+
+## Architecture decisions
+
+- **The tool loop goes first.** "No result goes back to a model" becomes a property of the code before anything is built on it.
+- **The eval's harness before the planner's prompt.** Cases and outcome scoring exist before the prompt they judge. The baseline is taken last, once the prompt is final.
+- **Reads before writes.** Questions work end to end before any chat proposal can park. Proposals park only once the worker, the recipient rule, the Edit refusal and Telegram know the source.
+- **Origins are checked in code, before every operation,** never by asking a model.
+
+## Phases
+
+1. **The ground** (19.1–19.3): the tool loop removed, the plan's schema, the routing set and its harness.
+2. **Reads and answers** (19.4–19.8): two calendars, the operations, the executor and origins, the reader, rendering and the prompt.
+3. **The chat turn** (19.9–19.11): records, API and spending; the job; the page.
+4. **Proposals from chat** (19.12–19.13): the queue by source; proposals parked from a turn.
+5. **Safety, records and evidence** (19.14–19.17): the injection suite, retention, the eval run and its gate, the runbook.
+
+## Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Gemini rejects the plan's schema | High | It is flat by design, and tried against the API before any case depends on it (19.2, 19.16) |
+| The planner misroutes requests | High | The routing eval's bar, measured before the planner ships, and grown before `DRY_RUN` goes off |
+| The worker's chat path breaks the mail path | High | Steps dispatched on the source, with the existing mail tests unchanged and the chat paths tested on Postgres |
+| An origin is laundered through an operation | High | The most untrusted input wins, checked before every operation, with a test per rule and the chat injection suite |
+| Chat spends mail's month | Medium | A daily cap and a reserve kept for mail |
+| No development key | Medium | Everything but the eval's run and baseline is built and tested with fakes |
+
+## Open questions
+
+- Where writes go: M17's open question, before `DRY_RUN` goes off.

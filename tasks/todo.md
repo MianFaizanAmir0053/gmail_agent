@@ -1762,3 +1762,311 @@ README: the safety section. The spec: its running notes.
 - [ ] Python and web checks green, locally and in CI, with the committed injection run current.
 - [ ] Fresh-context review of the module, citing injection cases by id.
 - [ ] Exit criterion 3 on the deployed stack, and 4 at the owner's end tests.
+
+---
+
+# M19 · The planner — tasks
+
+Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by the owner on 2026-10-04 after two adversarial rounds. Where a task and the spec differ, the spec wins. `DRY_RUN` stays `true`. No chat proposal can park before Phase 4's worker, rule, Edit refusal and Telegram changes exist.
+
+## Phase 1 · The ground first
+
+### Task 19.1: The tool loop removed (D13)
+
+**Description:**
+- Remove `structured_call`'s tool loop (`tools`, `dispatch`, the turn limit), `app/tools/search_context.py`, and their tests.
+- The structural test asserts that `structured_call` takes no tools at all, and scans `app/planner/` as well as `app/extraction/`.
+- M15's cost report loses its line about search coming back.
+
+**Acceptance criteria:**
+- [ ] The structural test fails while a `tools` argument exists, and passes after.
+- [ ] Nothing else imports what was removed; checks green.
+
+**Verification:** `uv run pytest tests/test_no_tools.py tests/test_pipeline.py`; `.\tasks.ps1 check`.
+
+**Dependencies:** None · **Files:** `app/extraction/llm.py`, `app/tools/`, `app/jobs/measure_cost.py`, `tests/test_no_tools.py`, `tests/test_tool_loop.py`, `tests/test_search_context_tool.py` · **Scope:** S
+
+### Task 19.2: The plan's schema and its validation (D2)
+
+**Description:**
+- `app/planner/plan.py`: the flat `Plan` schema, with per-operation fields, references (`$s1`, `$s1.0`) and at most four steps.
+- Validation refuses: an unknown operation; a missing field; a list where one value is wanted; a forward or dangling reference; a fifth step.
+- The schema goes through the project's schema cleaner (`response_json_schema`). Whether the API accepts it is recorded once a development key exists.
+
+**Acceptance criteria:**
+- [ ] Each refusal in D2 has a test.
+- [ ] The cleaned schema has no union, no `$defs` and no `additionalProperties`.
+
+**Verification:** `uv run pytest tests/test_planner_plan.py`.
+
+**Dependencies:** 19.1 · **Files:** `app/planner/__init__.py`, `app/planner/plan.py`, tests · **Scope:** M
+
+### Task 19.3: The routing golden set and its harness (D10)
+
+**Description:**
+- `data/planner/routing/`: about 60 cases in D10's categories. Each has a fixed fake calendar and mailbox, and the outcome expected.
+- `app/eval/planner.py`: runs a sampled plan against the case's fakes, and scores the operations (as a multiset), the outcome and the kind.
+- `.\tasks.ps1 planner-eval`, with `--baseline` and a code hash, as M18's injection run has.
+- The run itself waits for a development key and for 19.8, when the prompt is final.
+
+**Acceptance criteria:**
+- [ ] A fake model that returns each case's ideal plan scores 100%.
+- [ ] One that renumbers references still scores.
+- [ ] One that picks a wrong slot fails the outcome.
+
+**Verification:** `uv run pytest tests/test_planner_eval.py`.
+
+**Dependencies:** 19.2 · **Files:** `data/planner/routing/`, `app/eval/planner.py`, `tasks.ps1`, tests · **Scope:** L
+
+### Checkpoint: the ground
+
+- [ ] Checks green. The eval harness scores the ideal plans at 100%.
+
+## Phase 2 · Reads and answers
+
+### Task 19.4: Two calendars (D3)
+
+**Description:**
+- `CalendarClient` gains a read calendar, the primary, and `list_events` (start, end, organiser, title).
+- `detect_conflicts` reads the primary, for mail's cards too.
+- The approval's binding and every write keep the write calendar.
+
+**Acceptance criteria:**
+- [ ] Conflicts come from the read calendar.
+- [ ] The hash binds the write calendar.
+- [ ] `list_events` covered against a fake service.
+
+**Verification:** `uv run pytest tests/test_calendar.py tests/test_graph.py tests/test_hashing.py`.
+
+**Dependencies:** None · **Files:** `app/google/calendar.py`, `app/graph/nodes.py`, `app/graph/runner.py`, tests · **Scope:** M
+
+### Task 19.5: The read operations and helpers (D3)
+
+**Description:**
+- `mail.search`: a typed query builder; subjects through `redact_secrets`; whether Gmail verified the sender's domain.
+- `calendar.freebusy` on the primary.
+- `slots.first_free` with `WORKING_HOURS`.
+- `contacts.find` against the confirmed contacts only.
+
+**Acceptance criteria:**
+- [ ] Each operation covered on fakes, including one, several and no contact matches.
+- [ ] No Gmail syntax comes from the planner.
+
+**Verification:** `uv run pytest tests/test_planner_ops.py`.
+
+**Dependencies:** 19.2, 19.4 · **Files:** `app/planner/ops.py`, `app/config.py`, tests · **Scope:** M
+
+### Task 19.6: The executor, origins, and typed against pasted (D4, D5)
+
+**Description:**
+- `app/planner/execute.py` runs a validated plan.
+- Every value carries its origin, and a computed one takes its inputs' most untrusted origin.
+- D4's rules are checked before each operation.
+- The planner is given the typed request only. Typed addresses are found by `scrub.ADDRESS`, without the owner's own; pasted addresses are listed for an Allow.
+
+**Acceptance criteria:**
+- [ ] Each D4 rule has a test that fails without it.
+- [ ] A value computed from mail inputs is mail.
+- [ ] An invented address fails.
+- [ ] A pasted address never reaches a plan.
+
+**Verification:** `uv run pytest tests/test_planner_execute.py`.
+
+**Dependencies:** 19.5 · **Files:** `app/planner/execute.py`, `app/planner/origins.py`, tests · **Scope:** M
+
+### Task 19.7: The quarantined reader (D6)
+
+**Description:**
+- `app/planner/reader.py`: reads one message's own words (`split_quoted`), or the pasted text.
+- It is prepared and between markers. Code labels its output; its prose is `Quoted`.
+- `named()` checks the addresses it names. At most three calls a turn.
+
+**Acceptance criteria:**
+- [ ] The structural test covers it.
+- [ ] A quoted section is left out.
+- [ ] A named address the message lacks is marked.
+- [ ] The fourth call is refused.
+
+**Verification:** `uv run pytest tests/test_planner_reader.py tests/test_no_tools.py`.
+
+**Dependencies:** 19.6 · **Files:** `app/planner/reader.py`, tests · **Scope:** M
+
+### Task 19.8: Answers rendered by code (D7), and the planner's prompt
+
+**Description:**
+- **Templates:** labels on every value from mail; display names never shown as identity; stranger organisers quoted; `shown()` on quoted text; plain text.
+- **The planner's system instruction, final:** its operations, conventions and examples, none from the golden set.
+
+**Acceptance criteria:**
+- [ ] Every template covered.
+- [ ] A forged display name never shows as the sender.
+
+**Verification:** `uv run pytest tests/test_planner_render.py tests/test_planner_plan.py`.
+
+**Dependencies:** 19.7 · **Files:** `app/planner/render.py`, `app/planner/prompts.py`, tests · **Scope:** M
+
+### Checkpoint: questions answered on fakes
+
+- [ ] A question runs from plan to rendered answer on fakes.
+- [ ] Checks green.
+
+## Phase 3 · The chat turn
+
+### Task 19.9: Records, API and spending (D1, D9, D12)
+
+**Description:**
+- **Migration `013_chat.sql`:** `chat_turns`; `processed_messages.source`; `proposals.source` and `chat_turn_id`; `web_reader`'s column grant.
+- **`POST /api/chat`:** idempotent, with the zone checked.
+- **The chat check:** Pause, `allows_new_work()`, the daily cap in the owner's day, the mail reserve.
+- **A gate of its own** for the turn's ceiling.
+- **Settings:** `PLANNER_MODEL`, `CHAT_TURN_CEILING_USD`, `CHAT_DAILY_CAP_USD`, `MAIL_RESERVE_USD`, `WORKING_HOURS`.
+
+**Acceptance criteria:**
+- [ ] The migration applies twice.
+- [ ] `web_reader` reads only the granted columns.
+- [ ] A resend makes no second turn.
+- [ ] A zone mismatch is refused.
+- [ ] Each part of the chat check stops a turn with its reason.
+
+**Verification:** `uv run pytest tests/test_chat_api.py tests/test_chat_spend.py tests/test_web_reader.py`; Neon.
+
+**Dependencies:** 19.8 · **Files:** `migrations/013_chat.sql`, `app/web_api.py`, `app/policy/budget.py`, `app/config.py`, tests · **Scope:** L
+
+### Task 19.10: The chat job (D1)
+
+**Description:**
+- **The job:** the scheduler's `chat` job, `max_instances=1`, woken by the API.
+- **Each turn:** a 90-second deadline; writes only while `running`; stranded turns failed at boot and by the job; traced under `chat-<turn>`.
+
+**Acceptance criteria:**
+- [ ] A turn is stored, run, answered and traced.
+- [ ] A stranded turn is failed and nothing parks after.
+- [ ] The deadline stops a slow turn.
+
+**Verification:** `uv run pytest tests/test_chat_job.py tests/test_scheduler.py`; Neon.
+
+**Dependencies:** 19.9 · **Files:** `app/planner/chat.py`, `app/jobs/scheduler.py`, tests · **Scope:** M
+
+### Task 19.11: The chat page (D1, D7)
+
+**Description:**
+- `/chat`, with paste ranges recorded from paste and drop events, a server action and polling with back-off.
+- Answers are read through `web_reader`'s grant and rendered as plain text.
+- A content policy blocks remote images.
+
+**Acceptance criteria:**
+- [ ] The paste ranges are recorded.
+- [ ] The answer renders as plain text.
+- [ ] The box locks while a turn is open.
+
+**Verification:** `cd dashboard; npm test; npm run lint; npm run typecheck; npm run build`. The browser check waits for the owner's end tests.
+
+**Dependencies:** 19.9 · **Files:** `dashboard/src/app/chat/`, `dashboard/src/lib/`, tests · **Scope:** M
+
+### Checkpoint: questions answered end to end
+
+- [ ] On Postgres with fakes, a question goes from the API to the job to a rendered answer.
+- [ ] Checks green, Python and web.
+
+## Phase 4 · Proposals from chat
+
+### Task 19.12: The queue, by source (D8)
+
+**Description:**
+- **The worker's steps for chat,** dispatched on `proposals.source` in withdraw, give-up and advance:
+  - Confirm through the registry;
+  - a refusal re-parked at the next generation from the stored `proposed`;
+  - give-up with `look_up` and `close`;
+  - Withdraw, Cancel and the sweep.
+- **Edit refused** for chat in `decide()`, from every channel.
+- **The recipient rule by source.**
+- **The new sources** in `participants.py`, `guests.ts` and Telegram's cards.
+- **Chat ids without colons.** Telegram's cards have no Edit for chat.
+
+**Acceptance criteria:**
+- [ ] Each worker path is covered on Postgres.
+- [ ] Withdraw while paused stops the write.
+- [ ] Give-up never settles an executing write on a guess.
+- [ ] Telegram's buttons decode a chat id.
+
+**Verification:** `uv run pytest tests/test_worker.py tests/test_decide.py tests/test_contacts.py tests/test_telegram.py tests/test_participants.py`; `cd dashboard; npm test`; Neon.
+
+**Dependencies:** 19.9 · **Files:** `app/channel/worker.py`, `app/channel/decide.py`, `app/policy/contacts.py`, `app/policy/participants.py`, `app/telegram/`, `dashboard/src/lib/guests.ts`, tests · **Scope:** L
+
+### Task 19.13: Proposals parked from a turn (D8)
+
+**Description:**
+- The executor claims the ledger row, then parks through `write_park`.
+- `proposed` is an `ExtractionResult`; conflicts are checked on the primary.
+- The card shows the request, the title's source and the guests' sources.
+
+**Acceptance criteria:**
+- [ ] On Postgres, a chat proposal goes from the turn to `decide()`, the worker and the registry, in dry run.
+- [ ] A typed guest needs no Allow; a pasted one is offered for one.
+
+**Verification:** `uv run pytest tests/test_chat_proposals.py`; `cd dashboard; npm test`; Neon.
+
+**Dependencies:** 19.10, 19.12 · **Files:** `app/planner/execute.py`, `app/channel/park.py`, `dashboard/src/components/ProposalCard.tsx`, tests · **Scope:** M
+
+### Checkpoint: chat proposals
+
+- [ ] Checks green, Python and web; Neon.
+
+## Phase 5 · Safety, records and evidence
+
+### Task 19.14: The chat injection suite (D11)
+
+**Description:** Chat cases in `data/injection/`, driven through the executor with a compliant fake reader.
+
+**Acceptance criteria:**
+- [ ] No proposal carries a title, a slot or a guest from mail.
+- [ ] No label is missing or wrong.
+- [ ] No display name is taken as identity.
+- [ ] Nothing is written without a Confirm.
+
+**Verification:** `uv run pytest tests/test_chat_injection.py`.
+
+**Dependencies:** 19.13 · **Files:** `data/injection/`, tests · **Scope:** M
+
+### Task 19.15: Retention for chat (D12)
+
+**Description:** The purge clears a turn's text, paste, plan arguments and answer a week after it finished, once every proposal it made has settled.
+
+**Acceptance criteria:**
+- [ ] A turn with a pending card keeps its text.
+- [ ] A settled one is cleared after a week.
+
+**Verification:** `uv run pytest tests/test_purge.py`; Neon.
+
+**Dependencies:** 19.13 · **Files:** `app/jobs/purge.py`, tests · **Scope:** S
+
+### Task 19.16: The routing eval run and its gate (D10)
+
+**Description:**
+- The schema is tried against the API, then the run itself: five samples a case.
+- Then the committed baseline, and the CI test that checks its hash and its bar.
+
+**Acceptance criteria:**
+- [ ] The bar is met: operations at least 95%, outcomes at least 90%, asks and declines at 100%.
+- [ ] CI fails when the prompt changes until the run is redone.
+
+**Verification:** `.\tasks.ps1 planner-eval --baseline`; `uv run pytest tests/test_planner_baseline.py`.
+
+**Dependencies:** 19.8 and a development Gemini key · **Files:** `results/planner-baseline.json`, tests · **Scope:** M
+
+### Task 19.17: Runbook and README
+
+**Description:** DEPLOY.md §14 (the migration, settings, the grant, the caps, the eval after any prompt change, the owner's end tests) and the README.
+
+**Acceptance criteria:**
+- [ ] A read-through against the spec finds no step outside the docs.
+
+**Verification:** the read-through, recorded in the spec's running notes.
+
+**Dependencies:** 19.16 · **Files:** `docs/DEPLOY.md`, `README.md`, `docs/plans/M19-planner.md` · **Scope:** S
+
+### Checkpoint: M19 built
+
+- [ ] Python and web checks green, locally and in CI, with the routing baseline current.
+- [ ] Fresh-context review of the module.
+- [ ] The exit criterion at the owner's end tests.
