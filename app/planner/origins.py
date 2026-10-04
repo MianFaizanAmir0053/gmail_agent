@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from enum import IntEnum
 
 from app.policy.participants import guest_key
@@ -48,6 +49,33 @@ class PastedText:
     """The text the owner pasted, as the reader is handed it. Its origin is mail."""
 
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FromMessage:
+    """A message's label, from the search that found it (D7): who sent it,
+    whether Gmail verified their domain, and when it arrived. Code writes it;
+    a model never does."""
+
+    sender: str
+    dmarc_passed: bool
+    received: datetime
+    sent: bool
+    """The owner sent it."""
+
+
+@dataclass(frozen=True, slots=True)
+class FromPaste:
+    """The label of what came from the text the owner pasted."""
+
+
+@dataclass(frozen=True, slots=True)
+class Quoted:
+    """Text someone other than the owner wrote, or a model wrote from it. It is
+    shown to the owner, under its label, and accepted by nothing else (D4)."""
+
+    text: str
+    label: FromMessage | FromPaste
 
 
 def typed_addresses(typed: str, owner: Iterable[str]) -> frozenset[str]:

@@ -62,8 +62,11 @@ def test_the_extraction_pipeline_takes_no_searcher() -> None:
 
 
 def test_model_callers_call_structured_call() -> None:
-    """Keeps the next test from passing because it found nothing to check."""
-    assert len(list(_structured_calls())) >= 2
+    """Keeps the next test from passing because it found nothing to check.
+    The planner and the reader that reads mail for it are among them (M19, D6)."""
+    callers = {where for where, _ in _structured_calls()}
+    assert {"planner/plan.py", "planner/reader.py"} <= callers
+    assert len(list(_structured_calls())) >= 4
 
 
 def test_no_call_passes_keyword_arguments_it_could_hide_tools_in() -> None:

@@ -1882,10 +1882,10 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - `named()` checks the addresses it names. At most three calls a turn.
 
 **Acceptance criteria:**
-- [ ] The structural test covers it.
-- [ ] A quoted section is left out.
-- [ ] A named address the message lacks is marked.
-- [ ] The fourth call is refused.
+- [x] The structural test covers it.
+- [x] A quoted section is left out.
+- [x] A named address the message lacks is marked.
+- [x] The fourth call is refused.
 
 **Verification:** `uv run pytest tests/test_planner_reader.py tests/test_no_tools.py`.
 

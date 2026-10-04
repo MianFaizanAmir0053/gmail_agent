@@ -249,7 +249,7 @@ def _header(text: str) -> str:
     return text[: HEADER_ROOM - len(HEADER_CUT)] + HEADER_CUT
 
 
-def _between(kind: str, marker: str, inner: str) -> str:
+def between(kind: str, marker: str, inner: str) -> str:
     """`inner` between a block's two markers. It is defused whole, so no field
     in it can be left out (M18, D3); defusing keeps the length, so a cut
     measured before still fits."""
@@ -272,7 +272,7 @@ def _email(
     if body_room is not None and len(body) > body_room:
         body = body[: max(body_room - len(CUT_NOTE), 0)] + CUT_NOTE
     recipients = ", ".join(email.recipients) or "(none)"
-    return _between(
+    return between(
         "email",
         marker,
         f"From: {_header(email.sender)}\n"
@@ -296,7 +296,7 @@ def proposal_block(current: ExtractionResult, *, marker: str) -> str:
         return f"{moment.astimezone(zone):%Y-%m-%dT%H:%M:%S}" if moment else "(none)"
 
     attendees = ", ".join(scrub_line(guest) for guest in current.attendees)
-    return _between(
+    return between(
         "proposal",
         marker,
         f"title: {shown(current.title) or '(none)'}\n"

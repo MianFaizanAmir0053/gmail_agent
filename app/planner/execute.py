@@ -200,7 +200,10 @@ class Outcome:
     """Addresses in the pasted text, each offered for an Allow (D5)."""
 
 
-class _RefusedError(Exception):
+class StepRefusedError(Exception):
+    """A step that will not run, for a fixed reason the turn's answer gives.
+    A tool may raise it too, as the reader does at its limit."""
+
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
@@ -221,7 +224,7 @@ def execute(plan: Plan, turn: Turn, tools: Tools, *, now: datetime) -> Outcome:
     for number, step in enumerate(plan.steps, start=1):
         try:
             result, origin = run.step(number, step)
-        except _RefusedError as refusal:
+        except StepRefusedError as refusal:
             refused.append(Refused(number, refusal.reason))
             continue
         except _NeedsOwnerError as asks:
@@ -284,25 +287,25 @@ class _Run:
     def _needed(self, ref: Ref) -> Ran:
         ran = self.done.get(ref.step)
         if ran is None:
-            raise _RefusedError(DEPENDS)
+            raise StepRefusedError(DEPENDS)
         return ran
 
     def _source(self, message: Ref | Pasted) -> tuple[FoundMessage | PastedText, Origin]:
         if isinstance(message, Pasted):
             if not self.turn.pasted:
-                raise _RefusedError(NOTHING_THERE)
+                raise StepRefusedError(NOTHING_THERE)
             return PastedText(self.turn.pasted), Origin.MAIL
         ran = self._needed(message)
         if not isinstance(ran.result, Found) or message.item is None:
-            raise _RefusedError(NOT_FROM_A_SEARCH)
+            raise StepRefusedError(NOT_FROM_A_SEARCH)
         if message.item >= len(ran.result.messages):
-            raise _RefusedError(NOTHING_THERE)
+            raise StepRefusedError(NOTHING_THERE)
         return ran.result.messages[message.item], ran.origin
 
     def _first_free(self, step: FirstFree) -> tuple[FreeSlot, Origin]:
         ran = self._needed(step.busy)
         if not isinstance(ran.result, Busy) or ran.origin is not Origin.CALENDAR:
-            raise _RefusedError(BUSY_NOT_CALENDAR)
+            raise StepRefusedError(BUSY_NOT_CALENDAR)
         busy = ran.result
         slot = first_free(
             busy.busy,
@@ -318,7 +321,7 @@ class _Run:
     def _propose(self, number: int, step: ProposeHold | ProposeInvite) -> tuple[Parked, Origin]:
         slot, slot_origin = self._slot(step.slot)
         if slot.start <= self.now:
-            raise _RefusedError(IN_THE_PAST)
+            raise StepRefusedError(IN_THE_PAST)
         guests, origins = self._guests(step) if isinstance(step, ProposeInvite) else ((), [])
         proposal = Proposal(
             step=number,
@@ -337,9 +340,9 @@ class _Run:
             return slot, Origin.TYPED
         ran = self._needed(slot)
         if not isinstance(ran.result, FreeSlot) or ran.origin > Origin.CALENDAR:
-            raise _RefusedError(SLOT_NOT_YOURS)
+            raise StepRefusedError(SLOT_NOT_YOURS)
         if ran.result.slot is None:
-            raise _RefusedError(NO_FREE_TIME)
+            raise StepRefusedError(NO_FREE_TIME)
         return ran.result.slot, ran.origin
 
     def _guests(self, step: ProposeInvite) -> tuple[tuple[Guest, ...], list[Origin]]:
@@ -356,13 +359,13 @@ class _Run:
             elif key in self.contacts:
                 guest, origin = Guest(written.strip().lower(), "contact"), Origin.CONTACT
             else:
-                raise _RefusedError(GUEST_NOT_YOURS)
+                raise StepRefusedError(GUEST_NOT_YOURS)
             chosen.setdefault(key, guest)
             origins.append(origin)
         for ref in step.guest_refs:
             ran = self._needed(ref)
             if not isinstance(ran.result, Contact) or ran.origin is not Origin.CONTACT:
-                raise _RefusedError(GUEST_NOT_YOURS)
+                raise StepRefusedError(GUEST_NOT_YOURS)
             key = guest_key(ran.result.address)
             if key not in self.owner:
                 chosen.setdefault(key, Guest(ran.result.address, "contact"))

@@ -600,3 +600,19 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
   - `PLANNER_MODEL`, which `models.in_use()` now counts.
 - **The run itself** waits for a development key and for 19.8.
 - 26 deliberate breaks, each caught. Two were missed at first, and their tests were fixed. 2595 tests pass, with lint and mypy clean.
+
+### Task 19.7, the quarantined reader (2026-10-04)
+
+- **`app/planner/reader.py`:** a `Reader` serves one turn and reads at most three times. The fourth call raises `StepRefusedError`, now public so a tool can refuse a step, and the executor gives the turn its fixed reason.
+- **What it reads:**
+  - A message is prepared as the fetch prepares it (`scrub.prepare`). The reader is given only its own words (`split_quoted`), between markers made for the call (`email_block`), with the body cut to 16,000 characters.
+  - The owner's paste is read whole, since the owner chose it, between the same markers.
+  - Credential mail, and a paste that carries a code, never reach the model; the reading says why it was not read.
+- **The question** rides in the system instruction (`read_system`), a channel no message writes to. The user turn is the message alone.
+- **What it returns:**
+  - Points and names are `Quoted`, labelled by code with the sender the search found: never by the fetched message's own `From`, and never by the model.
+  - What the model wrote is cleaned as a card's text is (`shown`), on one line. It keeps at most five points of 300 characters and ten people.
+  - An address must look like one. It is checked with `named()` against the message: in its own words, only in a quoted section, or not in it at all. For a paste, it is checked against the pasted text.
+- **`origins.py`** gains `Quoted` and its two labels, and the extraction prompt's marker wrapper (`between`) is public, for the paste.
+- **The structural test** now names `planner/plan.py` and `planner/reader.py` among the modules that call a model.
+- 16 deliberate breaks, each caught. One was missed at first, and its test was extended. 2615 tests pass, with lint and mypy clean.
