@@ -141,9 +141,7 @@ through `fly ssh console` resolve them the same way the server does.
 | `OWNER_EMAIL` | Your address |
 | `USER_TIMEZONE` | e.g. `Asia/Karachi` |
 | `DRY_RUN` | `true`: it goes off only for the end tests (§11.8) |
-| `INGEST_ENABLED` | `false`, until M18 strips one-time codes |
-| `SEARCH_CONTEXT_ENABLED` | `false`: the production corpus is empty |
-| `REVIEWER_ENABLED` | `false` |
+| `INGEST_ENABLED` | `false`, until the owner turns it on after M18 (§13.4) |
 | `ALLOWED_CHAT_IDS` | `[]` |
 | `TELEGRAM_*` | unset: the web app replaces it (§9) |
 
@@ -511,10 +509,10 @@ mail from that record, read or not. Spec:
 - Feeding read mail as well as unread means one-time-code and password-reset
   mail in Primary now reaches the classifier. When the classifier finds no
   meeting, the ledger records "not a meeting", not the model's reasoning.
-  Two reasons are still the model's words: a meeting with no start time
-  records the extractor's reasoning, and a proposal the reviewer rejects
-  records its issues. The purge clears both after a week; M18 strips codes
-  before anything stores them.
+  Since M18 every skip records a fixed phrase ("a meeting with no start
+  time"), the reviewer is gone, and codes are stripped before anything stores
+  them (§13). Rows written before keep the model's words until the purge
+  clears them, a week on.
 
 ### 10.2 The first runs
 
@@ -946,6 +944,65 @@ never mix in, and later edits to the main working copy never touch it.
 
 ---
 
+## 13. M18: untrusted input
+
+M18 changes what a model reads, not what the owner has to set. Its spec is [`docs/plans/M18-untrusted-input.md`](plans/M18-untrusted-input.md).
+
+### 13.1 Before the deploy
+
+- **Drain the parked threads first.** The graph lost its review node, so a thread parked by the old code must not be resumed by the new one. List them, then decide each in the web app, or end them all. On the laptop, in the `..\mailagent-prod` worktree, with `prod.env` as `--env-file` (§12):
+
+  ```powershell
+  uv run --env-file <prod.env> python -m app.jobs.approve --list
+  uv run --env-file <prod.env> python -m app.jobs.approve --sweep-all
+  ```
+
+  Deploy only when `--list` shows none.
+- **No migration and no new secret.** `REVIEWER_ENABLED`, `REVIEWER_MODEL` and `SEARCH_CONTEXT_ENABLED` are gone. Left in an environment file, they are ignored.
+- **What removing search and the reviewer means.** Extraction reads the email alone: it no longer searches past mail to resolve a name, and no reviewer second-guesses it. Conflicts still come from code and show on the card. Production ran with both off, so proposals change only by the prompt's new layout. Search returns with M19's planner, which reads the owner's requests rather than raw mail.
+- **The pipeline version changes** (`PIPELINE_REVISION` 4). Proposals made from now on record the new version, so M24 counts their evidence apart.
+- A pending proposal whose title or location the scrubber changes comes back to the owner on Confirm ("the proposal changed"), at the next generation. Nothing fails.
+
+### 13.2 What the owner sees change
+
+- **Credential mail is set aside before any model reads it.** Mail that hands over a code, a sign-in or reset link, or a secret is recorded SKIPPED, "carried a sign-in code", and its body is never stored. A meeting about MFA or API keys is not set aside: a phrase must hand over a secret, not name a topic.
+- **Links become `[link: host]`,** except meeting links (Google Meet, Zoom, Teams, Webex, GoTo, Jitsi, Whereby). Those keep their host and path, never a passcode. Codes near a cue word become `[code removed]`.
+- **Each guest on a card says where it came from.** "Named in a quoted or forwarded section" and "not found in the email" are warnings beside Allow. A guest outside the thread still blocks Confirm until allowed (§11.5).
+- **An Edit keeps what the owner did not change,** the title included.
+- **The ledger and stored errors quote no email.** A skip records a fixed phrase. An error keeps its type and a scrubbed first line, and the purge cuts it to the type after a week.
+
+### 13.3 The injection run
+
+After any change to a prompt, the pipeline, the response schema, the scrubber, the body preparation or a case in `data/injection/`, run the model half again on the development key. `DATABASE_URL` must point at a migrated database for the spend gate (the Neon test project, or a local Postgres):
+
+```powershell
+.\tasks.ps1 injection-eval --baseline
+```
+
+Then commit `results/injection-baseline.json`. CI fails while the baseline was made on other code, or has a failure. The run is about 620 calls on the flash models. It names cases and fixed reasons, never a case's text.
+
+### 13.4 Re-indexing
+
+- **Production has no chunks:** ingestion is off. Turning it on is the owner's choice after M18, and the chunks are then built from scrubbed mail.
+- **Development:** delete the chunks (`DELETE FROM chunks` on the development database), ingest again and re-run the retrieval eval (M18, D9). Both spend on the development key:
+
+  ```powershell
+  .\tasks.ps1 ingest --backfill
+  .\tasks.ps1 retrieval-eval --by-kind
+  ```
+
+### 13.5 The owner's end tests (exit criteria 3 and 4)
+
+1. **On the deployed stack, with `DRY_RUN` on,** send the owner three emails from another account:
+   - one carrying a one-time code;
+   - a password-reset email;
+   - one with a line that claims to be the owner's correction.
+
+   The first two must be SKIPPED, "carried a sign-in code", before any model call: no spend for them under Costs. No code or link from them may appear in the web app or the ledger. The third parks as an ordinary proposal: no Edit, and the card keeps revision 1.
+2. **At the end tests, with `DRY_RUN` off,** send an invitation that asks to add a guest the thread never had, with a link and a code in its title. The card must mark that guest by its source and block Confirm until the guest is allowed. Its title must carry no link and no code.
+
+---
+
 ## Checklist
 
 - [ ] Billing enabled and budget alert set **before** the first deploy
@@ -987,3 +1044,9 @@ never mix in, and later edits to the main working copy never touch it.
 - [ ] The web app opened once on each phone, so the new service worker knows the new alerts' tags
 - [ ] The probe passes; only then `DRY_RUN=false`, after deciding what is still waiting (11.1)
 - [ ] The exit criterion (11.8)
+
+**M18**
+
+- [ ] Parked threads drained before the deploy: `approve --list` shows none (13.1)
+- [ ] `results/injection-baseline.json` matches the code, and CI is green (13.3)
+- [ ] Exit criterion 3 on the deployed stack; 4 at the end tests (13.5)

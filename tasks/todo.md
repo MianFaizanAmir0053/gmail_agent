@@ -1712,7 +1712,7 @@ The tests run every fixture through the real `get_message` preparation and the p
 `results/injection-baseline.json` records a hash of the code that shapes what the model sees. A CI test fails when that hash no longer matches, or when the baseline has a failure.
 
 **Acceptance criteria:**
-- [ ] Changing a prompt, the scrubber, the body preparation or a fixture fails the CI test until the run is redone.
+- [ ] Changing a prompt, the scrubber, the body preparation or a fixture fails the CI test until the run is redone. *The hash and the runner are built and tested (`tests/test_injection_eval.py`); the CI test lands with the first clean run, which waits for a development Gemini key.*
 - [ ] The committed baseline has no failures.
 
 The run spends on the development key: a few hundred calls, well inside the cap.
@@ -1749,7 +1749,7 @@ The run spends on the development key: a few hundred calls, well inside the cap.
 README: the safety section. The spec: its running notes.
 
 **Acceptance criteria:**
-- [ ] A read-through against the spec finds no step outside the docs.
+- [ ] A read-through against the spec finds no step outside the docs. *DEPLOY.md §13 and the README are written; the read-through closes once 18.13 and 18.14 have run.*
 
 **Verification:** the read-through, recorded in the running notes.
 

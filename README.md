@@ -27,22 +27,21 @@ flowchart TB
     end
 
     subgraph flow["LangGraph · thread_id = Gmail message id"]
-        F[fetch] --> C[classify]
-        C -->|not a meeting| SK[skip]
+        F[fetch] -->|credential mail| SK[skip]
+        F --> C[classify]
+        C -->|not a meeting| SK
         C -->|meeting| E[extract]
-        E --> R[review]
-        R -->|revise, max 2| E
-        R -->|reject| RJ[reject]
-        R -->|approve| CF[conflicts]
+        E -->|no start time| SK
+        E --> CF[conflicts]
         CF --> AW["await_approval<br/>interrupt()"]
         AW -->|confirm| ACT[act]
-        AW -->|cancel| RJ
+        AW -->|edit| E
+        AW -->|cancel| RJ[reject]
     end
 
-    subgraph agents["Model calls"]
+    subgraph agents["Model calls · no tools"]
         C -.-> M1["Gemini flash-lite<br/>triage"]
-        E -.-> M2["Gemini flash<br/>+ search_context tool"]
-        R -.-> M3["Gemini flash<br/>+ freebusy + search_context"]
+        E -.-> M2["Gemini flash<br/>extraction"]
     end
 
     subgraph store["Postgres + pgvector"]
@@ -55,14 +54,18 @@ flowchart TB
     AW <-->|"Command(resume=...)"| TG[Telegram webhook]
     ACT --> CAL[Google Calendar]
     AW -.-> CP
-    M2 -.-> CH
-    M3 -.-> CH
     flow -.-> TR
     TR --> DASH[Next.js dashboard]
 ```
 
 One FastAPI process holds the webhook and the scheduler. Not three services for
 a few dozen emails a day.
+
+Email is attacker text, so no model that reads it holds a tool (M18). Mail is
+scrubbed of codes and links where it enters, credential mail is set aside
+before any model reads it, and the email sits between markers made fresh for
+each call, apart from the owner's own corrections. The retrieval corpus waits
+for a planner that reads the owner's requests rather than raw mail (M19).
 
 ### Mail sync (M20)
 
@@ -262,8 +265,8 @@ seams that existed only because something had been deleted there.
 ### The free tier is 20 requests per day, per model
 
 Not a footnote — it is why the two extraction stages are pinned to *different*
-models, why the reviewer uses a third, and why the reviewer's eval delta is
-still unmeasured. The embeddings quota is worse in a more interesting way: it
+models, and why the reviewer, removed in M18, used a third and never had its
+eval delta measured. The embeddings quota is worse in a more interesting way: it
 counts **documents, not requests**, so batching buys fewer round trips and no
 throughput at all. A 300-message backfill hit the wall a third of the way in and
 — because the whole run was one transaction — discarded every embedding it had
@@ -303,9 +306,12 @@ restate the published price list, so a typo has to be made twice to ship.
   provide. Redaction would destroy the entity information the agent needs. The
   `chunks` table carries the same sensitivity as the mailbox itself and must not
   leave a local or managed database.
-- **The reviewer's eval delta is unmeasured**, and the unreviewed extractor
-  already scores 100% on the meeting slice — so that comparison can only ever
-  detect harm.
+- **Some hidden text still reaches the model.** Text hidden by a stylesheet
+  class, or coloured like its background, is beyond what inline markup shows;
+  the injection cases record it as a known gap. Nothing it says can act: no
+  model holds a tool, and every action waits for the owner's Confirm.
+- **The credential and code rules are English.** A one-time code worded in
+  another language is scrubbed only if it sits near an English cue word.
 - **The failures dashboard view has never rendered real data.** Nothing has
   failed in production yet.
 
@@ -351,6 +357,7 @@ anything useful.
 .\tasks.ps1 ingest --backfill  # wider window, higher limit
 .\tasks.ps1 search "who is X"  # query the corpus by hand
 .\tasks.ps1 retrieval-eval --by-kind
+.\tasks.ps1 injection-eval --baseline   # the injection suite's model half
 ```
 
 Dashboard:
@@ -367,8 +374,8 @@ Deployment runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
   Forgetting to set it is safe, not destructive.
 - `ALLOWED_CHAT_IDS` defaults to **empty** — nobody can talk to the bot. This
   bot can read your email; the allowlist is not optional hardening.
-- `REVIEWER_ENABLED` and `INGEST_ENABLED` default to **false**. Both spend money
-  without anyone having asked for anything.
+- `INGEST_ENABLED` defaults to **false**. It spends money without anyone having
+  asked for anything.
 - The dashboard admits one verified Google address, `OWNER_EMAIL`. A blank value admits nobody.
 - Every side effect goes through one registry, under an approval bound to
   the exact arguments and the `DRY_RUN` the owner saw: a Confirm from an
@@ -382,6 +389,19 @@ Deployment runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
   app or the command line.
 - Every attempt to act, refusals included, is recorded in an append-only audit
   log that quotes no email.
+- Email is data, never instruction (M18):
+  - Links become `[link: host]`, except meeting links, which keep no passcode.
+  - Codes near a cue word are removed.
+  - Mail that hands over a code, a sign-in link or a secret is set aside before
+    any model reads it.
+  - The owner's correction travels in the system instruction, apart from the
+    email.
+  - No model that reads mail holds a tool.
+  - Each guest on a card says where it came from.
+  - The ledger and stored errors quote no email.
+- An injection suite checks all of it with no model in CI, through the
+  preparation, the prompt and a model that obeys every injection. A committed
+  run on the real model is tied by a hash to the code that shapes the prompt.
 - Real email lives in gitignored directories. Only anonymised fixtures are
   committed, and the labelled retrieval queries are not committed at all.
 
@@ -394,8 +414,8 @@ app/
   contracts.py     the three models every module speaks
   config.py        typed settings, validated at startup
   google/          OAuth, Gmail reads, Calendar writes
-  extraction/      two-stage Gemini pipeline, prompts, tool loop
-  agents/          the reviewer, with its own tools
+  extraction/      two-stage Gemini pipeline and its prompts; no tools
+  policy/          the registry, approvals, the spend gate, the scrubber
   rag/             clean -> chunk -> embed -> pgvector, and search
   graph/           LangGraph orchestration + Postgres checkpointer
   telegram/        approval cards, allowlist, callbacks
@@ -420,8 +440,9 @@ and why the fix is what it is.
 | M00–M05, M08–M12 | done |
 | M06 Telegram HITL | code complete; Telegram unreachable from the dev network |
 | M07 Deploy | deployable, not deployed |
-| M13 Reviewer agent | built and wired; eval delta not yet measured |
+| M13 Reviewer agent | removed in M18: a second opinion from the same evidence, and a path for injected text |
 | M14 Packaging | pipeline done; **demo video and screenshots outstanding** |
+| M15–M20 (v2) | see [`ASSISTANT-PLAN.md`](ASSISTANT-PLAN.md) and `docs/plans/` |
 
-The three open items share one blocker each: a deploy (M06/M07), one day's
-model quota (M13), and a screen recording (M14).
+The two open v1 items share one blocker each: a deploy (M06/M07) and a screen
+recording (M14).
