@@ -8,9 +8,11 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 import pytest
+from pydantic import BaseModel, ValidationError
+from stored_text import LEAKY, assert_clean
 
 from app.obs.pricing import RATES, Rate, cost_usd, rate_at, unpriced_models
-from app.obs.redact import redact, redact_text
+from app.obs.redact import error_text, redact, redact_text
 from app.obs.trace import SpanUsage, Tracer, record_llm_usage
 
 MODEL = next(iter(RATES))
@@ -292,6 +294,49 @@ def test_a_failing_node_records_an_error_span_and_re_raises(conn: psycopg.Connec
     assert row is not None
     assert row[0] == "error"
     assert "gmail down" in row[1]
+
+
+@pytest.mark.integration
+def test_a_span_error_carries_no_code_link_or_email_text(conn: psycopg.Connection) -> None:
+    tracer = Tracer(conn)
+    tracer.start_run("msg-leak")
+
+    with pytest.raises(RuntimeError), tracer.span("extract"):
+        raise RuntimeError(LEAKY)
+
+    row = conn.execute("SELECT error FROM spans WHERE trace_id = %s", (tracer.trace_id,)).fetchone()
+    assert row is not None and row[0].startswith("RuntimeError: ")
+    assert_clean(row[0])
+
+
+# --- stored errors (M18, D7) -------------------------------------------------------
+
+
+def test_a_stored_error_is_the_type_and_its_first_line_scrubbed() -> None:
+    text = error_text(RuntimeError(LEAKY))
+
+    assert text.startswith("RuntimeError: upstream said your code is ")
+    assert "[link: tracker.example]" in text
+    assert_clean(text)
+
+
+def test_a_validation_error_never_stores_the_value_it_was_given() -> None:
+    """pydantic puts the input it refused on the lines after the first."""
+
+    class Shape(BaseModel):
+        when: int
+
+    with pytest.raises(ValidationError) as caught:
+        Shape.model_validate({"when": "Hi Sara, the offsite moved to Thursday."})
+
+    text = error_text(caught.value)
+    assert text.startswith("ValidationError: 1 validation error for Shape")
+    assert_clean(text)
+
+
+def test_an_exception_with_no_message_is_stored_as_its_type() -> None:
+    assert error_text(TimeoutError()) == "TimeoutError"
+    assert error_text(RuntimeError("\n  \n")) == "RuntimeError"
 
 
 @pytest.mark.integration

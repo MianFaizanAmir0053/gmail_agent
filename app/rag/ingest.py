@@ -27,6 +27,7 @@ import psycopg
 
 from app.config import Settings, get_settings
 from app.contracts import EmailMessage
+from app.obs.redact import error_text
 from app.rag.chunk import Chunk, chunk_message
 from app.rag.embed import (
     BATCH_SIZE,
@@ -246,7 +247,7 @@ def ingest(
         conn.commit()
     except Exception as exc:
         conn.rollback()
-        _finish_run(conn, run_id, stats, status="failed", error=f"{type(exc).__name__}: {exc}")
+        _finish_run(conn, run_id, stats, status="failed", error=error_text(exc))
         conn.commit()
         raise
 

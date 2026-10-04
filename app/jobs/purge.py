@@ -9,9 +9,11 @@ the rest:
 - a FAILED thread keeps its checkpoint for a week, for diagnosis;
 - a thread awaiting approval, or still being processed, is never touched.
 
-It also clears model-written text from the ledger after a week. `skip` stores
-the extractor's reasoning, which quotes the email it read. The fixed phrases
-that operators and later statistics depend on stay.
+It also clears free text from the ledger after a week. Rows written before
+`skip` stored fixed phrases (M18, D7) hold the extractor's reasoning, which
+quoted the email it read. The fixed phrases that operators and later
+statistics depend on stay. Run, span and ingestion errors are cut to their
+exception's type on the same clock.
 
 The web channel's records follow the same clock (M16, D8). A proposal's card
 and the owner's corrections quote the mail too, so they are cleared a week
@@ -33,12 +35,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 import psycopg
+from psycopg import sql
 
 from app.graph.checkpointer import postgres_checkpointer
-from app.graph.nodes import CARRIED_A_CODE, NOT_A_MEETING, SWEEP_REASON
+from app.graph.nodes import CARRIED_A_CODE, NO_START_TIME, NOT_A_MEETING, SWEEP_REASON
 from app.jobs.poll import CLAIMED_NOT_RUN
 from app.mail.feed import GONE, TOO_OLD
 from app.policy import audit
+from app.rag.ingest import STOPPED
 from app.store.ledger import STRANDED_REASON, MessageStatus
 
 FINAL_STATUSES = (MessageStatus.SKIPPED, MessageStatus.REJECTED, MessageStatus.CREATED)
@@ -63,8 +67,10 @@ FIXED_REASONS = (
     TOO_OLD,
     GONE,
     NOT_A_MEETING,
-    # Untrusted input's (M18, D10): credential mail, set aside unread.
+    # Untrusted input's (M18, D10): credential mail, set aside unread, and a
+    # meeting with no start time, in place of the model's reasoning.
     CARRIED_A_CODE,
+    NO_START_TIME,
     # The action policy's (M17, D7): a refusal or an expiry, in its fixed words.
     *audit.REASONS.values(),
 )
@@ -94,6 +100,9 @@ class PurgeResult:
 
     requests_cleared: int = 0
     """Stored calendar requests a week after their write began (M17, D8)."""
+
+    errors_cut: int = 0
+    """Run, span and ingestion errors cut to their type after a week (M18, D7)."""
 
 
 def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
@@ -133,6 +142,39 @@ def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
         pairing_codes_deleted=pairing_codes_deleted,
         mail_messages_deleted=_purge_mail(conn),
         requests_cleared=_clear_requests(conn),
+        errors_cut=_cut_errors(conn),
+    )
+
+
+ERRORS_KEPT_FOR = timedelta(days=7)
+"""Run, span and ingestion errors keep their message this long (M18, D7)."""
+
+ERROR_TABLES = ("runs", "spans", "ingest_runs")
+
+FIXED_ERRORS = (STOPPED,)
+"""Errors written by code in fixed words, which quote nothing."""
+
+
+def _cut_errors(conn: psycopg.Connection) -> int:
+    """Cut the errors of runs, spans and ingestion runs to their type a week
+    after they started.
+
+    Since M18 they hold the exception's type and the first line of its
+    message, scrubbed (`app/obs/redact.py`). A message can still quote what
+    the code was handling; the type is what diagnosis needs after a week.
+    """
+    return sum(
+        conn.execute(
+            sql.SQL(
+                """
+                UPDATE {table} SET error = split_part(error, ':', 1)
+                 WHERE error LIKE '%%:%%' AND NOT (error = ANY(%s))
+                   AND started_at < now() - %s
+                """
+            ).format(table=sql.Identifier(table)),
+            (list(FIXED_ERRORS), ERRORS_KEPT_FOR),
+        ).rowcount
+        for table in ERROR_TABLES
     )
 
 

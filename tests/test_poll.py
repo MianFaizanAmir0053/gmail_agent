@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from stored_text import LEAKY, assert_clean
 
 from app.channel.park import ProposalRecord, proposal_from
 from app.google.gmail import MessageGoneError
@@ -296,6 +297,30 @@ def test_a_park_that_cannot_be_recorded_does_not_stop_the_pass(
     assert recorded == ["b"]
     # Counted, so the tick is not reported healthy.
     assert result.failed == 1
+
+
+def test_a_failed_message_stores_and_prints_no_code_link_or_email_text(
+    ledger: FakeLedger, cursor: FakeCursor, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ledger keeps the exception's type and its first line, scrubbed
+    (M18, D7). Production's output names the type alone, as it names no
+    titles."""
+
+    def fail(message_id: str) -> None:
+        raise RuntimeError(LEAKY)
+
+    session = FakeSession(unread=["a"], on_start=fail)
+
+    result = poll.poll_once(
+        cast(GraphSession, session), 10, stop=threading.Event(), show_titles=False
+    )
+
+    assert result.failed == 1
+    ((_, status, error),) = ledger.marks
+    assert status is MessageStatus.FAILED
+    assert error is not None and error.startswith("RuntimeError: ")
+    assert_clean(error)
+    assert "a  FAILED  RuntimeError\n" in capsys.readouterr().out
 
 
 def test_reset_refuses_the_production_ledger() -> None:

@@ -27,7 +27,7 @@ from typing import Any
 import psycopg
 
 from app.obs.pricing import cost_usd
-from app.obs.redact import redact
+from app.obs.redact import error_text, redact
 
 log = logging.getLogger(__name__)
 
@@ -153,7 +153,7 @@ class Tracer:
         try:
             yield usage
         except Exception as exc:
-            status, error = "error", f"{type(exc).__name__}: {exc}"
+            status, error = "error", error_text(exc)
             raise
         finally:
             _current_usage.reset(token)

@@ -20,9 +20,10 @@ from app.channel.decide import decide
 from app.channel.park import proposal_from, write_park
 from app.channel.worker import ATTEMPTS_EXHAUSTED, settle_decided, settle_failed
 from app.graph.checkpointer import postgres_checkpointer
-from app.graph.nodes import CARRIED_A_CODE, NOT_A_MEETING, SWEEP_REASON
+from app.graph.nodes import CARRIED_A_CODE, NO_START_TIME, NOT_A_MEETING, SWEEP_REASON
 from app.jobs.purge import purge
 from app.mail.feed import GONE, TOO_OLD
+from app.rag.ingest import STOPPED
 from app.store.ledger import STRANDED_REASON, MessageLedger, MessageStatus
 
 pytestmark = pytest.mark.integration
@@ -160,6 +161,76 @@ def test_the_mail_feeds_fixed_reasons_survive(
     for message_id, reason in kept.items():
         entry = ledger.get(message_id)
         assert entry is not None and entry.error == reason
+
+
+def test_a_meeting_with_no_start_time_keeps_its_fixed_reason(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    """Code wrote it in place of the model's reasoning (M18, D10)."""
+    ledger = MessageLedger(conn)
+    message_id = f"kept-{uuid.uuid4().hex[:8]}"
+    ledger.claim(message_id, message_id)
+    ledger.mark(message_id, MessageStatus.SKIPPED, error=NO_START_TIME)
+    _age(conn, message_id, days=30)
+
+    purge(conn, migrated_database)
+
+    entry = ledger.get(message_id)
+    assert entry is not None and entry.error == NO_START_TIME
+
+
+# --- stored errors (M18, D7) -----------------------------------------------------
+
+
+def _errors(conn: psycopg.Connection, *, days_old: int, error: str) -> tuple[uuid.UUID, int]:
+    """A failed run with a failed span, and a failed ingestion run, `days_old`."""
+    trace_id = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO runs (trace_id, gmail_message_id, status, started_at, error)"
+        " VALUES (%s, %s, 'failed', now() - make_interval(days => %s), %s)",
+        (trace_id, f"run-{trace_id.hex[:8]}", days_old, error),
+    )
+    conn.execute(
+        "INSERT INTO spans (trace_id, node, status, started_at, latency_ms, error)"
+        " VALUES (%s, 'extract', 'error', now() - make_interval(days => %s), 5, %s)",
+        (trace_id, days_old, error),
+    )
+    row = conn.execute(
+        "INSERT INTO ingest_runs (query, status, started_at, error)"
+        " VALUES ('test', 'failed', now() - make_interval(days => %s), %s) RETURNING id",
+        (days_old, error),
+    ).fetchone()
+    assert row is not None
+    return trace_id, int(row[0])
+
+
+def _stored(conn: psycopg.Connection, trace_id: uuid.UUID, ingest_id: int) -> list[str | None]:
+    found = conn.execute(
+        """
+        SELECT (SELECT error FROM runs WHERE trace_id = %(t)s),
+               (SELECT error FROM spans WHERE trace_id = %(t)s),
+               (SELECT error FROM ingest_runs WHERE id = %(i)s)
+        """,
+        {"t": trace_id, "i": ingest_id},
+    ).fetchone()
+    assert found is not None
+    return list(found)
+
+
+def test_stored_errors_are_cut_to_their_type_after_a_week(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    error = "RuntimeError: upstream said [code removed], see [link: tracker.example]"
+    old = _errors(conn, days_old=8, error=error)
+    new = _errors(conn, days_old=6, error=error)
+    stopped = _errors(conn, days_old=30, error=STOPPED)
+
+    result = purge(conn, migrated_database)
+
+    assert _stored(conn, *old) == ["RuntimeError"] * 3
+    assert _stored(conn, *new) == [error] * 3  # a week for diagnosis
+    assert _stored(conn, *stopped) == [STOPPED] * 3  # fixed words, quoting nothing
+    assert result.errors_cut >= 3
 
 
 # --- the mail sync's records (M20, D7) -----------------------------------------

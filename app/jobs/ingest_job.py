@@ -23,6 +23,7 @@ import argparse
 import logging
 
 from app.config import Settings, get_settings
+from app.obs.redact import error_text
 from app.policy.budget import SPENDING_STOPPED
 from app.rag.ingest import DEFAULT_QUERY, Stats, ingest
 
@@ -93,7 +94,7 @@ def scheduled_ingest(settings: Settings) -> bool:
         log.exception("ingest failed")
         _alert(
             settings,
-            f"⚠️ Retrieval ingestion failed.\n<code>{type(exc).__name__}: {exc}</code>",
+            f"⚠️ Retrieval ingestion failed.\n<code>{error_text(exc)}</code>",
         )
         return False
 

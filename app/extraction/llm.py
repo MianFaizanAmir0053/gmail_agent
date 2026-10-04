@@ -356,5 +356,12 @@ def _parse[T: BaseModel](response: Any, schema: type[T]) -> T:
     except ValidationError as exc:
         # Don't trust response.parsed blindly: the SDK populates it only on a
         # clean parse, and validating ourselves keeps the error message specific
-        # about which field the model got wrong.
-        raise LlmError(f"Response did not match {schema.__name__}: {exc}") from exc
+        # about which field the model got wrong. Which field, and what kind of
+        # mistake, but never the value: the model's output can quote the email,
+        # and this message is stored and logged (M18, D7). Not chained either,
+        # since a logged traceback would print the cause's input values.
+        problems = "; ".join(
+            f"{'.'.join(map(str, error['loc'])) or 'response'}: {error['type']}"
+            for error in exc.errors(include_url=False, include_input=False)
+        )
+        raise LlmError(f"Response did not match {schema.__name__}: {problems}") from None

@@ -1638,8 +1638,8 @@ The payload stores them, and notes when the email has a quoted or forwarded sect
 "a meeting with no start time" joins the purge's fixed reasons (D10).
 
 **Acceptance criteria:**
-- [ ] A seeded code, link and sentence of email text never reaches `runs`, `spans`, `ingest_runs` or the ledger through an error or a skip.
-- [ ] A week later, the purge has left only the type.
+- [x] A seeded code, link and sentence of email text never reaches `runs`, `spans`, `ingest_runs` or the ledger through an error or a skip.
+- [x] A week later, the purge has left only the type.
 
 **Verification:** `uv run pytest tests/test_obs.py tests/test_retries.py tests/test_purge.py tests/test_rag_ingest.py`, and the same on Neon.
 

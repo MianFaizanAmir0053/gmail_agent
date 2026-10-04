@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.policy.scrub import scrub_line
+
 MAX_TEXT = 2000
 """Bodies are truncated: a trace is for diagnosis, not archival."""
 
@@ -31,6 +33,20 @@ def redact_text(value: str) -> str:
     if len(value) > MAX_TEXT:
         value = f"{value[:MAX_TEXT]}... [{len(value) - MAX_TEXT} more chars]"
     return value
+
+
+def error_text(exc: BaseException) -> str:
+    """What a stored error says of an exception (M18, D7): its type, and the
+    first line of its message with links and codes scrubbed.
+
+    The lines after the first are where libraries put the values they were
+    handed -- pydantic's `input_value`, Postgres's failing row -- and those can
+    quote the email being read. The type is what diagnosis needs after a week,
+    which is all the purge leaves (`app/jobs/purge.py`).
+    """
+    lines = str(exc).strip().splitlines()
+    message = scrub_line(lines[0]) if lines else ""
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 def redact(value: Any) -> Any:

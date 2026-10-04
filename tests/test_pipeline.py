@@ -543,6 +543,19 @@ def test_schema_violation_names_the_model() -> None:
         _call(_client(_Response({"is_meeting": "yes please"})))
 
 
+def test_a_schema_violation_names_the_field_and_never_quotes_the_output() -> None:
+    """The model's output can quote the email, and the error is stored (M18,
+    D7): the field and the kind of mistake, never the value."""
+    output = {"is_meeting": "Hi Sara, the offsite moved to Thursday.", "confidence": 0.9}
+    with pytest.raises(LlmError) as caught:
+        _call(_client(_Response(output)))
+
+    message = str(caught.value)
+    assert "is_meeting" in message and "bool_parsing" in message
+    assert "offsite" not in message
+    assert caught.value.__cause__ is None  # nor in a logged traceback
+
+
 def test_unspecified_block_reason_is_not_treated_as_a_block() -> None:
     """The enum's zero value means "nothing to report", not "blocked"."""
     completion = _call(_client(_Response(CLASSIFY_YES, block_reason="BLOCKED_REASON_UNSPECIFIED")))

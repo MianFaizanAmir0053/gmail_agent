@@ -14,6 +14,7 @@ from typing import Any
 
 import psycopg
 import pytest
+from stored_text import LEAKY, assert_clean
 
 from app.config import Settings
 from app.contracts import EmailMessage
@@ -210,6 +211,32 @@ def test_a_failure_partway_keeps_what_it_already_paid_for(
 
     row = rag_conn.execute("SELECT count(*) FROM chunks WHERE thread_id = %s", (THREAD,)).fetchone()
     assert row is not None and row[0] == 2
+
+
+def test_a_failed_run_stores_no_code_link_or_email_text(
+    rag_conn: psycopg.Connection, settings: Settings
+) -> None:
+    """The run keeps the exception's type and its first line, scrubbed (M18, D7)."""
+
+    class Leaky(CountingClient):
+        def __init__(self, dimensions: int) -> None:
+            super().__init__(dimensions)
+
+            def embed_content(**kwargs: Any) -> Any:
+                raise RuntimeError(LEAKY)
+
+            self.models.embed_content = embed_content  # type: ignore[method-assign]
+
+    mailbox = FakeMailbox([email("m1", "Let's lock Thursday 3pm for the offsite in room 2.")])
+    with pytest.raises(RuntimeError):
+        ingest(rag_conn, mailbox, Leaky(settings.embedding_dimensions), settings=settings)
+
+    row = rag_conn.execute(
+        "SELECT status, error FROM ingest_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None and row[0] == "failed"
+    assert row[1].startswith("RuntimeError: ")
+    assert_clean(row[1])
 
 
 def test_a_run_is_recorded(rag_conn: psycopg.Connection, settings: Settings) -> None:

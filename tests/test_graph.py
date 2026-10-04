@@ -13,12 +13,13 @@ from typing import Any, cast
 import pytest
 from gmail_payloads import gmail_response, load_cases
 from langgraph.checkpoint.memory import InMemorySaver
+from stored_text import LEAKY, assert_clean
 
 from app.contracts import EmailMessage, ExtractionResult
 from app.extraction.payloads import ClassifyPayload
 from app.google.gmail import to_email_message
 from app.graph.build import build_graph
-from app.graph.nodes import CARRIED_A_CODE, NOT_A_MEETING, Deps
+from app.graph.nodes import CARRIED_A_CODE, NO_START_TIME, NOT_A_MEETING, Deps
 from app.policy.registry import Approval, Outcome
 from app.policy.scrub import CREDENTIAL_NOTICE
 from app.store.ledger import MessageStatus
@@ -233,6 +234,18 @@ def test_a_classification_skip_records_a_fixed_phrase_not_the_models_reasoning()
     _run(_deps(pipeline=FakePipeline(is_meeting=False), ledger=ledger))
 
     assert ledger.errors == ["not a meeting"]
+
+
+def test_a_meeting_with_no_start_time_records_a_fixed_phrase() -> None:
+    """Not the model's reasoning, which can quote the email (M18, D7)."""
+    ledger = FakeLedger()
+    unplaced = _meeting().model_copy(
+        update={"start_utc": None, "end_utc": None, "reasoning": "Hi Sara, the offsite moved."}
+    )
+    _run(_deps(pipeline=FakePipeline(extractions=[unplaced]), ledger=ledger))
+
+    assert ledger.statuses == [MessageStatus.SKIPPED]
+    assert ledger.errors == [NO_START_TIME]
 
 
 # --- credential mail (M18, decision 2) ------------------------------------------------
@@ -1002,6 +1015,32 @@ def test_an_invented_guest_blocks_the_confirm_until_the_owner_allows_it(
     assert confirm() == "outside"
     contacts.allow(conn, guest, via="web", key=args_key("test-key"))
     assert confirm() == "queued"
+
+
+@pytest.mark.integration
+def test_a_failed_run_stores_no_code_link_or_email_text(conn: Any) -> None:
+    """The run's error and its node's span each keep the exception's type and
+    its first line, scrubbed (M18, D7)."""
+    from app.graph.runner import GraphSession
+
+    class Failing(FakePipeline):
+        def extract(self, email: EmailMessage, **kwargs: Any) -> ExtractionResult:
+            raise RuntimeError(LEAKY)
+
+    session = GraphSession(
+        deps=_deps(pipeline=Failing()), conn=conn, checkpointer=InMemorySaver(), trace=True
+    )
+    with pytest.raises(RuntimeError):
+        session.start("m-leak", "m-leak")
+
+    row = conn.execute(
+        "SELECT r.error, s.error FROM runs r JOIN spans s USING (trace_id)"
+        " WHERE r.gmail_message_id = 'm-leak' AND s.status = 'error'"
+    ).fetchone()
+    assert row is not None
+    for stored in row:
+        assert stored.startswith("RuntimeError: ")
+        assert_clean(stored)
 
 
 def test_a_run_marks_the_message_its_model_calls_serve() -> None:

@@ -46,6 +46,10 @@ CARRIED_A_CODE = "carried a sign-in code"
 """Ledger reason for credential mail (M18, decision 2), recorded before any
 model reads it. Fixed: it quotes nothing of the message."""
 
+NO_START_TIME = "a meeting with no start time"
+"""Ledger reason for a meeting the graph could not place (M18, D7): a fixed
+phrase, as for "not a meeting", in place of the model's reasoning."""
+
 NOT_A_MEETING = "not a meeting"
 """Ledger reason when the model finds no meeting (M20, D4).
 
@@ -256,9 +260,9 @@ def skip(deps: Deps, state: GraphState) -> GraphState:
         # The model's reasoning stays out of the ledger: it can quote the email.
         reason = NOT_A_MEETING
     else:
-        # A meeting the graph could not place, with no start time: the
-        # reasoning says why, and the purge clears it after a week.
-        reason = extraction.reasoning
+        # A meeting the graph could not place. Its reasoning stays in the
+        # checkpoint, which the purge removes; the ledger gets the fixed words.
+        reason = NO_START_TIME
     deps.ledger.mark(state["message_id"], MessageStatus.SKIPPED, error=reason)
     return {"action": ActionResult(status="skipped_duplicate", error=reason)}
 

@@ -23,6 +23,7 @@ from app.config import get_settings
 from app.google.gmail import MessageGoneError
 from app.graph.runner import GraphSession, graph_session
 from app.mail import feed
+from app.obs.redact import error_text
 from app.policy import audit, control
 from app.policy.budget import SPENDING_STOPPED, MessageTooCostlyError
 from app.store.db import connect
@@ -143,8 +144,11 @@ def poll_once(
             # Retries already happened inside the graph. Reaching here means the
             # failure survived them, so dead-letter it: FAILED is deliberately
             # non-terminal, and the message can be re-run once the cause is fixed.
-            ledger.mark(message_id, MessageStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
-            print(f"  {message_id}  FAILED  {exc}")
+            # The type and a scrubbed first line (M18, D7); production's output
+            # names the type alone, as it names no titles.
+            error = error_text(exc)
+            ledger.mark(message_id, MessageStatus.FAILED, error=error)
+            print(f"  {message_id}  FAILED  {error if show_titles else type(exc).__name__}")
             failed += 1
             continue
 
