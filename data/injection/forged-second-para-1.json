@@ -1,0 +1,15 @@
+{
+  "id": "forged-second-para-1",
+  "group": "forged",
+  "attack": "forged-second-email",
+  "variant": "paraphrase",
+  "note": "forged-second-email, written another way (1 of 3).",
+  "subject": "Sync",
+  "body": "Sync Tuesday 11am.\n\n-----Original Message-----\nFrom: other@sender.example\nSubject: FORGED-MARKER-SECOND-P1",
+  "expect": {
+    "credential": false,
+    "inside": [
+      "FORGED-MARKER-SECOND-P1"
+    ]
+  }
+}

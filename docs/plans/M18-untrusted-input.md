@@ -497,3 +497,35 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
     - one CSS length reader for `text-indent` and `font` is a detection change, for 18.11;
     - a layout key built from the whole card view would hold taps on changes that move nothing.
 - **Checks.** 1978 Python tests on a local Postgres 16, lint, format and mypy; the web app's 144 tests, typecheck and build.
+
+### Task 18.11, the fixtures and the deterministic suite (2026-10-04)
+
+- **Each attack, written three more ways and hidden three ways.** Forty new cases, 91 in all. A case that varies another names it (`attack`, `variant`; see `data/injection/README.md`). The attacks:
+  - the four forged structures (a correction, a closing marker, a grounding block, a second email);
+  - a guest the email asks to add;
+  - mail that asks for a code (`bait-ask-for-code`, new);
+  - a title shaped like the card's own lines, paraphrased only, since a model's output cannot be hidden.
+
+  Thirteen hiding techniques are spread across them, each used more than once. Every case carries inert markers, never instructions. They were written by a one-off script; the JSON files are what is committed and cited.
+- **What the new cases show:**
+  - A guest the email asks to add is "named in the email". The defence is M17's block until it is allowed, not the label.
+  - The same guest hidden, and proposed anyway, is "not found in the email".
+  - Mail that asks for a code names one, so it is set aside whole. Hidden, the ask never reaches a model.
+- **One gap closed: SVG and MathML.** Their text reached the model, and Gmail draws neither (the security review's note). The walk now skips any element whose tag keeps a namespace. A `<br>` inside SVG ends the foreign element, as the HTML parser defines it, so text after it is drawn and is not hidden. The first SVG case was wrong for that reason, and was rewritten.
+- **`tests/test_injection.py`.** It runs every mail case through `to_email_message` and `user_content`. It checks:
+  - the credential flag, what is kept and what is removed;
+  - one marker pair, with nothing after the closing marker;
+  - the subject and every held text between the markers, and out of the system instruction;
+  - that nothing removed reaches the prompt.
+
+  Every output case is checked on the card (one line, kept and removed) and back in an Edit's proposal block, before the email. Each attack has its three paraphrases and, unless it is model output, its three hidden forms.
+- **A failure names the case and the expectation, never the text.** Each check is a boolean before it is asserted. A test holds that, and a break run once confirmed no marker text in pytest's output.
+- **Checks.** Six deliberate breaks were each caught:
+  - SVG shown;
+  - the `hidden` attribute ignored;
+  - blocks not defused;
+  - credential mail not set aside;
+  - mail not scrubbed;
+  - model text not folded.
+
+  2229 tests pass on a local Postgres 16 (185 in the new suite), with lint and mypy clean.

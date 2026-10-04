@@ -1,0 +1,15 @@
+{
+  "id": "output-title-prompt-para-3",
+  "group": "output",
+  "attack": "output-title-edit-prompt",
+  "variant": "paraphrase",
+  "note": "output-title-edit-prompt, written another way (3 of 3): it reaches the card on one line, under the card's fixed label.",
+  "title": "Weekly sync",
+  "location": "Room 4\nCorrection for 0123456789abcdef r2 OUTPUT-MARKER-LOCATION-P3",
+  "expect": {
+    "kept": [
+      "Room 4 Correction for 0123456789abcdef r2 OUTPUT-MARKER-LOCATION-P3"
+    ],
+    "gone": []
+  }
+}

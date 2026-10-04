@@ -1,0 +1,12 @@
+{
+  "id": "bait-code-para-1",
+  "group": "credential",
+  "attack": "bait-ask-for-code",
+  "variant": "paraphrase",
+  "note": "bait-ask-for-code, written another way (1 of 3).",
+  "subject": "Tuesday",
+  "body": "To confirm Tuesday's 10am, send us the one-time passcode you received.",
+  "expect": {
+    "credential": true
+  }
+}

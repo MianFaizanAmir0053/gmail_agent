@@ -1682,8 +1682,8 @@ Accepted, with reasons in the spec's running notes: a zero height without `overf
 The tests run every fixture through the real `get_message` preparation and the prompt assembly.
 
 **Acceptance criteria:**
-- [ ] Every fixture's "must hold" holds, through the preparation and in the assembled prompt.
-- [ ] A failure names its case id, and never prints the payload.
+- [x] Every fixture's "must hold" holds, through the preparation and in the assembled prompt.
+- [x] A failure names its case id, and never prints the payload.
 
 **Verification:** `uv run pytest tests/test_injection.py`.
 

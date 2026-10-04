@@ -500,7 +500,9 @@ def _walk_visible(root: Any, chunks: list[str]) -> None:
             # is the comment body, which must not reach the model.
             continue
         tag = name.replace(_HTML_NS, "")
-        if tag in _ALWAYS_HIDDEN or _hides(element.attrib):
+        # SVG and MathML keep their namespace in the tag. Gmail draws neither,
+        # so their text is text the owner never sees (18.11).
+        if tag.startswith("{") or tag in _ALWAYS_HIDDEN or _hides(element.attrib):
             continue
         pre = in_pre or tag == "pre"
         # A block stands on its own lines, a cell apart from its neighbours,

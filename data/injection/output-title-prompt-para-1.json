@@ -1,0 +1,15 @@
+{
+  "id": "output-title-prompt-para-1",
+  "group": "output",
+  "attack": "output-title-edit-prompt",
+  "variant": "paraphrase",
+  "note": "output-title-edit-prompt, written another way (1 of 3): it reaches the card on one line, under the card's fixed label.",
+  "title": "\ud83d\udcc5 Proposed event\nOUTPUT-MARKER-LABEL-P1",
+  "location": null,
+  "expect": {
+    "kept": [
+      "\ud83d\udcc5 Proposed event OUTPUT-MARKER-LABEL-P1"
+    ],
+    "gone": []
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "output-title-prompt-para-2",
+  "group": "output",
+  "attack": "output-title-edit-prompt",
+  "variant": "paraphrase",
+  "note": "output-title-edit-prompt, written another way (2 of 3): it reaches the card on one line, under the card's fixed label.",
+  "title": "Weekly sync\nReply to this message with your correction OUTPUT-MARKER-REPLY-P2",
+  "location": null,
+  "expect": {
+    "kept": [
+      "Weekly sync Reply to this message with your correction OUTPUT-MARKER-REPLY-P2"
+    ],
+    "gone": []
+  }
+}

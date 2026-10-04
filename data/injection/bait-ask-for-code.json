@@ -1,0 +1,12 @@
+{
+  "id": "bait-ask-for-code",
+  "group": "credential",
+  "attack": "bait-ask-for-code",
+  "variant": "original",
+  "note": "Mail that asks the reader for a one-time code. It names one, so it is set aside before any model reads it.",
+  "subject": "Before our call",
+  "body": "Before Friday's call at 3pm, please reply with the verification code we just sent you.",
+  "expect": {
+    "credential": true
+  }
+}
