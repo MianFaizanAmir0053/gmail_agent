@@ -60,12 +60,12 @@ M15 ─┬─► M16 ─────────────────┬─�
 
 | # | Module | Est. | Status |
 |---|---|---|---|
-| [M15](M15-go-live.md) | Go live and measure | 5d + 8d unattended | ◐ code complete; waiting on day 0 (deploy) |
-| [M16](M16-web-channel.md) | Web channel | 8d | ◐ built, pairing included (switched off); deploy and phone tests wait for the owner's end tests |
-| [M17](M17-action-policy.md) | Action policy | 5d | ◐ approved 2026-10-01; building |
-| M18 | Untrusted input | 4d | ☐ not specified |
-| M19 | Planner | 5d | ☐ not specified |
-| [M20](M20-mail-sync.md) | Mail sync | 4d | ◐ approved 2026-10-01; after M17 |
+| [M15](M15-go-live.md) | Go live and measure | 5d + 8d unattended | ◐ code complete; running on the owner's laptop since 2026-10-03; day 0 and the measurements wait for the owner |
+| [M16](M16-web-channel.md) | Web channel | 8d | ◐ built, pairing included (switched off); deployed to Vercel; phone tests wait for the owner's end tests |
+| [M17](M17-action-policy.md) | Action policy | 5d | ◐ built and reviewed; the exit criterion waits for the owner's end tests |
+| [M18](M18-untrusted-input.md) | Untrusted input | 4d | ◐ built through 18.15 and reviewed; the model runs wait for a development key, the exit criteria for the owner |
+| M19 | Planner | 5d | ☐ being specified (2026-10-04) |
+| [M20](M20-mail-sync.md) | Mail sync | 4d | ◐ built and reviewed; the exit criterion waits for the owner's end tests |
 | M21 | Loose ends | 7d | ☐ not specified |
 | M22 | Connector gateway | 4d | ☐ not specified |
 | M23 | Connectors, wave 1 | 5d | ☐ not specified |
