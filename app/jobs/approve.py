@@ -37,7 +37,7 @@ from app.policy.hashing import args_key
 from app.store.db import connect_autocommit
 
 WAIT_SECONDS = 180
-"""Long enough for an edit's re-extraction and review, with a retry."""
+"""Long enough for an edit's re-extraction and conflict check, with a retry."""
 
 POLL_EVERY = 2.0
 

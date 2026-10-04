@@ -193,6 +193,7 @@ def test_malformed_markup_cannot_pull_text_out_of_a_hidden_element(markup: str) 
     "style",
     [
         "display:/**/none",
+        "display:none/* left open",
         "display:none ! important",
         "display:\\6e one",
         "font-size:0mm",

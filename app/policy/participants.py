@@ -40,7 +40,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from email.utils import getaddresses, parseaddr
-from typing import Any, Literal
+from typing import Any, Literal, cast, get_args
 
 from app.contracts import EmailMessage
 from app.policy.scrub import ADDRESS
@@ -216,7 +216,7 @@ def card_source(guest: str, card: Mapping[str, Any], allowed: frozenset[str]) ->
     guest keys the owner has allowed. None for a payload parked before M18,
     which records no sources."""
     where = (card.get("guest_sources") or {}).get(guest)
-    if where not in ("email", "quoted", "absent"):
+    if where not in get_args(Named):
         return None
     key = guest_key(guest)
     in_thread = {guest_key(str(g)) for g in card.get("thread_guests") or []}
@@ -225,8 +225,7 @@ def card_source(guest: str, card: Mapping[str, Any], allowed: frozenset[str]) ->
         return "thread"
     if key in allowed:
         return "allowed"
-    source: Source = where
-    return source
+    return cast(Named, where)
 
 
 def _keys(*texts: str) -> set[str]:

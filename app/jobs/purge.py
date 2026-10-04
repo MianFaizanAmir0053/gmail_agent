@@ -146,8 +146,9 @@ def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
     )
 
 
-ERRORS_KEPT_FOR = timedelta(days=7)
-"""Run, span and ingestion errors keep their message this long (M18, D7)."""
+ERRORS_KEPT_FOR = REASONS_KEPT_FOR
+"""Run, span and ingestion errors keep their message as long as the ledger's
+reasons do (M18, D7)."""
 
 ERROR_TABLES = ("runs", "spans", "ingest_runs")
 

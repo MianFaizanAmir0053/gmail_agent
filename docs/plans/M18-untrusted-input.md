@@ -467,3 +467,33 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
   - the shared pattern.
 
   1977 tests pass on a local Postgres 16, with lint and mypy clean.
+
+### Security review and simplify pass (2026-10-04)
+
+- **`/security-review`**, fresh context, over the same range: no findings at the bar. Below the bar, and noted:
+  - text inside SVG or MathML, which Gmail does not draw, still reaches the model. This is the known hidden-text gap, for 18.11's fixtures.
+  - A reset email that never says "your" is no longer set aside whole. That is the owner's trade-off; its links are still rewritten.
+  - Older, and milder since M18: a stored error can quote a model's bad zone, now scrubbed, and the ingestion alert puts error text in Telegram's HTML unescaped.
+- **`/simplify`**: four reviewers in fresh context (reuse, simplification, efficiency, altitude).
+  - **Applied:**
+    - `scrub.prepare` sets aside or scrubs a message, for the fetch and for every prompt alike.
+    - The scrubber's three flags became one `secret` mode, and `scrub` lost an unused argument.
+    - `shown` moved into the scrubber: the card, the event and an Edit's proposal all use it.
+    - The email and the proposal are each defused whole, once, so no new field can skip it.
+    - A prompt prepares the email once, and measures its headers from that same text.
+    - The dash rule now reads `_DASHES` itself; there is one `words` guard in the web app; Telegram uses `participants.outside`.
+    - The Edit wording is hashed into the pipeline version, and `Tracer.finish_run` applies `error_text` itself.
+    - The purge's error clock is the ledger's.
+    - A dead branch in `detect_conflicts` is gone, and the node no longer repeats the pipeline's rule for when it reads the proposal.
+    - The web timeline builds each card's view once.
+    - The walk names each tag's separator once.
+  - **Efficiency.** Three patterns were quadratic on a long run of spaces or zeros: the strong phrases' gap, the marker shape and the zero length. Each now has one way to match. A run of 20,000 spaces took about 5.5 s for each of the first two; it now takes milliseconds. CSS comments are stripped in one linear pass, once, as a browser strips them. A comment left open runs to the end, so a hiding style followed by one now hides, as it does in a browser (a new test).
+  - **Skipped, and why:**
+    - the purge's scan of old rows is small at this scale, and an index needs a migration (D10: none);
+    - reading every allowed contact at once would change the web app's query, for one round trip;
+    - rebuilding the guest sets per guest costs nothing measurable, and a fast path for plain styles is a micro-optimisation;
+    - drawing the card from `bound()` touches M17's worker and reconciliation;
+    - the ingestion and ledger writers also write fixed words, so they keep `error_text` at their callers;
+    - one CSS length reader for `text-indent` and `font` is a detection change, for 18.11;
+    - a layout key built from the whole card view would hold taps on changes that move nothing.
+- **Checks.** 1978 Python tests on a local Postgres 16, lint, format and mypy; the web app's 144 tests, typecheck and build.

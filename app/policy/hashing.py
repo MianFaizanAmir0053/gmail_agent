@@ -35,7 +35,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import ValidationError
 
 from app.contracts import ExtractionResult
-from app.policy.scrub import scrub_line
+from app.policy.scrub import shown
 from app.tools.calendar_tool import CreateEventInput
 
 HASH_VERSION = 1
@@ -103,16 +103,6 @@ def event_args(extraction: ExtractionResult, message_id: str) -> CreateEventInpu
         location=shown(extraction.location),
         description=f"Created by mailagent from message {message_id}.",
     )
-
-
-def shown(value: object) -> str | None:
-    """A title or a location as the card shows it and the event carries it
-    (M18, D6): scrubbed of links and codes, on one line, or None when nothing
-    is left. The card (`app/channel/park.py`) and the arguments above both
-    take it from here, so what the owner approves is what is written."""
-    if not isinstance(value, str):
-        return None
-    return scrub_line(value) or None
 
 
 def args_key(fernet_key: str) -> bytes:

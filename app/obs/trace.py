@@ -126,7 +126,10 @@ class Tracer:
             (self.trace_id, gmail_message_id),
         )
 
-    def finish_run(self, status: str, error: str | None = None) -> None:
+    def finish_run(self, status: str, failure: BaseException | None = None) -> None:
+        """Close the run. A failure is stored as `error_text` gives it (M18,
+        D7), here rather than at each caller, as `span` does."""
+        error = error_text(failure) if failure is not None else None
         self.conn.execute(
             """
             UPDATE runs

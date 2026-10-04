@@ -17,9 +17,9 @@ from app.policy.hashing import (
     args_key,
     bound,
     event_args,
-    shown,
     tool_for,
 )
+from app.policy.scrub import shown
 from app.tools.calendar_tool import CreateEventInput
 
 KEY = args_key("test-fernet-key-for-hashing-only")

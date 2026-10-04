@@ -57,6 +57,8 @@ def pipeline_version(settings: Settings) -> str:
         "extract": {
             "model": settings.extraction_model,
             "system": prompts.EXTRACT_SYSTEM,
+            # What an Edit adds to the system instruction (M18, D3).
+            "edit": [prompts.OWNER_CHANGE, prompts.KEEP_THE_PROPOSAL, prompts.KEEP_FROM_EMAIL],
             "schema": payloads.ExtractionPayload.model_json_schema(),
         },
     }

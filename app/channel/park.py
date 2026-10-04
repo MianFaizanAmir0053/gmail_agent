@@ -23,7 +23,8 @@ from psycopg.types.json import Jsonb
 
 from app.graph.runner import GraphSession
 from app.graph.versioning import LEGACY_PIPELINE_VERSION, ActionType, action_type
-from app.policy.hashing import Binding, bound, shown
+from app.policy.hashing import Binding, bound
+from app.policy.scrub import shown
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
 
 log = logging.getLogger(__name__)

@@ -23,7 +23,6 @@ from app.graph.build import build_graph
 from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import Deps
 from app.graph.versioning import pipeline_version
-from app.obs.redact import error_text
 from app.obs.trace import Tracer
 from app.policy import models
 from app.policy.budget import Gate
@@ -77,7 +76,7 @@ class GraphSession:
             )
         except Exception as exc:
             if tracer is not None:
-                tracer.finish_run("failed", error_text(exc))
+                tracer.finish_run("failed", exc)
             raise
         finally:
             models.CURRENT_MESSAGE.reset(serving)

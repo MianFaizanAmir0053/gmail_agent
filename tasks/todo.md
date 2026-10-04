@@ -1648,7 +1648,7 @@ The payload stores them, and notes when the email has a quoted or forwarded sect
 ### Checkpoint: what the owner sees
 
 - [x] Checks green, Python and web; Neon. (2026-10-04, at `f7d17d8`: 1937 tests on a local Postgres 16, lint and mypy clean; the web app's 144 tests, typecheck and build at `de3d38d`, untouched since; the obs, purge, ingestion, graph and retries suites on Neon, 39 passed, one after Neon dropped the connection.)
-- [ ] Review of 18.4–18.10, at the owner's choice: `/code-review`, `/security-review`, `/simplify`, each in fresh context.
+- [x] Review of 18.4–18.10, at the owner's choice: `/code-review`, `/security-review`, `/simplify`, each in fresh context.
 
 ### Phase-3 review fixes (2026-10-04)
 
@@ -1666,7 +1666,7 @@ Accepted, with reasons in the spec's running notes: a zero height without `overf
 **Acceptance criteria:**
 - [x] Each fix has a test that fails without it: eleven deliberate breaks, each caught; the old walk was seen to raise on deep markup.
 - [x] Checks green, locally; the credential and meeting fixtures still sort as before.
-- [ ] `/security-review` and `/simplify` run, with the no-quote rule in their args, and their findings handled.
+- [x] `/security-review` and `/simplify` run, with the no-quote rule in their args, and their findings handled.
 
 ## Phase 4 · The injection suite and the evals
 

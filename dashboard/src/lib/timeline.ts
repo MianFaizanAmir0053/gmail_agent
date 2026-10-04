@@ -5,7 +5,7 @@
  * and the card only render what `cardView` decides.
  */
 
-import { cardSource, guestKey, SOURCE_WORDS, type Source, WARNINGS } from "./guests.ts";
+import { cardSource, guestKey, SOURCE_WORDS, type Source, WARNINGS, words } from "./guests.ts";
 import { heldNote, NO_SWITCHES, type Switches } from "./switches.ts";
 
 export const LAST_EDITABLE_REVISION = 2;
@@ -289,10 +289,6 @@ export function refreshEvery(
 
 function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
-}
-
-function words(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 /** A day and a time in `zone`, or null for a time that cannot be read. */

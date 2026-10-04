@@ -32,7 +32,7 @@ from googleapiclient.errors import HttpError
 
 from app.contracts import EmailMessage
 from app.mail import quota
-from app.policy.scrub import CREDENTIAL_NOTICE, is_credential, normalise, redact_secrets, scrub
+from app.policy.scrub import normalise, prepare
 
 METADATA_HEADERS = (
     "From",
@@ -371,11 +371,11 @@ _BLOCK = frozenset(
     }
 )
 _CELL = frozenset({"td", "th"})
-_LINE_BREAK = frozenset({"br"})
 
-_ZERO = re.compile(r"[+-]?0*\.?0*(?:px|pt|pc|em|rem|ex|ch|q|cm|mm|in|v\w+|%)?")
-"""A length that is zero, in any CSS unit or none: `0`, `0px`, `0.0mm`, `0vmin`."""
-_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_ZERO = re.compile(r"[+-]?0*(?:\.0*)?(?:px|pt|pc|em|rem|ex|ch|q|cm|mm|in|v\w+|%)?")
+"""A length that is zero, in any CSS unit or none: `0`, `0px`, `0.0mm`, `0vmin`.
+The zeros after the point come only after the point, so a long run of zeros
+cannot be split two ways."""
 _CSS_ESCAPE = re.compile(r"\\([0-9a-fA-F]{1,6})\s?|\\(.)")
 _CSS_IMPORTANT = re.compile(r"!\s*important", re.IGNORECASE)
 _SPACES = re.compile(r"\s+")
@@ -389,12 +389,27 @@ _PRE_NEWLINE = "\ue00a"
 _HTML_NS = "{http://www.w3.org/1999/xhtml}"
 
 
+def _strip_css_comments(text: str) -> str:
+    """CSS with its comments removed as a browser removes them: a comment
+    left open runs to the end. One pass: a lazy regex scanned to the end
+    again from every opener left open, which made a long style quadratic."""
+    kept: list[str] = []
+    start = 0
+    while (opening := text.find("/*", start)) != -1:
+        kept.append(text[start:opening])
+        closing = text.find("*/", opening + 2)
+        if closing == -1:
+            return "".join(kept)
+        start = closing + 2
+    kept.append(text[start:])
+    return "".join(kept)
+
+
 def _css_value(raw: str) -> str:
-    """A CSS value with comments stripped, escapes decoded, `!important` and
-    whitespace removed, lower-cased. `display:/**/none` and `display:\\6e one`
-    both come back `none`."""
-    without_comments = _CSS_COMMENT.sub("", raw)
-    decoded = _CSS_ESCAPE.sub(_css_escape, without_comments)
+    """A CSS value with escapes decoded, `!important` and whitespace removed,
+    lower-cased: `display:\\6e one` comes back `none`. Comments are already
+    gone (`_hides`)."""
+    decoded = _CSS_ESCAPE.sub(_css_escape, raw)
     return _CSS_IMPORTANT.sub("", decoded).strip().lower()
 
 
@@ -420,7 +435,9 @@ def _hides(attrs: dict[str, str | None]) -> bool:
     if "hidden" in attrs:
         return True
     style = attrs.get("style") or ""
-    for declaration in _CSS_COMMENT.sub("", style).split(";"):
+    # Comments go first, before the split, so `display:/**/none` is `none` and
+    # one left open hides what follows it, as in a browser.
+    for declaration in _strip_css_comments(style).split(";"):
         name, sep, value = declaration.partition(":")
         if not sep:
             continue
@@ -486,18 +503,15 @@ def _walk_visible(root: Any, chunks: list[str]) -> None:
         if tag in _ALWAYS_HIDDEN or _hides(element.attrib):
             continue
         pre = in_pre or tag == "pre"
-        if tag in _BLOCK or tag in _LINE_BREAK:
-            chunks.append("\n")
-        elif tag in _CELL:
-            chunks.append(" ")
+        # A block stands on its own lines, a cell apart from its neighbours,
+        # and a line break opens a line and closes nothing.
+        apart = "\n" if tag in _BLOCK else " " if tag in _CELL else ""
+        chunks.append("\n" if tag == "br" else apart)
         if element.text:
             chunks.append(_visible_text(element.text, pre))
         # Pushed in reverse, so each comes off in document order: a child, then
         # its tail, then the next child, and the element's closing break last.
-        if tag in _BLOCK:
-            stack.append("\n")
-        elif tag in _CELL:
-            stack.append(" ")
+        stack.append(apart)
         for child in reversed(list(element)):
             if child.tail:
                 stack.append(_visible_text(child.tail, pre))
@@ -596,15 +610,13 @@ def to_email_message(message: dict[str, Any]) -> EmailMessage:
 
     sender = _addresses(_header(payload, "From"))
     recipients = _addresses(_header(payload, "To")) + _addresses(_header(payload, "Cc"))
-    subject = _header(payload, "Subject")
-    body = extract_body(payload)
-    credential = is_credential(subject, body)
+    subject, body, credential = prepare(_header(payload, "Subject"), extract_body(payload))
 
     return EmailMessage(
         id=cast(str, message["id"]),
         thread_id=cast(str, message["threadId"]),
-        subject=redact_secrets(subject) if credential else scrub(subject),
-        body_text=CREDENTIAL_NOTICE if credential else scrub(body),
+        subject=subject,
+        body_text=body,
         sender=sender[0] if sender else "",
         recipients=recipients,
         received_at=received_at,

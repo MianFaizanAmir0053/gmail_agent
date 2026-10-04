@@ -35,7 +35,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.contracts import EmailMessage, ExtractionResult
-from app.policy.scrub import CREDENTIAL_NOTICE, is_credential, redact_secrets, scrub, scrub_line
+from app.policy.scrub import prepare, scrub_line, shown
 
 CUT_NOTE = "\n[Some of this text was cut to fit the agent's limit on one prompt.]\n"
 """Marks where text was cut to the bound on one call (M17, D5), so the model
@@ -208,7 +208,9 @@ def grounding_block(now_utc: datetime, user_timezone: str) -> str:
     )
 
 
-_MARKER_SHAPED = re.compile(r"<\s*/?\s*(?:email|proposal)-[^<>\n]{0,64}>", re.IGNORECASE)
+_MARKER_SHAPED = re.compile(r"<\s*(?:/\s*)?(?:email|proposal)-[^<>\n]{0,64}>", re.IGNORECASE)
+"""The spaces after a slash come only after the slash, so a long run of spaces
+cannot be split two ways."""
 
 
 def new_marker() -> str:
@@ -224,12 +226,11 @@ def defuse(text: str) -> str:
 
 
 def _prepared(email: EmailMessage) -> tuple[str, str]:
-    """The subject and body as a prompt may carry them: scrubbed again, so a
-    checkpoint made before M18 is scrubbed on its next read, and set aside if
-    it carries a secret (M18, D2). Idempotent for mail fetched since M18."""
-    if email.credential or is_credential(email.subject, email.body_text):
-        return redact_secrets(email.subject), CREDENTIAL_NOTICE
-    return scrub(email.subject), scrub(email.body_text)
+    """The subject and body as a prompt may carry them, prepared as the fetch
+    prepares them (`scrub.prepare`): so a checkpoint made before M18 is read
+    as fresh mail is, and set aside if it carries a secret (M18, D2)."""
+    subject, body, _ = prepare(email.subject, email.body_text, flagged=email.credential)
+    return subject, body
 
 
 HEADER_ROOM = 2_000
@@ -242,10 +243,17 @@ HEADER_CUT = " [cut]"
 
 
 def _header(text: str) -> str:
-    """One header line, cut to `HEADER_ROOM` and defused."""
-    if len(text) > HEADER_ROOM:
-        text = text[: HEADER_ROOM - len(HEADER_CUT)] + HEADER_CUT
-    return defuse(text)
+    """One header line, cut to `HEADER_ROOM`."""
+    if len(text) <= HEADER_ROOM:
+        return text
+    return text[: HEADER_ROOM - len(HEADER_CUT)] + HEADER_CUT
+
+
+def _between(kind: str, marker: str, inner: str) -> str:
+    """`inner` between a block's two markers. It is defused whole, so no field
+    in it can be left out (M18, D3); defusing keeps the length, so a cut
+    measured before still fits."""
+    return f"<{kind}-{marker}>\n{defuse(inner)}</{kind}-{marker}>\n"
 
 
 def email_block(email: EmailMessage, *, marker: str, body_room: int | None = None) -> str:
@@ -255,19 +263,24 @@ def email_block(email: EmailMessage, *, marker: str, body_room: int | None = Non
     closing marker is never what gives way. Each header line is cut to
     `HEADER_ROOM`, so the headers always leave the body its room."""
     subject, body = _prepared(email)
-    body = defuse(body)
+    return _email(email, subject, body, marker=marker, body_room=body_room)
+
+
+def _email(
+    email: EmailMessage, subject: str, body: str, *, marker: str, body_room: int | None = None
+) -> str:
     if body_room is not None and len(body) > body_room:
         body = body[: max(body_room - len(CUT_NOTE), 0)] + CUT_NOTE
     recipients = ", ".join(email.recipients) or "(none)"
-    return (
-        f"<email-{marker}>\n"
+    return _between(
+        "email",
+        marker,
         f"From: {_header(email.sender)}\n"
         f"To: {_header(recipients)}\n"
         f"Subject: {_header(subject)}\n"
         f"Received: {email.received_at:%Y-%m-%d %H:%M} UTC\n"
         "Body:\n"
-        f"{body}\n"
-        f"</email-{marker}>\n"
+        f"{body}\n",
     )
 
 
@@ -275,26 +288,23 @@ def proposal_block(current: ExtractionResult, *, marker: str) -> str:
     """The proposal an Edit corrects, between markers of its own, in the
     fields and the local wall-clock times the model answers in. The model wrote
     it from the email, so it is no more trusted than the email: the title and
-    the location are scrubbed onto one line, as the card shows them, and every
-    field is defused."""
+    the location are as the card shows them (`shown`), and the whole block is
+    defused."""
     zone = _zone(current.timezone)
 
     def local(moment: datetime | None) -> str:
         return f"{moment.astimezone(zone):%Y-%m-%dT%H:%M:%S}" if moment else "(none)"
 
-    def line(value: str | None) -> str:
-        return defuse(scrub_line(value or "")) or "(none)"
-
-    attendees = ", ".join(defuse(scrub_line(guest)) for guest in current.attendees)
-    return (
-        f"<proposal-{marker}>\n"
-        f"title: {line(current.title)}\n"
+    attendees = ", ".join(scrub_line(guest) for guest in current.attendees)
+    return _between(
+        "proposal",
+        marker,
+        f"title: {shown(current.title) or '(none)'}\n"
         f"start_local: {local(current.start_utc)}\n"
         f"end_local: {local(current.end_utc)}\n"
         f"timezone: {zone.key}\n"
-        f"location: {line(current.location)}\n"
-        f"attendees: {attendees or '(none)'}\n"
-        f"</proposal-{marker}>\n"
+        f"location: {shown(current.location) or '(none)'}\n"
+        f"attendees: {attendees or '(none)'}\n",
     )
 
 
@@ -324,8 +334,9 @@ def user_content(
     grounding = grounding_block(now_utc, user_timezone)
     if current is not None:
         grounding += "\n" + proposal_block(current, marker=marker)
+    subject, body = _prepared(email)
     if room is None:
-        return f"{grounding}\n{email_block(email, marker=marker)}"
-    headers = email_block(email.model_copy(update={"body_text": ""}), marker=marker)
-    fixed = len(grounding) + 1 + len(headers)
-    return f"{grounding}\n{email_block(email, marker=marker, body_room=max(room - fixed, 0))}"
+        return f"{grounding}\n{_email(email, subject, body, marker=marker)}"
+    fixed = len(grounding) + 1 + len(_email(email, subject, "", marker=marker))
+    block = _email(email, subject, body, marker=marker, body_room=max(room - fixed, 0))
+    return f"{grounding}\n{block}"

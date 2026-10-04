@@ -116,24 +116,21 @@ def extract(deps: Deps, state: GraphState) -> GraphState:
     # pipeline puts it in the system instruction, where no email can write
     # (M18, D3). With it goes the proposal on the card, which the checkpoint
     # still holds, so the Edit changes that proposal: what the owner did not
-    # mention, the title among it, is kept rather than guessed again.
-    correction = state.get("correction", "")
+    # mention, the title among it, is kept rather than guessed again. The
+    # pipeline reads the proposal only with a correction.
     extraction = deps.pipeline.extract(
         state["email"],
         now_utc=deps.now(),
         user_timezone=deps.user_timezone,
-        correction=correction,
-        current=state.get("extraction") if correction else None,
+        correction=state.get("correction", ""),
+        current=state.get("extraction"),
     )
     return {"extraction": extraction}
 
 
 def detect_conflicts(deps: Deps, state: GraphState) -> GraphState:
-    extraction = state["extraction"]
-    if extraction.start_utc is None or extraction.end_utc is None:
-        return {"conflicts": [], "outside_guests": [], "thread_guests": [], "guest_sources": {}}
-
-    args = event_args(extraction, state["message_id"])
+    # `_has_event` sends only a meeting with both times here.
+    args = event_args(state["extraction"], state["message_id"])
     check = check_conflicts(deps.calendar, args)
     outside_guests = _outside_guests(deps, state, args.attendees)
     # Where each guest came from, computed once, here, and read by every card

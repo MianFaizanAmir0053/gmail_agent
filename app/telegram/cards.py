@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 
 from app.channel.decide import card_token
 from app.channel.park import ProposalRecord
-from app.policy.participants import SOURCE_WORDS, WARNINGS, card_source, guest_key
+from app.policy.participants import SOURCE_WORDS, WARNINGS, card_source, outside
 
 CONFIRM = "confirm"
 CANCEL = "cancel"
@@ -150,9 +150,9 @@ def approval_card(
     elif attendees:
         # Parked before M18: no sources were recorded.
         lines.append(f"👥 {_escape(', '.join(attendees))}")
-    outsiders = [
-        guest for guest in card.get("outside_guests") or [] if guest_key(guest) not in allowed
-    ]
+    outsiders = outside(
+        card.get("outside_guests") or [], participants=frozenset(), confirmed=allowed
+    )
     if outsiders:
         # Allowed in the web app only (M17, D4).
         lines.append(

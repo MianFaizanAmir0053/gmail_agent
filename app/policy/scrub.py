@@ -96,11 +96,12 @@ WINDOW = 3
 """How many non-empty lines from a cue word a code may be."""
 
 _DASHES = r"\-\u2010-\u2015\u2212"
-_GAP = rf"[ \t{_DASHES}]*\n?[ \t]*"
+_GAP = rf"[ \t{_DASHES}]*(?:\n[ \t]*)?"
 """Between the words of a strong phrase: spaces, tabs, a dash, or a single
 line break, so "sign-in", "sign in" and "signin" are all one phrase. At most
 one newline, so a phrase does not span a blank line between two paragraphs
-(M18, finding 9)."""
+(M18, finding 9). The second run of spaces comes only after the newline: two
+runs that could each take the same spaces made a long run of them quadratic."""
 
 _SECRET_NAMES = (
     rf"recovery{_GAP}keys?|(?:api|personal{_GAP}access|access|bearer){_GAP}(?:keys?|tokens?|secrets?)"
@@ -205,9 +206,8 @@ _SHORT_CLOCK = re.compile(r"\d[0-5]\d")
 """A three-digit morning time, 000 to 959: only ever the start of a range, as
 in `930-1030`. With both ends allowed three digits, any code split three and
 three passed for a range (phase-3 review)."""
-_DASH_CHARS = frozenset("-" + "".join(map(chr, range(0x2010, 0x2016))) + chr(0x2212))
-"""The characters `_DASHES` names, as a set: built with `chr`, so this file
-stays ASCII."""
+_DASH = re.compile(rf"[{_DASHES}]")
+"""One of the dashes `_DASHES` names, which also split a digit run's groups."""
 _LONGEST_RANGE = 12 * 60
 """Minutes. A range runs forward within one day, and no longer than this."""
 
@@ -251,12 +251,23 @@ def is_credential(subject: str, body: str) -> bool:
     return bool(_STRONG.search(normalise(subject)) or _STRONG.search(normalise(body)))
 
 
-def scrub(text: str, *, every_line: bool = False) -> str:
-    """The text with links and codes removed (D2). Idempotent.
+def prepare(subject: str, body: str, *, flagged: bool = False) -> tuple[str, str, bool]:
+    """A message's subject and body as a model may read them (D2), and whether
+    it is credential mail. Credential mail is set aside: its body becomes the
+    fixed notice, and its subject keeps no code and no link. Other mail is
+    scrubbed. `flagged` is a flag the fetch already set.
 
-    `every_line` reads every line as near a cue: for the subject of mail
-    already known to carry a code, which need not name it."""
-    return scrub_counted(text, every_line=every_line).text
+    The fetch (`to_email_message`) and every prompt (`prompts._prepared`) call
+    this, so a checkpoint made before M18 is read as fresh mail is. Idempotent:
+    preparing again what was prepared changes nothing."""
+    if flagged or is_credential(subject, body):
+        return redact_secrets(subject), CREDENTIAL_NOTICE, True
+    return scrub(subject), scrub(body), False
+
+
+def scrub(text: str) -> str:
+    """The text with links and codes removed (D2). Idempotent."""
+    return scrub_counted(text).text
 
 
 def scrub_line(text: str) -> str:
@@ -271,6 +282,17 @@ def scrub_line(text: str) -> str:
     return _one_line(scrub(_one_line(text)))
 
 
+def shown(value: object) -> str | None:
+    """A title or a location as the card shows it and the event carries it
+    (M18, D6): scrubbed of links and codes, on one line, or None when nothing
+    is left. The card (`app/channel/park.py`), the event's arguments
+    (`app/policy/hashing.py`) and an Edit's proposal (`app/extraction/prompts.py`)
+    all take it from here, so what the owner approves is what is written."""
+    if not isinstance(value, str):
+        return None
+    return scrub_line(value) or None
+
+
 def _one_line(text: str) -> str:
     kept = "".join(char for char in text if char.isspace() or unicodedata.category(char) != "Cc")
     return " ".join(kept.split())
@@ -281,20 +303,19 @@ def redact_secrets(text: str) -> str:
     link removed outright (M18, decision 2 and finding 4): no meeting link is
     kept and no not-a-code exception applies, since the message is already
     known to carry a secret."""
-    return scrub_counted(text, every_line=True, strict=True, keep_meeting=False).text
+    return scrub_counted(text, secret=True).text
 
 
-def scrub_counted(
-    text: str, *, every_line: bool = False, strict: bool = False, keep_meeting: bool = True
-) -> Scrubbed:
-    """`scrub`, with what was done counted by kind. `strict` removes every
-    code-shaped run with no exception, and `keep_meeting=False` rewrites even an
-    allowlisted meeting link to `[link: host]`: both for a credential subject."""
+def scrub_counted(text: str, *, secret: bool = False) -> Scrubbed:
+    """`scrub`, with what was done counted by kind. `secret` is for the subject
+    of credential mail: every line counts as near a cue, every code-shaped run
+    goes with no exception, and even an allowlisted meeting link is rewritten
+    to `[link: host]`."""
     held: list[str] = []
     text = normalise(text)
-    text, counts = _links(text, held, keep_meeting=keep_meeting)
+    text, counts = _links(text, held, keep_meeting=not secret)
     text = _FROZEN.sub(lambda match: _hold(match.group(0), held), text)
-    text, codes = _codes(text, every_line=every_line, strict=strict)
+    text, codes = _codes(text, every_line=secret, strict=secret)
     text = _HELD.sub(lambda match: held[_held_index(match.group(1))], text)
     result = Scrubbed(text=text, links=counts["link"], meeting_links=counts["meeting"], codes=codes)
     if result.links or result.codes:
@@ -560,7 +581,7 @@ def _is_time_range(token: str, groups: list[str]) -> bool:
     a space never joins a range, so near a cue `123-456` and `1030 1130` are
     codes, and so is `2041-1135`, which runs backwards."""
     first, last = groups
-    if token[len(first)] not in _DASH_CHARS:
+    if not _DASH.fullmatch(token[len(first)]):
         return False
     if not (_CLOCK.fullmatch(first) or _SHORT_CLOCK.fullmatch(first)):
         return False

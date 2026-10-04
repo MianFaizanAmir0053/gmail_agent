@@ -91,7 +91,11 @@ export function cardSource(
   return where as Source;
 }
 
+/** The strings in a payload's list, and nothing else: a payload is data. */
+export function words(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
 function keys(value: unknown): Set<string> {
-  if (!Array.isArray(value)) return new Set();
-  return new Set(value.filter((item): item is string => typeof item === "string").map(guestKey));
+  return new Set(words(value).map(guestKey));
 }

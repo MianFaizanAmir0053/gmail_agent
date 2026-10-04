@@ -37,6 +37,8 @@ export default async function TimelinePage() {
   ]);
   const state = read ?? NO_SWITCHES;
   const allowed = await allowedContacts(guestKeys(open));
+  // Each card's view, built once: the layout key and the card read the same.
+  const cards = open.map((row) => ({ row, view: cardView(row, zone, allowed, state) }));
 
   return (
     <>
@@ -50,33 +52,27 @@ export default async function TimelinePage() {
       ) : (
         <StableTaps
           layoutKey={layoutKey(
-            open.map((row) => {
-              const view = cardView(row, zone, allowed, state);
-              return {
-                ...row,
-                outside: view.outsideGuests.length,
-                footer: footerKey(view),
-                sources: sourcesKey(view),
-              };
-            }),
+            cards.map(({ row, view }) => ({
+              ...row,
+              outside: view.outsideGuests.length,
+              footer: footerKey(view),
+              sources: sourcesKey(view),
+            })),
           )}
         >
           <div className="proposals">
-            {open.map((row) => {
-              const view = cardView(row, zone, allowed, state);
-              return (
-                <ProposalCard key={row.message_id} view={view}>
-                  {view.canDecide && (
-                    <DecisionButtons
-                      messageId={view.messageId}
-                      revision={view.revision}
-                      canEdit={view.canEdit}
-                      token={view.token}
-                    />
-                  )}
-                </ProposalCard>
-              );
-            })}
+            {cards.map(({ row, view }) => (
+              <ProposalCard key={row.message_id} view={view}>
+                {view.canDecide && (
+                  <DecisionButtons
+                    messageId={view.messageId}
+                    revision={view.revision}
+                    canEdit={view.canEdit}
+                    token={view.token}
+                  />
+                )}
+              </ProposalCard>
+            ))}
           </div>
         </StableTaps>
       )}

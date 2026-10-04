@@ -1303,7 +1303,7 @@ def test_a_confirm_hashed_before_titles_were_scrubbed_returns_to_the_owner(
     title = "Kickoff, agenda at https://docs.example.net/agenda/q4"
     session = _counting(conn, pipeline=FakePipeline(extractions=[_meeting(title)]))
     with monkeypatch.context() as before:
-        before.setattr("app.policy.hashing.scrub_line", lambda text: text)
+        before.setattr("app.policy.scrub.scrub_line", lambda text: text)
         _parked(conn, session)
         old = _token(conn)
         _confirm(conn, "m1", revision=1)
