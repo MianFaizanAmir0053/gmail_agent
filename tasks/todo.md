@@ -1731,7 +1731,7 @@ The run spends on the development key: a few hundred calls, well inside the cap.
 - threads parked in development before M18 are drained.
 
 **Acceptance criteria:**
-- [ ] Exact match falls by at most one fixture, and `is_meeting` F1 not at all. Every new fixture's time and link survive.
+- [ ] Exact match falls by at most one fixture, and `is_meeting` F1 not at all. Every new fixture's time and link survive. *The time and link half holds, tested without a model (`fx-015` to `fx-018`); the golden run waits for a development Gemini key.*
 - [ ] Recall at 5 stays within two points of the last run. The "order reference" queries are judged by hand.
 
 **Verification:** `.\tasks.ps1 eval --extractor gemini`; `.\tasks.ps1 retrieval-eval --by-kind`; results committed.

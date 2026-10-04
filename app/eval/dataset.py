@@ -44,6 +44,22 @@ class Fixture(BaseModel):
     email: EmailMessage
     expected: ExtractionResult
 
+    survives: list[str] = Field(default_factory=list)
+    """Text that must come through the production preparation (M18, D9): the
+    meeting's time, its link as the scrubber keeps it, a dial-in. Checked
+    without a model (`tests/test_fixtures.py`)."""
+
+
+def prepared(email: EmailMessage) -> EmailMessage:
+    """The email as production hands it to a model (M18, D9): scrubbed, or
+    set aside as credential mail, by the same preparation the fetch runs."""
+    from app.policy.scrub import prepare
+
+    subject, body, credential = prepare(email.subject, email.body_text, flagged=email.credential)
+    return email.model_copy(
+        update={"subject": subject, "body_text": body, "credential": credential}
+    )
+
 
 class Extractor(Protocol):
     """Anything that can be scored.

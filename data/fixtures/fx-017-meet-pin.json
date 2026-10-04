@@ -1,0 +1,42 @@
+{
+  "id": "fx-017",
+  "tags": [
+    "meeting",
+    "meeting-link",
+    "dial-in",
+    "tz-crossing"
+  ],
+  "note": "A Google Meet link and a dial-in PIN in three groups, which is a phone PIN, not a code, and stays.",
+  "now_utc": "2026-10-05T07:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx017",
+    "thread_id": "fx017",
+    "subject": "Hiring loop debrief",
+    "body_text": "Hi,\n\nLet's do the hiring loop debrief on Wednesday 7 October, 10:00-10:30am Eastern.\n\nVideo call link: https://meet.google.com/abc-defg-hij\nOr dial: (US) +1 470-555-0143 PIN: 512 908 334#\n\nLena",
+    "sender": "lena@example.com",
+    "recipients": [
+      "me@example.com"
+    ],
+    "received_at": "2026-10-05T06:10:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Hiring loop debrief",
+    "start_utc": "2026-10-07T14:00:00Z",
+    "end_utc": "2026-10-07T14:30:00Z",
+    "timezone": "America/New_York",
+    "attendees": [
+      "lena@example.com"
+    ],
+    "location": "Google Meet",
+    "confidence": 1.0,
+    "reasoning": "Explicit date, start and end, Eastern time."
+  },
+  "survives": [
+    "Wednesday 7 October, 10:00-10:30am Eastern",
+    "https://meet.google.com/abc-defg-hij",
+    "+1 470-555-0143",
+    "512 908 334#"
+  ]
+}

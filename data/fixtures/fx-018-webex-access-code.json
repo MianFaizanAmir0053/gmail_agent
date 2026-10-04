@@ -1,0 +1,42 @@
+{
+  "id": "fx-018",
+  "tags": [
+    "meeting",
+    "meeting-link",
+    "dial-in",
+    "passcode"
+  ],
+  "note": "A Webex meeting: the link keeps its meeting id, the access code in three groups stays, and the meeting password goes.",
+  "now_utc": "2026-10-12T05:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx018",
+    "thread_id": "fx018",
+    "subject": "Board call on Webex, Thu 15 Oct 6pm PKT",
+    "body_text": "Dear all,\n\nThe board call is on Thursday 15 October at 6:00 PM PKT, for one hour.\n\nJoin from the meeting link\nhttps://acme.webex.com/acme/j.php?MTID=m1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d\nMeeting number (access code): 2634 118 7790\nMeeting password: Bd7rq2Kx\n\nJoin by phone\n+1-415-655-0001 US Toll\n\nBest,\nNadia",
+    "sender": "nadia@example.com",
+    "recipients": [
+      "me@example.com"
+    ],
+    "received_at": "2026-10-12T04:20:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Board call",
+    "start_utc": "2026-10-15T13:00:00Z",
+    "end_utc": "2026-10-15T14:00:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": [
+      "nadia@example.com"
+    ],
+    "location": "Webex",
+    "confidence": 1.0,
+    "reasoning": "Explicit date and start in PKT; one hour stated."
+  },
+  "survives": [
+    "Thursday 15 October at 6:00 PM PKT, for one hour",
+    "https://acme.webex.com/acme/j.php?MTID=m1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+    "2634 118 7790",
+    "+1-415-655-0001"
+  ]
+}

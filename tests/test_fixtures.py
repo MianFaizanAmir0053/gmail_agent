@@ -8,10 +8,12 @@ right.
 from __future__ import annotations
 
 from datetime import UTC
+from typing import Any
 
 import pytest
 
-from app.eval.dataset import Fixture, load_fixtures
+from app.eval.dataset import Fixture, load_fixtures, prepared
+from app.eval.run import SET_ASIDE, predict
 
 FIXTURES = load_fixtures()
 
@@ -71,6 +73,49 @@ def test_events_are_in_the_future_relative_to_now(fixture: Fixture) -> None:
     if fixture.expected.start_utc is None:
         return
     assert fixture.expected.start_utc.astimezone(UTC) >= fixture.now_utc.astimezone(UTC)
+
+
+@pytest.mark.parametrize("fixture", FIXTURES, ids=lambda f: f.id)
+def test_a_meeting_survives_the_production_preparation(fixture: Fixture) -> None:
+    """The golden set runs through the preparation production uses (M18, D9):
+    a meeting is never set aside, and its time, link and dial-in come through."""
+    email = prepared(fixture.email)
+    if fixture.expected.is_meeting:
+        assert not email.credential, f"{fixture.id} is set aside as credential mail"
+    text = f"{email.subject}\n{email.body_text}"
+    for index, needed in enumerate(fixture.survives):
+        assert needed in text, f"{fixture.id}: survives[{index}]"
+
+
+def test_meeting_links_passcodes_and_dial_ins_are_in_the_set() -> None:
+    """D9's new fixtures: what the scrubber must not take from a meeting."""
+    assert sum("meeting-link" in f.tags for f in FIXTURES) >= 3
+    assert any("passcode" in f.tags for f in FIXTURES)
+    assert any("dial-in" in f.tags for f in FIXTURES)
+    assert all(f.survives for f in FIXTURES if "meeting-link" in f.tags)
+
+
+def test_credential_mail_is_set_aside_before_the_extractor() -> None:
+    """As production does: the extractor is never asked about it."""
+    asked: list[str] = []
+
+    def extractor(email: Any, **kwargs: Any) -> Any:
+        asked.append(email.id)
+        return FIXTURES[0].expected
+
+    meeting = FIXTURES[0]
+    credential = meeting.model_copy(
+        update={
+            "id": "fx-credential",
+            "email": meeting.email.model_copy(
+                update={"id": "cred", "subject": "Your verification code", "body_text": "Hi."}
+            ),
+        }
+    )
+    predictions, errors = predict([meeting, credential], extractor)
+    assert asked == [meeting.email.id]
+    assert predictions[1] == SET_ASIDE
+    assert errors == []
 
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda f: f.id)

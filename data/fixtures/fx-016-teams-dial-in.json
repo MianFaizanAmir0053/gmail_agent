@@ -1,0 +1,42 @@
+{
+  "id": "fx-016",
+  "tags": [
+    "meeting",
+    "meeting-link",
+    "dial-in",
+    "passcode"
+  ],
+  "note": "A Microsoft Teams meeting with an alphanumeric passcode and an audio dial-in. The passcode goes; the time, the link, the number and the conference id stay.",
+  "now_utc": "2026-09-21T06:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx016",
+    "thread_id": "fx016",
+    "subject": "Vendor sync (Teams), Tue 22 Sep 2pm PKT",
+    "body_text": "Hello,\n\nVendor sync on Tuesday 22 September at 2:00 PM PKT, 45 minutes.\n\nMicrosoft Teams meeting\nJoin on your computer, mobile app or room device\nhttps://teams.microsoft.com/l/meetup-join/19%3ameeting_ZjE2YTk3ODAtMWQ4ZC00/0\nMeeting ID: 312 845 671 209\nPasscode: Xk7pQ2\n\nOr call in (audio only)\n+1 323-555-0182   United States, Los Angeles\nPhone Conference ID: 671 209 384#\n\nRegards,\nOmar",
+    "sender": "omar@example.com",
+    "recipients": [
+      "me@example.com"
+    ],
+    "received_at": "2026-09-21T05:30:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Vendor sync",
+    "start_utc": "2026-09-22T09:00:00Z",
+    "end_utc": "2026-09-22T09:45:00Z",
+    "timezone": "Asia/Karachi",
+    "attendees": [
+      "omar@example.com"
+    ],
+    "location": "Microsoft Teams",
+    "confidence": 1.0,
+    "reasoning": "Explicit date and start in PKT; 45 minutes stated."
+  },
+  "survives": [
+    "Tuesday 22 September at 2:00 PM PKT, 45 minutes",
+    "https://teams.microsoft.com/l/meetup-join/",
+    "+1 323-555-0182",
+    "671 209 384#"
+  ]
+}

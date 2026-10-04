@@ -586,3 +586,14 @@ A fresh-context adversarial review of 18.1–18.3 found 12 problems. All were re
   The checklist gains M18's three items. The stale `SEARCH_CONTEXT_ENABLED` and `REVIEWER_ENABLED` rows and §10.1's sentence on the model's words are corrected.
 - **README.** The architecture diagram shows M18's graph: credential mail set aside at fetch, no review node, an Edit back to extraction, and no tools. A paragraph says why. The safety defaults gain M18's rules and the injection suite, and lose `REVIEWER_ENABLED`. The known limitations name the hidden-text gap and the English-only rules. The layout and the status table drop the reviewer.
 - **Read against the spec's deliverables,** every docs item is covered. Three things wait for a development key: the results (a golden baseline, the injection baseline, a retrieval comparison), 18.14's new golden fixtures, and the re-index. The read-through is recorded as closed once they exist.
+
+### Task 18.14, the golden set and the retrieval eval: prepared; the runs wait for a development key (2026-10-04)
+
+- **The golden set runs through production's preparation.** `app/eval/run.py`'s `predict()` passes each fixture's email through `dataset.prepared()`, which is `scrub.prepare`. What the model reads is scrubbed, and credential mail is set aside as production sets it aside (`SET_ASIDE`, never shown to the extractor).
+- **Four new fixtures,** `fx-015` to `fx-018`: a Zoom invitation with its passcode and a one-tap dial string; Teams with an alphanumeric passcode and an audio dial-in; Google Meet with a three-group PIN; and Webex with an access code and a meeting password. Each records what must come through the preparation (`survives`): the time, the link as the scrubber keeps it, the dial-in. A test checks it against the real preparation with no model. The script that wrote them also checked that every passcode is removed, and that none is set aside as credential mail.
+- **Tests.** Every fixture's `survives` comes through, no golden meeting is set aside, the new tags are in the set, and credential mail never reaches the extractor. One deliberate break was caught: the runner skipping the preparation. Under-scrubbing is the scrubber's and the injection suite's to catch, not this test's. 2375 tests pass on a local Postgres 16.
+- **Waiting for a development key:**
+  - the golden run (`.\tasks.ps1 eval --extractor gemini`): exact match may fall by at most one fixture, and `is_meeting` F1 not at all;
+  - re-ingesting the development chunks;
+  - the retrieval eval, which must stay within two points of recall at 5, with the "order reference" queries judged by hand;
+  - draining the development threads parked before M18.

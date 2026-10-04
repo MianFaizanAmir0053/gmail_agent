@@ -1,0 +1,41 @@
+{
+  "id": "fx-015",
+  "tags": [
+    "meeting",
+    "meeting-link",
+    "passcode",
+    "tz-crossing"
+  ],
+  "note": "A Zoom invitation with its link, meeting id, passcode and a one-tap dial string. The preparation drops the passcode and keeps the time, the link and the id.",
+  "now_utc": "2026-09-14T08:00:00Z",
+  "user_timezone": "Asia/Karachi",
+  "email": {
+    "id": "fx015",
+    "thread_id": "fx015",
+    "subject": "Quarterly planning on Zoom, Thu 17 Sep 15:00 BST",
+    "body_text": "Hi all,\n\nQuarterly planning is on Thursday 17 September, 15:00-16:00 BST.\n\nJoin Zoom Meeting\nhttps://us02web.zoom.us/j/84512345678?pwd=Qk9xYzVhR3pLZz09\n\nMeeting ID: 845 1234 5678\nPasscode: 482913\n\nOne tap mobile\n+442080806591,,84512345678#,,,,*482913# United Kingdom\n\nThanks,\nPriya",
+    "sender": "priya@example.com",
+    "recipients": [
+      "me@example.com"
+    ],
+    "received_at": "2026-09-14T07:40:00Z"
+  },
+  "expected": {
+    "is_meeting": true,
+    "title": "Quarterly planning",
+    "start_utc": "2026-09-17T14:00:00Z",
+    "end_utc": "2026-09-17T15:00:00Z",
+    "timezone": "Europe/London",
+    "attendees": [
+      "priya@example.com"
+    ],
+    "location": "Zoom",
+    "confidence": 1.0,
+    "reasoning": "Explicit date, start and end, in BST."
+  },
+  "survives": [
+    "Thursday 17 September, 15:00-16:00 BST",
+    "https://us02web.zoom.us/j/84512345678",
+    "845 1234 5678"
+  ]
+}
