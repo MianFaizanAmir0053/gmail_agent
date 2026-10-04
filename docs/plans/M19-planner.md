@@ -616,3 +616,18 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **`origins.py`** gains `Quoted` and its two labels, and the extraction prompt's marker wrapper (`between`) is public, for the paste.
 - **The structural test** now names `planner/plan.py` and `planner/reader.py` among the modules that call a model.
 - 16 deliberate breaks, each caught. One was missed at first, and its test was extended. 2615 tests pass, with lint and mypy clean.
+
+### Task 19.8, answers rendered by code, and the planner's prompt (2026-10-04)
+
+- **`app/planner/render.py`** turns a plan and its outcome into plain text, with no model involved:
+  - The reply's template shows its steps' results. A clarify asks its question; a decline gives its code's fixed sentence; a step's question (no contact, or several) is asked as it stands.
+  - Each step that did not run gets a line saying why. The paste's addresses are listed, each for the owner's Allow, and `Answer.allow` carries them for the page's buttons (19.11).
+- **Labels:**
+  - Each message in a list, and each quote, says who sent it by address, Gmail's verdict on their domain, and when. The owner's own mail says "sent by you".
+  - A name the reader gives is shown only as "written as", after the address. A forged display name never shows as the sender, since the search keeps the address alone.
+  - A stranger's event shows its title in quotation marks, as an invitation from its organiser.
+  - Calendar answers name the owner's primary calendar (decision 11).
+- **Form:** text from mail or an event goes through `shown`, so it is one line with no link or code, and sits in quotation marks. Times are the owner's local times. Code writes no Markdown.
+- **The prompt (`prompts.py`) is final:** the catalogue, which template goes with which steps, the conventions for days, weeks and "after 2pm", reading only the owner's calendar, and seven worked examples on a day of their own. Tests check that each example is a plan `to_plan` accepts, that the examples cover every kind, and that no example is a golden case. The baseline is taken against this prompt (19.16).
+- **The phase's checkpoint:** a test runs golden cases' ideal plans on the eval's world (`play`, now shared with the eval) through to the rendered answer.
+- 21 deliberate breaks, each caught. Two were missed at first, and tests were added. 2651 tests pass, with lint and mypy clean.

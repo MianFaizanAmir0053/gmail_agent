@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -539,3 +541,50 @@ def test_a_refusal_never_quotes_the_value() -> None:
     assert "quoted-value-marker" not in message
     message = _refused({**HOLD, "title": "quoted-title-marker " * 20}, match="longer than")
     assert "quoted-title-marker" not in message
+
+
+# --- the planner's prompt (19.8) -----------------------------------------------------
+
+
+def _examples() -> list[tuple[str, dict[str, Any]]]:
+    from app.planner.prompts import PLAN_SYSTEM
+
+    lines = PLAN_SYSTEM.splitlines()
+    return [
+        (lines[number - 1].strip('"'), json.loads(line))
+        for number, line in enumerate(lines)
+        if line.startswith("{")
+    ]
+
+
+def test_every_worked_example_is_a_plan_the_check_accepts() -> None:
+    examples = _examples()
+    assert len(examples) >= 6
+    for request, example in examples:
+        payload = PlanPayload.model_validate({**example, "timezone": "Europe/London"})
+        to_plan(payload, pasted=False)  # raises if the example breaks a rule
+        assert request, example
+
+
+def test_the_examples_cover_every_kind() -> None:
+    assert {example["kind"] for _, example in _examples()} == {kind.value for kind in Kind}
+
+
+def _words(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9@.]+", text.lower()))
+
+
+def test_no_golden_case_is_a_worked_example() -> None:
+    """The routing set measures the prompt; a case it was shown measures nothing."""
+    from app.eval.planner import load_cases
+
+    examples = {_words(request) for request, _ in _examples()}
+    for case in load_cases():
+        assert _words(case.typed) not in examples, case.id
+
+
+def test_the_prompt_names_every_operation_and_template() -> None:
+    from app.planner.prompts import PLAN_SYSTEM
+
+    for name in [*(op.value for op in Op), *(template.value for template in Template)]:
+        assert name in PLAN_SYSTEM, name

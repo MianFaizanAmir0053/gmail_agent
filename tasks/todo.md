@@ -1898,8 +1898,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - **The planner's system instruction, final:** its operations, conventions and examples, none from the golden set.
 
 **Acceptance criteria:**
-- [ ] Every template covered.
-- [ ] A forged display name never shows as the sender.
+- [x] Every template covered.
+- [x] A forged display name never shows as the sender.
 
 **Verification:** `uv run pytest tests/test_planner_render.py tests/test_planner_plan.py`.
 
@@ -1907,8 +1907,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 
 ### Checkpoint: questions answered on fakes
 
-- [ ] A question runs from plan to rendered answer on fakes.
-- [ ] Checks green.
+- [x] A question runs from plan to rendered answer on fakes.
+- [x] Checks green. *Locally; CI runs at the next push.*
 
 ## Phase 3 · The chat turn
 

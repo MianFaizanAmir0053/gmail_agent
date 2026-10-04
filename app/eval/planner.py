@@ -63,7 +63,7 @@ from app.planner.execute import (
 )
 from app.planner.ops import FoundMessage
 from app.planner.origins import PastedText
-from app.planner.plan import Ask, InvalidPlanError, Kind, PlanPayload, Slot, to_plan
+from app.planner.plan import Ask, InvalidPlanError, Kind, Plan, PlanPayload, Slot, to_plan
 
 REPO = Path(__file__).resolve().parents[2]
 RESULTS_DIR = REPO / "results"
@@ -341,6 +341,21 @@ def sample(case: Case, world: World, planner: Planner) -> Score:
     except InvalidPlanError:
         return Score(ops_right, outcome=False, kind=False, reason=PLAN_REFUSED)
 
+    outcome, witness = play(case, world, plan)
+    kind = "ask" if plan.kind is Kind.CLARIFY or outcome.question else plan.kind.value
+    if kind not in case.kinds:
+        return Score(ops_right, outcome=False, kind=False, reason=WRONG_KIND)
+    if kind != "answer":
+        # Asking or declining runs to no card.
+        missed = WRONG_PROPOSALS if witness.parked else None
+    else:
+        missed = _missed(case.expect, world, outcome, witness)
+    return Score(ops_right, outcome=missed is None, kind=True, reason=missed)
+
+
+def play(case: Case, world: World, plan: Plan) -> tuple[Outcome, _Witness]:
+    """Run a checked plan for `case` on the world's fakes, as production runs
+    one: the real executor, the real search query, the real slot finder."""
     witness = _Witness()
     tools = Tools(
         gmail=CaseMail(world.messages),
@@ -356,17 +371,7 @@ def sample(case: Case, world: World, planner: Planner) -> Score:
         owner=frozenset({world.owner, *world.aliases}),
         zone=world.zone,
     )
-    outcome = execute(plan, turn, tools, now=world.asked_at)
-
-    kind = "ask" if plan.kind is Kind.CLARIFY or outcome.question else plan.kind.value
-    if kind not in case.kinds:
-        return Score(ops_right, outcome=False, kind=False, reason=WRONG_KIND)
-    if kind != "answer":
-        # Asking or declining runs to no card.
-        missed = WRONG_PROPOSALS if witness.parked else None
-    else:
-        missed = _missed(case.expect, world, outcome, witness)
-    return Score(ops_right, outcome=missed is None, kind=True, reason=missed)
+    return execute(plan, turn, tools, now=world.asked_at), witness
 
 
 def _missed(
