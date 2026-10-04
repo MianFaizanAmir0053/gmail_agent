@@ -1,6 +1,7 @@
 import "server-only";
 
 import { isPairingCode } from "@/lib/access";
+import type { ChatAnswer, ChatRequest } from "@/lib/chat";
 import { failureKind, flyConfig } from "@/lib/flyConfig";
 import type {
   Allow,
@@ -118,6 +119,26 @@ export async function postContact(allow: Allow): Promise<AllowAnswer> {
   if (response.status === 422) return "invalid";
   console.error("contact answered", response.status);
   return "error";
+}
+
+/**
+ * Ask the agent in the owner's words (M19, D1). Fly stores the turn and its
+ * job answers it; a resend with the same key finds the same turn.
+ */
+export async function postChat(request: ChatRequest): Promise<ChatAnswer> {
+  const response = await postToFly("/api/chat", request);
+  if (response === null) return "error";
+  switch (response.status) {
+    case 202:
+      return "queued";
+    case 409:
+      return "zone_mismatch";
+    case 422:
+      return "invalid";
+    default:
+      console.error("chat answered", response.status);
+      return "error";
+  }
 }
 
 /** Pause or resume the agent (M17, D6). */

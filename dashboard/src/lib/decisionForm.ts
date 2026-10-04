@@ -97,7 +97,8 @@ export function describeAnswer(answer: Answer): Notice {
 
 
 /** An Allow from a card: one guest outside the thread (M17, D4). */
-export type Allow = { address: string; message_id: string };
+/** A chat's Allow names no proposal (M19, D5). */
+export type Allow = { address: string; message_id?: string };
 
 export function parseAllowForm(
   data: FormData,

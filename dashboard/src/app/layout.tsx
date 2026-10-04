@@ -30,6 +30,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/" prefetch={false}>
               Timeline
             </Link>
+            <Link href="/chat" prefetch={false}>
+              Ask
+            </Link>
             <Link href="/analytics" prefetch={false}>
               Runs
             </Link>

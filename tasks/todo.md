@@ -1955,9 +1955,9 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - A content policy blocks remote images.
 
 **Acceptance criteria:**
-- [ ] The paste ranges are recorded.
-- [ ] The answer renders as plain text.
-- [ ] The box locks while a turn is open.
+- [x] The paste ranges are recorded.
+- [x] The answer renders as plain text.
+- [x] The box locks while a turn is open.
 
 **Verification:** `cd dashboard; npm test; npm run lint; npm run typecheck; npm run build`. The browser check waits for the owner's end tests.
 
@@ -1965,8 +1965,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 
 ### Checkpoint: questions answered end to end
 
-- [ ] On Postgres with fakes, a question goes from the API to the job to a rendered answer.
-- [ ] Checks green, Python and web.
+- [x] On Postgres with fakes, a question goes from the API to the job to a rendered answer.
+- [x] Checks green, Python and web. *Locally; CI runs at the next push.*
 
 ## Phase 4 · Proposals from chat
 

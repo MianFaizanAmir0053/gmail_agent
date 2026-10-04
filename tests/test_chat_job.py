@@ -371,3 +371,56 @@ def test_a_turns_model_calls_are_metered_under_its_own_id(db: psycopg.Connection
 
     assert serving == [f"chat-{turn_id}"]
     assert CURRENT_MESSAGE.get() is None
+
+
+@pytest.mark.integration
+def test_a_question_goes_from_the_api_to_the_job_to_an_answer(
+    db: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The phase's checkpoint: on Postgres, with fakes for Gmail, the calendar
+    and the model."""
+    from contextlib import contextmanager
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from pydantic import SecretStr
+
+    from app.config import Settings
+    from app.web_api import router
+
+    @contextmanager
+    def the_test_connection(url: str) -> Any:
+        yield db
+
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql://localhost/test",
+        gemini_api_key="test-key",
+        web_api_secret=SecretStr("secret-for-tests"),
+        user_timezone="Asia/Karachi",
+    )
+    monkeypatch.setattr("app.web_api.get_settings", lambda: settings)
+    monkeypatch.setattr("app.web_api.connect_autocommit", the_test_connection)
+    monkeypatch.setattr("app.web_api.chat_requested", lambda: True)
+    app = FastAPI()
+    app.include_router(router)
+
+    posted = TestClient(app).post(
+        "/api/chat",
+        json={
+            "key": "a-key-of-sixteen-or-more",
+            "zone": "Asia/Karachi",
+            "parts": [{"text": "Am I free tomorrow at 3pm?", "pasted": False}],
+        },
+        headers={"Authorization": "Bearer secret-for-tests"},
+    )
+    assert posted.status_code == 202
+    turn_id = posted.json()["turn_id"]
+
+    planner = Planner()
+    assert chat.answer_next(_session(db, planner)) == turn_id
+
+    assert planner.asked == ["Am I free tomorrow at 3pm?"]
+    turn = _turn(db, turn_id)
+    assert turn["status"] == "answered"
+    assert turn["answer"]["text"].startswith("On your primary calendar, Thu 8 Oct 2026 15:00")

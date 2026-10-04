@@ -49,3 +49,11 @@ formatting.
 **Eval history reads committed JSON files**, not the database. The evidence
 should be reviewable in the repository rather than only inside a running
 service.
+
+**Ask (`/chat`) shows text from mail as text.** Answers are written by the
+agent's code, never a model, and the page renders them as React text: nothing
+becomes markup or a link, and a test scans the page for any way to make some.
+A content policy on `/chat` loads no image from anywhere but the app
+(`next.config.ts`). The box marks each character typed or pasted, and sends the
+request as runs of each, so the agent's planner reads only what was typed.
+

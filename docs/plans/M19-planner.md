@@ -690,3 +690,16 @@ A fresh-context review of the planner, read against D2 to D7 and D10, found ten 
   - A card parked before a step's question is still shown with the question.
   - `call-sara-if-free` now accepts only the plan that checks before it books.
 - 16 deliberate breaks, each caught. One was missed at first, and a test was added. 2718 tests pass, with lint and mypy clean.
+
+### Task 19.11, the chat page (2026-10-04)
+
+- **`/chat`, "Ask" in the web app's menu,** lists the last 20 turns, oldest first. For each it shows the typed request, its status while open, its answer or its reason, an Allow for each address from a paste, and a link to the timeline when a card was made. Turns are read through `web_reader`'s grant, which excludes the paste and the plan.
+- **What was pasted (`src/lib/chat.ts`):** the box keeps a mark beside each character. A change is found by what the old and new text share at each end, and the characters it put in are marked pasted when the change was a paste or a drop. Characters around the change keep their marks. The request goes as runs of typed and pasted text (19.9).
+- **The key** is made in the browser at the first send and kept until Fly has the turn, so a send that timed out and is sent again finds the same turn. The box is locked while a turn is open. The page re-reads every two seconds, then every ten after thirty.
+- **Plain text:**
+  - Answers are React text. A test scans the page and its components for any way to make markup from text.
+  - A content policy on `/chat` lets the page load images from the app alone.
+- **Allow from a paste** posts the address with no proposal named. Fly makes it a confirmed contact, which the owner can then name.
+- **`OWNER_TIMEZONE`** is sent with each request, and Fly refuses any other zone. The web app's `.env.example` and README say so.
+- **The phase's checkpoint:** a test posts a question to the API on Postgres, runs the job on fakes, and reads back the rendered answer.
+- 13 deliberate breaks on the web side, each caught; one was missed at first, and its test was fixed. 173 web tests pass, and typecheck, lint and build are clean. 2719 Python tests pass. The browser check waits for the owner's end tests.
