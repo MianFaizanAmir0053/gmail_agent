@@ -30,7 +30,26 @@ export type CardPayload = {
   guest_sources?: Record<string, string> | null;
   /** The email quotes or forwards older mail (M18, D5). */
   quoted_section?: boolean | null;
+  /** The typed request a proposal from chat came from (M19, D8). */
+  request?: string | null;
 };
+
+/** The longest stretch of a chat request a card shows, as `REQUEST_CHARS` in
+ * `app/telegram/cards.py`. */
+export const REQUEST_CHARS = 300;
+
+/** Where a chat proposal's title came from: the planner writes it from the
+ * typed request alone (M19, D4). The same words as `CHAT_TITLE` in
+ * `app/telegram/cards.py`. */
+export const CHAT_TITLE = "Title: from your request";
+
+/** Why a guest needs an Allow, by where the proposal came from: mail's
+ * guests are checked against the email's thread (M17, D4); chat's against
+ * the request and the confirmed contacts (M19, D8). */
+export const OUTSIDE_WORDS = {
+  mail: "Not in this email thread",
+  chat: "Not typed by you, nor a confirmed contact",
+} as const;
 
 /** One guest on a card, and where they came from (M18, D5). */
 export type GuestView = {
@@ -89,6 +108,12 @@ export type CardView = {
   sourced: boolean;
   /** The email quotes or forwards older mail, which the card notes. */
   quotedSection: boolean;
+  /** From a chat turn (M19, D8): no thread, and no Edit. */
+  fromChat: boolean;
+  /** The typed request a chat proposal came from, on one line and cut. */
+  request: string | null;
+  /** Why an outside guest needs an Allow, in this card's terms. */
+  outsideWords: string;
   dryRun: boolean;
   invite: boolean;
   /** A decision is open: the worker is applying it. */
@@ -128,6 +153,7 @@ export function cardView(
   // they cannot see. Retention never clears an open proposal, so this holds
   // only for a row nobody expected.
   const pending = row.status === "pending" && card !== null;
+  const fromChat = row.source === "chat";
   const token = row.args_hash ? cardToken(row.args_hash, row.dry_run, row.generation) : null;
   const applying = row.status === "deciding";
   // A sweep is the operator's, never the owner's tap: nothing to withdraw.
@@ -160,12 +186,15 @@ export function cardView(
     guests,
     sourced: guests.some((guest) => guest.source !== null),
     quotedSection: card?.quoted_section === true,
+    fromChat,
+    request: fromChat ? oneLine(text(card?.request), REQUEST_CHARS) : null,
+    outsideWords: fromChat ? OUTSIDE_WORDS.chat : OUTSIDE_WORDS.mail,
     dryRun: row.dry_run,
     invite: row.action_type === "calendar_invite",
     applying,
     canDecide: pending,
     // A proposal from chat cannot be corrected: the owner asks again (M19, D8).
-    canEdit: pending && row.source !== "chat" && row.revision <= LAST_EDITABLE_REVISION,
+    canEdit: pending && !fromChat && row.revision <= LAST_EDITABLE_REVISION,
     canConfirm: pending && token !== null,
     token,
     live: !row.dry_run,
@@ -292,6 +321,15 @@ export function refreshEvery(
 
 function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+/** Text on one line, its runs of space made one, cut to `limit` characters
+ * with an ellipsis. Null for nothing to show. */
+function oneLine(value: string | null, limit: number): string | null {
+  const line = (value ?? "").split(/\s+/).filter(Boolean).join(" ");
+  if (!line) return null;
+  const chars = Array.from(line);
+  return chars.length > limit ? `${chars.slice(0, limit).join("")}…` : line;
 }
 
 /** A day and a time in `zone`, or null for a time that cannot be read. */

@@ -115,7 +115,7 @@ describe("an Allow (M17, D4)", () => {
   });
 
   it("explains Fly's refusal of a Confirm with a guest outside", () => {
-    assert.match(describeAnswer({ status: "outside" }).message, /not in this email thread/);
+    assert.match(describeAnswer({ status: "outside" }).message, /need an Allow first/);
   });
 });
 

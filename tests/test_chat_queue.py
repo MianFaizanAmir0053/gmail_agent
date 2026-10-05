@@ -141,6 +141,7 @@ def _park(
             turn_id=turn,
             step=3,
             proposed=proposed,
+            request=typed,
             guest_sources=sources if sources is not None else dict.fromkeys(guests, "typed"),
             conflicts=list(conflicts),
             pipeline_version="chat-test",
@@ -380,6 +381,7 @@ def test_a_returned_proposal_keeps_its_card_and_is_shown_at_its_new_generation(
     assert payload["guest_sources"] == {ALI: "contact"}
     assert payload["outside_guests"] == [ALI]
     assert payload["proposed"]["title"] == "Call with Sara"
+    assert payload["request"] == "call with Ali on Monday"
 
 
 @pytest.mark.integration

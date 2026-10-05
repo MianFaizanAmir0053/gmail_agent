@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { AllowGuest } from "@/components/AllowGuest";
 import { WithdrawButton } from "@/components/WithdrawButton";
 import { QUOTED_SECTION } from "@/lib/guests";
-import type { CardView } from "@/lib/timeline";
+import { CHAT_TITLE, type CardView } from "@/lib/timeline";
 
 /**
  * One proposal, as the owner decides it: what, when in their own zone, with
@@ -31,6 +31,13 @@ export function ProposalCard({ view, children }: { view: CardView; children?: Re
 
       <p className="when">{view.when}</p>
       {view.eventZone && <p className="detail">Event zone: {view.eventZone}</p>}
+      {view.fromChat && (
+        // What the owner asked for, and where the title came from (M19, D8).
+        <>
+          {view.request && <p className="detail">You asked: “{view.request}”</p>}
+          <p className="detail">{CHAT_TITLE}</p>
+        </>
+      )}
       {view.sourced ? (
         <ul className="guests">
           {view.guests.map((guest) => (
@@ -42,7 +49,7 @@ export function ProposalCard({ view, children }: { view: CardView; children?: Re
                 {guest.warning && "⚠ "}
                 {guest.address}
                 {guest.words && `: ${guest.words}`}
-                {guest.outside && ". Not in this email thread."}
+                {guest.outside && `. ${view.outsideWords}.`}
               </span>
               {guest.outside && view.canDecide && (
                 <AllowGuest messageId={view.messageId} address={guest.address} />

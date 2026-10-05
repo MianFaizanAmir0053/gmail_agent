@@ -50,14 +50,22 @@ GONE = "That proposal is no longer waiting for a decision."
 FROM_BEFORE_M16 = "This card predates the web app. Decide it there instead."
 FROM_BEFORE_M17 = "This Confirm button predates bound approvals. Confirm it in the web app."
 NOT_READY = "This proposal is still being prepared. Try again in a minute."
-OUTSIDE = (
-    "Some guests are not in this email thread. Allow or remove them in the web app, then confirm."
-)
+OUTSIDE = "Some guests need an Allow first. Allow or remove them in the web app, then confirm."
+"""Mail's guests and chat's need an Allow for different reasons; the card says which."""
+
 QUOTED_SECTION = (
     "This email quotes or forwards older mail. A time or place taken from that part is not marked."
 )
 """Noted on a card whose email has such a section (M18, D5): the source of a
 guest is traced, a time's or a place's is not."""
+
+CHAT_TITLE = "Title: from your request"
+"""Where a chat proposal's title came from: the planner writes it from the
+typed request alone (M19, D4). The web card says the same (`CHAT_TITLE` in
+`dashboard/src/lib/timeline.ts`)."""
+
+REQUEST_CHARS = 300
+"""The longest stretch of a chat request a card shows, as the web card's."""
 
 
 def _escape(value: object) -> str:
@@ -144,6 +152,12 @@ def approval_card(
         f" - {_escape(_local(card.get('end_utc'), zone))}",
         f"🌍 {_escape(card.get('timezone') or zone)}",
     ]
+    if is_chat(record.message_id):
+        # What the owner asked for, and where the title came from (M19, D8).
+        request = _one_line(card.get("request"), REQUEST_CHARS)
+        if request:
+            lines.append(f"💬 You asked: “{_escape(request)}”")
+        lines.append(f"📝 {CHAT_TITLE}")
 
     attendees = [str(guest) for guest in card.get("attendees") or []]
     if attendees and card.get("guest_sources"):
@@ -180,6 +194,13 @@ def approval_card(
     status = f"revision {record.revision} · {'dry run' if record.dry_run else 'live'}"
     lines.append(f"\n<i>{status}</i>")
     return "\n".join(lines)
+
+
+def _one_line(value: object, limit: int) -> str:
+    """Text on one line, its runs of space made one, cut to `limit` characters
+    with an ellipsis, as the web card cuts it."""
+    line = " ".join(value.split()) if isinstance(value, str) else ""
+    return line if len(line) <= limit else line[:limit] + "…"
 
 
 def _guest_line(guest: str, card: dict[str, Any], allowed: frozenset[str]) -> str:

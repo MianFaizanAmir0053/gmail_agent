@@ -15,11 +15,11 @@ from app.eval.planner import CaseCalendar, CaseMail, load_world
 from app.extraction.llm import LlmError
 from app.planner import chat, turns
 from app.planner.chat import (
-    NO_CARDS_YET,
     OUT_OF_TIME,
     STRANDED,
     TURN_DEADLINE,
     WENT_WRONG,
+    Cards,
     ChatSession,
 )
 from app.planner.execute import TurnStoppedError
@@ -35,6 +35,7 @@ from app.policy.budget import (
     Gate,
     MessageTooCostlyError,
 )
+from app.policy.hashing import Binding, args_key
 
 WORLD = load_world()
 
@@ -109,7 +110,7 @@ def _session(
     clock: Clock | None = None,
     reader: Callable[..., object] | None = None,
     calendar: Any = None,
-    park: Any = None,
+    announce: Any = None,
 ) -> ChatSession:
     clock = clock or Clock(datetime.now(UTC))
     gate = Gate(conn, Decimal(40), Decimal("0.10"), clock=clock)
@@ -124,7 +125,12 @@ def _session(
         hours=WORLD.hours,
         zone=WORLD.zone,
         owner=frozenset({WORLD.owner}),
-        park=park,
+        cards=Cards(
+            binding=Binding(calendar_id="test-calendar", key=args_key("test-key")),
+            pipeline_version="chat-test",
+            dry_run=True,
+            announce=announce,
+        ),
         clock=clock,
     )
 
@@ -298,15 +304,6 @@ def test_something_unforeseen_fails_the_turn_and_its_trace(db: psycopg.Connectio
     assert run == ("failed", "RuntimeError: unforeseen")
 
 
-@pytest.mark.integration
-def test_no_card_is_made_until_the_queue_knows_chat(db: psycopg.Connection) -> None:
-    turn_id = _ask(db, "Block Tuesday from 2 to 4pm")
-    chat.answer_next(_session(db, Planner(dict(HOLD))))
-    answer = _turn(db, turn_id)["answer"]
-    assert answer["text"] == f"Not done: {NO_CARDS_YET}"
-    assert answer["cards"] == []
-
-
 # --- stranded turns ------------------------------------------------------------------------
 
 
@@ -333,19 +330,19 @@ def test_a_stranded_turn_parks_nothing_and_its_end_is_not_written(db: psycopg.Co
     """The sweep fails a turn while its job still runs it: what the job does
     after that is never written (D1)."""
     turn_id = _ask(db, "Block Tuesday from 2 to 4pm")
-    parked: list[Any] = []
+    announced: list[Any] = []
 
     def sweep_now() -> None:
         chat.strand(db, now=datetime.now(UTC) + TURN_DEADLINE + timedelta(seconds=1))
 
-    def park(conn: psycopg.Connection, turn: int, proposal: Any) -> str:
-        parked.append(proposal)
-        return "chat-x"
-
-    session = _session(db, Planner(dict(HOLD), then=sweep_now), park=park)
+    session = _session(db, Planner(dict(HOLD), then=sweep_now), announce=announced.append)
     chat.answer_next(session)
 
-    assert parked == []
+    assert announced == []
+    parked = db.execute(
+        "SELECT count(*) FROM proposals WHERE chat_turn_id = %s", (turn_id,)
+    ).fetchone()
+    assert parked == (0,)
     assert (_turn(db, turn_id)["status"], _turn(db, turn_id)["reason"]) == ("failed", STRANDED)
 
 

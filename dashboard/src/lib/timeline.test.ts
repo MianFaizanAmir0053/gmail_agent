@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  CHAT_TITLE,
   cardToken,
   cardView,
   footerKey,
@@ -9,9 +10,11 @@ import {
   guestKeys,
   layoutKey,
   HELD_REFRESH_EVERY_MS,
+  OUTSIDE_WORDS,
   ownerZone,
   REFRESH_EVERY_MS,
   refreshEvery,
+  REQUEST_CHARS,
   sourcesKey,
   type CardPayload,
   type ProposalRow,
@@ -85,6 +88,35 @@ describe("cardView", () => {
     assert.equal(view.canDecide, true);
     assert.equal(view.canEdit, false);
     assert.equal(cardView({ ...ROW, source: "mail" }, "UTC").canEdit, true);
+  });
+
+  it("shows a chat proposal's request on one line, cut, with chat's reason for an Allow", () => {
+    const request = `book   30 minutes\nwith sara@example.com ${"x".repeat(400)}`;
+    const view = cardView({ ...ROW, source: "chat", payload: { ...ROW.payload, request } }, "UTC");
+    assert.equal(view.fromChat, true);
+    assert.ok(view.request?.startsWith("book 30 minutes with sara@example.com xxx"));
+    assert.equal(Array.from(view.request ?? "").length, REQUEST_CHARS + 1);
+    assert.ok(view.request?.endsWith("…"));
+    assert.equal(view.outsideWords, OUTSIDE_WORDS.chat);
+
+    const short = cardView({ ...ROW, source: "chat", payload: { ...ROW.payload, request: "call Ali" } }, "UTC");
+    assert.equal(short.request, "call Ali");
+    const blank = cardView({ ...ROW, source: "chat", payload: { ...ROW.payload, request: " \n " } }, "UTC");
+    assert.equal(blank.request, null);
+  });
+
+  it("shows no request on mail's card, and mail's reason for an Allow", () => {
+    const view = cardView({ ...ROW, payload: { ...ROW.payload, request: "planted" } }, "UTC");
+    assert.equal(view.fromChat, false);
+    assert.equal(view.request, null);
+    assert.equal(view.outsideWords, OUTSIDE_WORDS.mail);
+  });
+
+  it("words a chat card as Telegram's does (app/telegram/cards.py)", () => {
+    assert.equal(CHAT_TITLE, "Title: from your request");
+    assert.equal(OUTSIDE_WORDS.chat, "Not typed by you, nor a confirmed contact");
+    assert.equal(OUTSIDE_WORDS.mail, "Not in this email thread");
+    assert.equal(REQUEST_CHARS, 300);
   });
 
   it("shows an open decision as applying, with nothing to tap", () => {

@@ -2001,8 +2001,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - The card shows the request, the title's source and the guests' sources.
 
 **Acceptance criteria:**
-- [ ] On Postgres, a chat proposal goes from the turn to `decide()`, the worker and the registry, in dry run.
-- [ ] A typed guest needs no Allow; a pasted one is offered for one.
+- [x] On Postgres, a chat proposal goes from the turn to `decide()`, the worker and the registry, in dry run.
+- [x] A typed guest needs no Allow; a pasted one is offered for one.
 
 **Verification:** `uv run pytest tests/test_chat_proposals.py`; `cd dashboard; npm test`; Neon.
 
@@ -2010,7 +2010,7 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 
 ### Checkpoint: chat proposals
 
-- [ ] Checks green, Python and web; Neon.
+- [x] Checks green, Python and web; Neon.
 
 ## Phase 5 · Safety, records and evidence
 

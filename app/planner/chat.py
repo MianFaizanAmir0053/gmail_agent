@@ -15,8 +15,10 @@
   never retried: the owner asks again.
 - **Traced.** Each turn is a run in `runs` under `chat-<turn>`, with a span for
   the plan and for each read, so `/costs` and M15's report include chat.
-- **No cards yet.** Until the queue knows a chat proposal from mail's (task
-  19.12), a proposal step is refused with a fixed reason.
+- **Cards.** A proposal step parks a chat proposal (D8). Its conflicts are
+  read from the primary calendar; it is claimed and parked while the turn is
+  held `running`; then it is announced. The worker takes it from there, as it
+  takes mail's.
 """
 
 from __future__ import annotations
@@ -32,12 +34,14 @@ from zoneinfo import ZoneInfo
 import psycopg
 from psycopg.types.json import Jsonb
 
+from app.channel.park import Announce, chat_proposal_id, park_chat
 from app.config import Settings, WorkingHours
+from app.contracts import ExtractionResult
 from app.extraction.llm import LlmError
 from app.obs.trace import Tracer
 from app.planner.execute import (
     STOPS_THE_TURN,
-    StepRefusedError,
+    Proposal,
     Tools,
     Turn,
     TurnStoppedError,
@@ -55,6 +59,8 @@ from app.policy.budget import (
     MessageTooCostlyError,
     chat_message_id,
 )
+from app.policy.hashing import Binding, event_args
+from app.tools.calendar_tool import check_conflicts
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +75,9 @@ wakes it at once; this bounds the wait otherwise."""
 STRANDED = "This was stopped by a restart. Please ask again."
 OUT_OF_TIME = "This took too long, so I stopped. Please ask again."
 WENT_WRONG = "Something went wrong, so I stopped. Please ask again."
-NO_CARDS_YET = "I can't make a card from chat yet."
+CHAT_REASONING = "Proposed from a chat turn."
+"""The stored event's reasoning. No model wrote the event: the executor
+built it from the checked plan (D8)."""
 
 Status = Literal["answered", "stopped", "failed"]
 
@@ -172,7 +180,17 @@ Planner = Callable[[str, bool, datetime], PlanPayload]
 """The typed request, whether anything was pasted, when it was asked."""
 
 Reading = Callable[[FoundMessage | PastedText, Ask], object]
-Parker = Callable[[psycopg.Connection, int, Any], str]
+
+
+@dataclass(frozen=True)
+class Cards:
+    """How a turn parks its proposals (D8): what each is bound to, the version
+    M24 counts it under, the mode it is made in, and who is told of it."""
+
+    binding: Binding
+    pipeline_version: str
+    dry_run: bool
+    announce: Announce | None = None
 
 
 def _utcnow() -> datetime:
@@ -194,8 +212,7 @@ class ChatSession:
     hours: WorkingHours
     zone: ZoneInfo
     owner: frozenset[str]
-    park: Parker | None = None
-    """None until the queue knows chat's proposals (19.12): each is refused."""
+    cards: Cards
     clock: Callable[[], datetime] = _utcnow
     trace: bool = True
 
@@ -263,12 +280,8 @@ def _run(
         with _span(tracer, "read", turn.id):
             return reader(source, ask)
 
-    def park(proposal: Any) -> str:
-        go_on()
-        if session.park is None:
-            raise StepRefusedError(NO_CARDS_YET)
-        with while_running(session.conn, turn.id):
-            return session.park(session.conn, turn.id, proposal)
+    def park(proposal: Proposal) -> str:
+        return _park(session, turn, proposal, go_on=go_on)
 
     tools = Tools(
         gmail=session.gmail,
@@ -299,6 +312,55 @@ def _why(stop: BaseException) -> str:
     return CHAT_STOPS["spending"]
 
 
+def _park(
+    session: ChatSession, turn: Claimed, proposal: Proposal, *, go_on: Callable[[], None]
+) -> str:
+    """Park one proposal step as a chat proposal (D8), and return its id.
+
+    The event is held as an `ExtractionResult`, so the hash and the registry
+    read it as they read mail's. Its conflicts are read from the primary
+    calendar before the turn's row is locked, so no lock waits on Google.
+    The deadline and the chat check then run again (`go_on`), so a slow
+    read or a Pause pressed meanwhile stops the turn before it writes (D9).
+    The claim and the park run while the turn is held `running`, and the
+    card is announced once they are committed."""
+    cards = session.cards
+    proposed = ExtractionResult(
+        is_meeting=True,
+        title=proposal.title,
+        start_utc=proposal.start,
+        end_utc=proposal.end,
+        timezone=proposal.timezone,
+        attendees=[guest.address for guest in proposal.guests],
+        confidence=1.0,
+        reasoning=CHAT_REASONING,
+    )
+    message_id = chat_proposal_id(turn.id, proposal.step)
+    check = check_conflicts(session.calendar, event_args(proposed, message_id))
+    go_on()
+    with while_running(session.conn, turn.id):
+        record = park_chat(
+            session.conn,
+            turn_id=turn.id,
+            step=proposal.step,
+            proposed=proposed,
+            request=turn.typed,
+            guest_sources={guest.address: guest.source for guest in proposal.guests},
+            conflicts=[check.describe()] if check.has_conflict else [],
+            pipeline_version=cards.pipeline_version,
+            binding=cards.binding,
+            dry_run=cards.dry_run,
+        )
+    if cards.announce is not None:
+        try:
+            cards.announce(record)
+        except Exception:
+            # Parked, and the timeline shows it: a channel being down must
+            # not undo that.
+            log.exception("could not announce %s", record.message_id)
+    return record.message_id
+
+
 @contextmanager
 def _span(tracer: Tracer | None, node: str, turn_id: int) -> Iterator[None]:
     if tracer is None:
@@ -314,17 +376,23 @@ def _span(tracer: Tracer | None, node: str, turn_id: int) -> Iterator[None]:
 @contextmanager
 def chat_session(settings: Settings) -> Iterator[ChatSession]:
     """Open what a tick needs: one connection, the turn's own gate and its
-    metered client, Gmail, and the calendar with its read calendar."""
+    metered client, Gmail, the calendar with its read calendar, and what a
+    card is bound to and announced by."""
     if settings.test_calendar_id is None:
         raise RuntimeError("TEST_CALENDAR_ID must be set before chat can propose.")
+    if settings.fernet_key is None:
+        raise RuntimeError("FERNET_KEY must be set: it keys the hash every approval binds.")
 
+    from app.channel.channels import configured_channels
     from app.extraction.llm import GenaiLike
     from app.google.auth import build_service, load_credentials
     from app.google.calendar import CalendarClient
     from app.google.gmail import GmailClient
+    from app.graph.versioning import planner_version
     from app.planner.plan import make_plan
     from app.planner.reader import Reader
     from app.policy.contacts import every_confirmed
+    from app.policy.hashing import args_key
 
     credentials = load_credentials(settings)
     with psycopg.connect(settings.database_url, autocommit=True) as conn:
@@ -359,4 +427,14 @@ def chat_session(settings: Settings) -> Iterator[ChatSession]:
             hours=settings.hours,
             zone=zone,
             owner=frozenset({settings.owner_email, *settings.owner_aliases} - {""}),
+            cards=Cards(
+                # The worker binds a Confirm to the same calendar and key.
+                binding=Binding(
+                    calendar_id=calendar.calendar_id,
+                    key=args_key(settings.fernet_key.get_secret_value()),
+                ),
+                pipeline_version=planner_version(settings),
+                dry_run=settings.dry_run,
+                announce=configured_channels(settings).announce,
+            ),
         )

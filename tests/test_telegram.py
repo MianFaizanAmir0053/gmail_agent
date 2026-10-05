@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -19,7 +19,7 @@ import pytest
 from gmail_payloads import load_cases
 
 from app.channel.decide import DecisionResult
-from app.channel.park import ProposalRecord, proposal_from, write_park
+from app.channel.park import ProposalRecord, chat_record, proposal_from, write_park
 from app.policy.hashing import Binding, args_key
 from app.policy.participants import SOURCE_WORDS
 from app.store.ledger import MessageLedger, MessageStatus
@@ -245,6 +245,31 @@ def test_a_chat_cards_outside_guest_is_not_said_to_be_outside_a_thread() -> None
     text = cards.approval_card(record, zone="UTC")
     assert "Not typed by you, nor a confirmed contact: sara@example.com" in text
     assert "email thread" not in text
+
+
+def test_a_chat_card_shows_the_request_and_where_the_title_came_from() -> None:
+    """On one line, escaped and cut, under the card's label (M19, D8)."""
+    request = "Book   30 minutes\nwith <b>Sara</b> " + "x" * 400
+    record = chat_record(CHAT_ID, PENDING | {"request": request}, revision=1, binding=BINDING)
+
+    text = cards.approval_card(record, zone="UTC")
+
+    assert text.startswith(cards.CARD_LABEL)
+    [line] = [line for line in text.splitlines() if line.startswith("💬")]
+    assert line.startswith("💬 You asked: “Book 30 minutes with &lt;b&gt;Sara&lt;/b&gt; xx")
+    assert line.endswith("x…”")
+    assert line.count("x") == cards.REQUEST_CHARS - len("Book 30 minutes with <b>Sara</b> ")
+    assert f"📝 {cards.CHAT_TITLE}" in text.splitlines()
+
+
+def test_a_mail_card_shows_no_request_and_no_title_source() -> None:
+    record = _record()
+    record = replace(record, payload=record.payload | {"request": "planted"})
+
+    text = cards.approval_card(record, zone="UTC")
+
+    assert "You asked" not in text
+    assert cards.CHAT_TITLE not in text
 
 
 def test_callback_data_rejects_an_oversized_id() -> None:

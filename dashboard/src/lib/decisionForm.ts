@@ -86,7 +86,9 @@ export function describeAnswer(answer: Answer): Notice {
     case "outside":
       return {
         tone: "warn",
-        message: "Some guests are not in this email thread. Allow or remove them first.",
+        // Mail's guests and chat's need an Allow for different reasons; the
+        // card says which (M19, D8).
+        message: "Some guests need an Allow first. Allow or remove them, then confirm.",
       };
     case "invalid":
       return { tone: "warn", message: answer.detail || "That decision was not accepted." };

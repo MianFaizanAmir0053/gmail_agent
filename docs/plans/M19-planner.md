@@ -720,3 +720,20 @@ A fresh-context review of the planner, read against D2 to D7 and D10, found ten 
 - **What reads a thread leaves chat out:** reconciliation's record, bind and close steps, and the feed's recovery of stranded claims.
 - **The pipeline version** of a chat proposal (`planner_version`) hashes the planner's model, instruction and schema, under the prefix `chat-`, for M24.
 - 59 deliberate breaks, 56 caught. Each miss had a stronger guard behind it: the registry's pause check (the worker's copy was removed), the locked re-read of the action before a Withdraw, and `write_park` refusing a second park. 2758 Python and 175 web tests pass, with lint, mypy and typecheck clean. On Neon (Postgres 18), the touched suites pass. One test lost its connection there mid-query and passed when run again.
+
+### Task 19.13, proposals parked from a turn (2026-10-06)
+
+- **A proposal step parks a chat proposal** (`_park` in `app/planner/chat.py`):
+  - The event is held as an `ExtractionResult` with a fixed reasoning, so the hash and the registry read it as they read mail's.
+  - Its conflicts are read from the primary calendar, before the turn's row is locked, so no lock waits on Google. The deadline and the chat check then run again, so a slow read, or a Pause pressed during it, stops the turn before it writes.
+  - The ledger row is claimed and the proposal parked while the turn is held `running`. A turn the sweep has failed parks nothing.
+  - The card is announced once that is committed. If a channel is down, the card stays parked and the answer still names it.
+- **The session's cards** (`Cards`) hold the binding: the write calendar and the hash's key, as the worker binds a Confirm. They also hold the planner's pipeline version, the mode and the channels' announce. Chat now needs `FERNET_KEY`. The "no cards yet" refusal is gone.
+- **The card** shows the typed request, on one line and cut to 300 characters, and "Title: from your request". The request is kept in the proposal's payload, so the purge clears it with the card. On both cards, an outside guest of a chat proposal is "Not typed by you, nor a confirmed contact". The answer to a Confirm refused for an outside guest no longer names an email thread.
+- **On Postgres:**
+  - A turn's card goes through `decide()`, the worker and the registry, in dry run.
+  - A typed guest needs no Allow, and a confirmed contact found by name is invited as one.
+  - A pasted address is refused at its step and offered for an Allow, never placed on a card.
+  - Conflicts are asked of the primary calendar, through the real client.
+  - The production session binds a card as the worker binds its Confirm.
+- 40 deliberate breaks, 39 caught at first. The one missed showed that the park's own check repeated the one run before every step. It now runs after the conflict read instead, with a test. 2769 Python and 178 web tests pass, with lint, mypy, typecheck and build clean. The chat tests pass on Neon (Postgres 18).
