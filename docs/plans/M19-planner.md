@@ -759,3 +759,18 @@ A fresh-context review of the planner, read against D2 to D7 and D10, found ten 
 - **What stays, for statistics:** the plan's structure (`plan_structure`), meaning its kind, each step's operation, fixed question and references to earlier steps, and the reply's template or decline code. The turn's status, fixed reason and times also stay. The reply's question goes, since the planner wrote it from the request. A test makes each new field of a plan step be named as structure or as an argument.
 - **Each turn is cleared once**, and the purge counts it (`chat_turns_cleared`). The copy of the request on a card's payload is cleared with the card, by `_clear_content`, a week after the card settled. The web app's chat page already shows a cleared request as "(cleared)".
 - 13 deliberate breaks, each caught. 2854 Python tests pass, with lint and mypy clean, and the purge's tests pass on Neon.
+
+### Task 19.17, the runbook and the README (2026-10-06)
+
+- **DEPLOY.md §14** covers:
+  - before the deploy: migration 013 and its grant, no new scope, the five settings with their defaults, chat's need for `TEST_CALENDAR_ID` and `FERNET_KEY`, `OWNER_TIMEZONE` on Vercel, and what changes on mail's cards;
+  - what the owner sees on the Ask page and on a card from chat;
+  - spending;
+  - the routing eval after any change to the prompt, the schema or `PLANNER_MODEL`;
+  - retention;
+  - the owner's end tests, which are the spec's exit criteria 2 to 4.
+
+  The checklist has an M19 block. The runbook's opening now lists M18 and M19.
+- **Found while checking it against the code:** a `PLANNER_MODEL` with no price stops all new work, mail's included, since `models.in_use()` counts it. §14 says so.
+- **The README** describes Ask in the architecture, the eval command, the planner's safety defaults, and the `planner/` package.
+- **The read-through:** each spec item that needs a step or a setting is in §14. These are the migration, the grant, the five settings, the two calendars, the zone, the caps, the eval, retention and the exit criteria. One step has no command yet: D11's model run, listed under 19.16. §14.4 gains it with that run.

@@ -64,8 +64,17 @@ a few dozen emails a day.
 Email is attacker text, so no model that reads it holds a tool (M18). Mail is
 scrubbed of codes and links where it enters, credential mail is set aside
 before any model reads it, and the email sits between markers made fresh for
-each call, apart from the owner's own corrections. The retrieval corpus waits
-for a planner that reads the owner's requests rather than raw mail (M19).
+each call, apart from the owner's own corrections.
+
+The owner can also ask (M19). On the web app's Ask page, a planner reads only
+what the owner typed and writes a plan of fixed steps in one call: search
+mail, read a message, read the calendar, find a free slot, propose an event.
+Code checks where every value came from before each step. A reader with no
+tools reads the mail a search found, and code writes the answer, labelling
+each value from mail with the address that sent it. Nothing a step returns
+goes back to the planner. A request to book becomes a card on the same queue
+as mail's, and only the owner's Confirm writes it. The retrieval corpus stays
+for the eval and the demo; the planner uses Gmail's own search.
 
 ### Mail sync (M20)
 
@@ -358,6 +367,7 @@ anything useful.
 .\tasks.ps1 search "who is X"  # query the corpus by hand
 .\tasks.ps1 retrieval-eval --by-kind
 .\tasks.ps1 injection-eval --baseline   # the injection suite's model half
+.\tasks.ps1 planner-eval --baseline     # the planner's routing eval (M19)
 ```
 
 Dashboard:
@@ -399,6 +409,14 @@ Deployment runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
   - No model that reads mail holds a tool.
   - Each guest on a card says where it came from.
   - The ledger and stored errors quote no email.
+- The planner reads only what the owner typed (M19):
+  - Mail and pasted text never reach it, and no step's result goes back to it.
+  - A card from chat invites only addresses the owner typed, or confirmed
+    contacts. A pasted address is offered for the owner's Allow, never placed.
+  - Answers are written by code, each value from mail labelled with its
+    sender's address, never a display name.
+  - Chat spends at most `CHAT_DAILY_CAP_USD` a day and `CHAT_TURN_CEILING_USD`
+    a turn, and leaves `MAIL_RESERVE_USD` of the month for mail.
 - An injection suite checks all of it with no model in CI, through the
   preparation, the prompt and a model that obeys every injection. A committed
   run on the real model is tied by a hash to the code that shapes the prompt.
@@ -416,6 +434,7 @@ app/
   google/          OAuth, Gmail reads, Calendar writes
   extraction/      two-stage Gemini pipeline and its prompts; no tools
   policy/          the registry, approvals, the spend gate, the scrubber
+  planner/         chat: the plan, its executor, the reader, the answers, the job
   rag/             clean -> chunk -> embed -> pgvector, and search
   graph/           LangGraph orchestration + Postgres checkpointer
   telegram/        approval cards, allowlist, callbacks
@@ -423,7 +442,7 @@ app/
   obs/             traces, token accounting, pricing
   eval/            scorer, fixtures, retrieval eval, publishing
   jobs/            poller, scheduler, ingestion
-dashboard/         Next.js, five views over the trace tables
+dashboard/         Next.js: the timeline of cards, Ask, and views over the traces
 docs/plans/        per-module plans with running notes
 results/           committed eval evidence
 ```

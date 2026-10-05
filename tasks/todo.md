@@ -2060,7 +2060,7 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 **Description:** DEPLOY.md §14 (the migration, settings, the grant, the caps, the eval after any prompt change, the owner's end tests) and the README.
 
 **Acceptance criteria:**
-- [ ] A read-through against the spec finds no step outside the docs.
+- [x] A read-through against the spec finds no step outside the docs.
 
 **Verification:** the read-through, recorded in the spec's running notes.
 
