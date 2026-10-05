@@ -10,19 +10,24 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict, cast
 
 import psycopg
 import pytest
 from langgraph.graph import END, START, StateGraph
+from psycopg.types.json import Jsonb
 
 from app.channel.decide import decide
-from app.channel.park import proposal_from, write_park
+from app.channel.park import park_chat, proposal_from, write_park
 from app.channel.worker import ATTEMPTS_EXHAUSTED, settle_decided, settle_failed
+from app.contracts import ExtractionResult
 from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import CARRIED_A_CODE, NO_START_TIME, NOT_A_MEETING, SWEEP_REASON
-from app.jobs.purge import purge
+from app.jobs.purge import PLAN_STRUCTURE, plan_structure, purge
 from app.mail.feed import GONE, TOO_OLD
+from app.planner.plan import StepPayload
+from app.policy.hashing import Binding, args_key
 from app.rag.ingest import STOPPED
 from app.store.ledger import STRANDED_REASON, MessageLedger, MessageStatus
 
@@ -478,3 +483,159 @@ def test_a_stored_request_is_cleared_a_week_after_its_write_began(
     assert _request(conn, old) is None
     assert _request(conn, recent) == {"summary": "Design review"}
     assert result.requests_cleared >= 1
+
+
+# --- chat turns (M19, D12) -------------------------------------------------------------
+
+CHAT_PLAN: dict[str, Any] = {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [
+        {"op": "contacts.find", "name": "Sara"},
+        {"op": "calendar.freebusy", "start": "2026-10-12T09:00:00", "end": "2026-10-12T18:00:00"},
+        {"op": "slots.first_free", "busy_ref": "$s2", "minutes": 30},
+        {
+            "op": "calendar.propose_invite",
+            "title": "Call with Sara",
+            "slot_ref": "$s3",
+            "guests": ["sara.khan@example.com"],
+            "guest_refs": ["$s1"],
+        },
+    ],
+    "reply": {"template": "proposal", "question": "Which Sara?"},
+}
+
+
+def _chat_turn(
+    conn: psycopg.Connection, *, finished_days_ago: int | None, status: str = "answered"
+) -> int:
+    """A turn with every kind of words a turn keeps, finished that long ago,
+    or still running."""
+    finished = None if finished_days_ago is None else timedelta(days=finished_days_ago)
+    row = conn.execute(
+        """
+        INSERT INTO chat_turns (idempotency_key, typed, pasted, status, started_at,
+                                plan, answer, reason, finished_at)
+        VALUES (%s, 'Book 30 minutes with Sara', 'pasted words', %s, now() - interval '9 days',
+                %s, %s, 'a fixed reason', now() - %s::interval)
+        RETURNING id
+        """,
+        (
+            f"key-{uuid.uuid4().hex}",
+            status,
+            Jsonb(CHAT_PLAN),
+            Jsonb({"text": "A card is waiting.", "allow": ["zoe@example.net"], "cards": []}),
+            finished,
+        ),
+    ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _chat_card(conn: psycopg.Connection, turn_id: int, *, status: str) -> None:
+    proposed = ExtractionResult(
+        is_meeting=True,
+        title="Call with Sara",
+        start_utc=datetime(2026, 10, 12, 5, tzinfo=UTC),
+        end_utc=datetime(2026, 10, 12, 5, 30, tzinfo=UTC),
+        timezone="Asia/Karachi",
+        attendees=["sara.khan@example.com"],
+        confidence=1.0,
+        reasoning="Proposed from a chat turn.",
+    )
+    with conn.transaction():
+        record = park_chat(
+            conn,
+            turn_id=turn_id,
+            step=4,
+            proposed=proposed,
+            request="Book 30 minutes with Sara",
+            guest_sources={"sara.khan@example.com": "typed"},
+            conflicts=[],
+            pipeline_version="chat-test",
+            binding=Binding(calendar_id="test-calendar", key=args_key("test-key")),
+            dry_run=True,
+        )
+    final = "rejected" if status == "decided" else None
+    conn.execute(
+        "UPDATE proposals SET status = %s, final_status = %s WHERE message_id = %s",
+        (status, final, record.message_id),
+    )
+
+
+def _words(conn: psycopg.Connection, turn_id: int) -> tuple[Any, ...]:
+    row = conn.execute(
+        "SELECT typed, pasted, plan, answer, status, reason FROM chat_turns WHERE id = %s",
+        (turn_id,),
+    ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+def test_a_chat_turn_with_an_open_card_keeps_its_words(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    """A pending card's guests are checked against the request's typed
+    addresses; a deciding one's are checked again by the worker."""
+    for status in ("pending", "deciding"):
+        turn_id = _chat_turn(conn, finished_days_ago=30)
+        _chat_card(conn, turn_id, status=status)
+        before = _words(conn, turn_id)
+
+        purge(conn, migrated_database)
+
+        assert _words(conn, turn_id) == before
+
+
+def test_a_settled_chat_turn_loses_its_words_after_a_week_and_keeps_its_plans_shape(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    turn_id = _chat_turn(conn, finished_days_ago=8)
+    _chat_card(conn, turn_id, status="decided")
+
+    result = purge(conn, migrated_database)
+
+    typed, pasted, plan, answer, status, reason = _words(conn, turn_id)
+    assert (typed, pasted, answer) == (None, None, None)
+    assert (status, reason) == ("answered", "a fixed reason")
+    assert plan == {
+        "kind": "answer",
+        "steps": [
+            {"op": "contacts.find"},
+            {"op": "calendar.freebusy"},
+            {"op": "slots.first_free", "busy_ref": "$s2"},
+            {"op": "calendar.propose_invite", "slot_ref": "$s3", "guest_refs": ["$s1"]},
+        ],
+        "reply": {"template": "proposal"},
+    }
+    assert result.chat_turns_cleared >= 1
+    assert purge(conn, migrated_database).chat_turns_cleared == 0  # once
+
+
+@pytest.mark.parametrize(("days", "cleared"), [(6, False), (8, True)])
+def test_a_chat_turn_with_no_card_keeps_its_words_for_a_week(
+    conn: psycopg.Connection, migrated_database: str, days: int, cleared: bool
+) -> None:
+    turn_id = _chat_turn(conn, finished_days_ago=days, status="failed")
+    purge(conn, migrated_database)
+    assert (_words(conn, turn_id)[0] is None) is cleared
+
+
+def test_a_chat_turn_still_running_keeps_its_words(
+    conn: psycopg.Connection, migrated_database: str
+) -> None:
+    turn_id = _chat_turn(conn, finished_days_ago=None, status="running")
+    purge(conn, migrated_database)
+    assert _words(conn, turn_id)[0] == "Book 30 minutes with Sara"
+
+
+def test_every_field_of_a_plan_step_is_structure_or_an_argument() -> None:
+    """A new field must be placed: kept for statistics, or cleared as the
+    owner's words (M19, D12)."""
+    arguments = {
+        "sender", "recipient", "words", "after", "before", "limit",
+        "start", "end", "minutes", "name", "title", "guests",
+    }  # fmt: skip
+    assert set(StepPayload.model_fields) == {*PLAN_STRUCTURE, *arguments}
+    assert not arguments & set(PLAN_STRUCTURE)
+    assert plan_structure({}) == {"kind": None, "steps": [], "reply": {}}

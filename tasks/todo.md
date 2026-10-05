@@ -2033,8 +2033,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 **Description:** The purge clears a turn's text, paste, plan arguments and answer a week after it finished, once every proposal it made has settled.
 
 **Acceptance criteria:**
-- [ ] A turn with a pending card keeps its text.
-- [ ] A settled one is cleared after a week.
+- [x] A turn with a pending card keeps its text.
+- [x] A settled one is cleared after a week.
 
 **Verification:** `uv run pytest tests/test_purge.py`; Neon.
 

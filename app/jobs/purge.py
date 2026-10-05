@@ -27,15 +27,24 @@ later attempt replays it rather than rebuilding it from current code. The
 registry clears it once the write is done; the purge clears any left a week
 after the write began. By then no attempt will replay it: a write still
 unconfirmed is only looked up, by its event's id.
+
+A chat turn (M19, D12) keeps the owner's typed request, the text they pasted,
+the plan's arguments and the answer for a week after it finished, and for as
+long as any card it made is open: a pending card's guests are checked against
+the addresses typed in its request. The plan's structure stays, for
+statistics, as do the turn's status, its fixed reason and its times.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any
 
 import psycopg
 from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from app.graph.checkpointer import postgres_checkpointer
 from app.graph.nodes import CARRIED_A_CODE, NO_START_TIME, NOT_A_MEETING, SWEEP_REASON
@@ -55,6 +64,14 @@ ledger's reasons, counted on the same clock. The owner approved no other."""
 
 REQUESTS_KEPT_FOR = timedelta(days=7)
 """A calendar write's stored request (M17, D8), counted from when it began."""
+
+CHAT_KEPT_FOR = timedelta(days=7)
+"""A chat turn's words (M19, D12), counted from when the turn finished."""
+
+PLAN_STRUCTURE = ("op", "ask", "message_ref", "busy_ref", "slot_ref", "guest_refs")
+"""What a chat plan's step keeps after the purge: its operation, its fixed
+question, and the steps it reads from. Every other field is an argument the
+planner wrote from the owner's request, and goes."""
 
 FIXED_REASONS = (
     "declined by user",
@@ -104,6 +121,9 @@ class PurgeResult:
     errors_cut: int = 0
     """Run, span and ingestion errors cut to their type after a week (M18, D7)."""
 
+    chat_turns_cleared: int = 0
+    """Chat turns whose words were removed (M19, D12)."""
+
 
 def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
     # Opened first: its setup() creates the checkpoint tables on a fresh
@@ -143,6 +163,7 @@ def purge(conn: psycopg.Connection, database_url: str) -> PurgeResult:
         mail_messages_deleted=_purge_mail(conn),
         requests_cleared=_clear_requests(conn),
         errors_cut=_cut_errors(conn),
+        chat_turns_cleared=_clear_chat(conn),
     )
 
 
@@ -279,3 +300,50 @@ def _clear_content(conn: psycopg.Connection) -> tuple[int, int]:
         (settled, CONTENT_KEPT_FOR),
     ).rowcount
     return proposals, corrections
+
+
+def plan_structure(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """A chat plan's shape, for statistics (M19, D12): its kind, each step's
+    `PLAN_STRUCTURE`, and the reply's template or decline code. The reply's
+    question goes with the arguments: the planner wrote it from the request."""
+    reply = plan.get("reply") or {}
+    return {
+        "kind": plan.get("kind"),
+        "steps": [
+            {name: step[name] for name in PLAN_STRUCTURE if step.get(name) is not None}
+            for step in plan.get("steps") or []
+        ],
+        "reply": {
+            name: reply[name]
+            for name in ("template", "decline_code")
+            if reply.get(name) is not None
+        },
+    }
+
+
+def _clear_chat(conn: psycopg.Connection) -> int:
+    """Remove the words of chat turns that finished over a week ago and whose
+    cards have all settled: the typed request, the paste, the plan's
+    arguments and the answer. A card returned to the owner is open again, and
+    keeps its turn's words. Statuses, reasons and times stay."""
+    rows = conn.execute(
+        """
+        SELECT t.id, t.plan FROM chat_turns t
+         WHERE t.finished_at < now() - %s
+           AND (t.typed IS NOT NULL OR t.pasted IS NOT NULL OR t.answer IS NOT NULL)
+        """,
+        (CHAT_KEPT_FOR,),
+    ).fetchall()
+    cleared = 0
+    for turn_id, plan in rows:
+        cleared += conn.execute(
+            """
+            UPDATE chat_turns t SET typed = NULL, pasted = NULL, answer = NULL, plan = %s
+             WHERE t.id = %s
+               AND NOT EXISTS (SELECT 1 FROM proposals p
+                                WHERE p.chat_turn_id = t.id
+                                  AND p.status NOT IN ('decided', 'failed'))
+            """,
+            (Jsonb(plan_structure(plan)) if plan else None, turn_id),
+        ).rowcount
+    return cleared
