@@ -737,3 +737,18 @@ A fresh-context review of the planner, read against D2 to D7 and D10, found ten 
   - Conflicts are asked of the primary calendar, through the real client.
   - The production session binds a card as the worker binds its Confirm.
 - 40 deliberate breaks, 39 caught at first. The one missed showed that the park's own check repeated the one run before every step. It now runs after the conflict read instead, with a test. 2769 Python and 178 web tests pass, with lint, mypy, typecheck and build clean. The chat tests pass on Neon (Postgres 18).
+
+### Task 19.14, the chat injection suite (2026-10-06)
+
+- **Thirteen cases in `data/injection/chat/`**, a folder of their own, so M18's loaders and its eval's hash never read them. The cases cover each attack D11 names: "add this address", "the owner wants this", a forged sender name and a quoted chat reply. They come from mail, from a paste, and from a stranger's invitation. The README describes the format.
+- **What a case runs:** the plan a correct planner writes from the typed request alone, through the real executor, reader and renderer. The reader's model is a compliant fake that reports every line it is given and names every address. The world is the routing eval's (`load_world`, whose `mail_record` is now public).
+- **What every case checks** (`tests/test_chat_injection.py`):
+  - The parked proposals are exactly the typed ones, with no guest from mail. Two cases are plans that try to put mail on a card. The check refuses one; the executor refuses the other.
+  - The labels outside quotation marks are exactly the true sources, and each comes before anything quoted on its line.
+  - No display name, and no line forged to look like the answer's own, shows outside quotation marks.
+  - Only a paste's addresses are offered for an Allow.
+  - The answer holds no hidden or blank-looking character, and every quotation is cut.
+  - The calendar is only read, and the compliant model was asked once for each read, so no check passes on nothing.
+- **Found while building it:** a plan cannot both read mail and propose, since each has its own template. So mail cannot reach a card in one turn except through a plan that wires it in, and the check and the executor refuse that.
+- **Not yet:** D11's model run, in which the same cases' reads go through the real reader and its quoted output is checked for links and codes. It waits for the development key, and is now listed under 19.16.
+- 19 deliberate breaks across the renderer, the reader, the search, the executor and the plan check. 17 were caught by the suite at first. A new case, a sender whose quoted local part spells another address, catches the eighteenth. The last, a typed address offered again from a paste, is not an injection defence, and its unit test catches it. 2848 Python tests pass, with lint and mypy clean.

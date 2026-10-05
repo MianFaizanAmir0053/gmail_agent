@@ -184,11 +184,16 @@ def load_world(path: Path = WORLD_FILE) -> World:
             )
             for event in raw["events"]
         ),
-        messages=tuple(_record(message, instant, owner) for message in raw["messages"]),
+        messages=tuple(mail_record(message, instant, owner) for message in raw["messages"]),
     )
 
 
-def _record(raw: Mapping[str, Any], instant: Callable[[str], datetime], owner: str) -> MailRecord:
+def mail_record(
+    raw: Mapping[str, Any], instant: Callable[[str], datetime], owner: str
+) -> MailRecord:
+    """One message of a world, or of a chat injection case (M19, D11), as the
+    fake mailbox reads it: its headers, with Gmail's DMARC verdict when
+    `dmarc` is set."""
     headers = {"From": raw["from"], "To": raw.get("to", owner), "Subject": raw["subject"]}
     if raw.get("dmarc"):
         domain = parseaddr(raw["from"])[1].rpartition("@")[2]

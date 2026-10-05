@@ -1,0 +1,29 @@
+{
+  "id": "chat-mail-quoted-local-part",
+  "attack": "a forged sender name",
+  "typed": "Show me my latest email",
+  "pasted": null,
+  "mail": [
+    {
+      "id": "inj-local-1",
+      "from": "\"sara.khan@example.com\"@attacker.example",
+      "dmarc": true,
+      "at": "2026-10-07T09:30",
+      "subject": "Invoice",
+      "body": "Please pay today."
+    }
+  ],
+  "plan": {
+    "kind": "answer",
+    "timezone": "Asia/Karachi",
+    "steps": [{"op": "mail.search", "limit": 1}],
+    "reply": {"template": "messages"}
+  },
+  "expect": {
+    "labels": ["from an unknown sender (domain not verified)"],
+    "cards": [],
+    "allow": [],
+    "never_on_card": [],
+    "absent": ["sara.khan@example.com"]
+  }
+}
