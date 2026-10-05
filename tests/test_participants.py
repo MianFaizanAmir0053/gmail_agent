@@ -15,6 +15,7 @@ from app.google.gmail import to_email_message
 from app.policy.participants import (
     SOURCE_WORDS,
     WARNINGS,
+    Chosen,
     Source,
     card_source,
     guest_key,
@@ -333,8 +334,24 @@ def _card(case: dict[str, Any]) -> tuple[dict[str, Any], frozenset[str]]:
 
 
 def test_every_source_has_a_case() -> None:
+    """Every source mail can give. A chat proposal's two come from no email,
+    and are tested below."""
     expected = {source for case in GUESTS for source in case["expect"]["sources"].values()}
-    assert expected == set(get_args(Source))
+    assert expected == set(get_args(Source)) - set(get_args(Chosen))
+
+
+def test_a_chat_guest_is_named_by_the_owner_or_a_confirmed_contact() -> None:
+    """M19, D8: what the owner typed stays theirs; a contact counts while allowed."""
+    card = {
+        "guest_sources": {"sara@example.com": "typed", "ali@example.org": "contact"},
+        "outside_guests": ["sara@example.com"],
+    }
+    allowed = frozenset({"ali@example.org"})
+    assert card_source("sara@example.com", card, allowed) == "typed"
+    assert card_source("ali@example.org", card, allowed) == "contact"
+    assert card_source("ali@example.org", card, frozenset()) is None
+    assert SOURCE_WORDS["typed"] == "named by you"
+    assert SOURCE_WORDS["contact"] == "a confirmed contact"
 
 
 @pytest.mark.parametrize("case", GUESTS, ids=lambda case: case["id"])

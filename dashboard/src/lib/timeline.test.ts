@@ -80,6 +80,13 @@ describe("cardView", () => {
     assert.equal(view.canEdit, false);
   });
 
+  it("hides Edit on a proposal from chat, which the owner asks again instead", () => {
+    const view = cardView({ ...ROW, source: "chat" }, "UTC");
+    assert.equal(view.canDecide, true);
+    assert.equal(view.canEdit, false);
+    assert.equal(cardView({ ...ROW, source: "mail" }, "UTC").canEdit, true);
+  });
+
   it("shows an open decision as applying, with nothing to tap", () => {
     const view = cardView({ ...ROW, status: "deciding" }, "UTC");
     assert.equal(view.applying, true);

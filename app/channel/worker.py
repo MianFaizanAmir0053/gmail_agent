@@ -35,14 +35,18 @@ from app.channel.decide import expire
 from app.channel.park import (
     Announce,
     ProposalRecord,
+    chat_pending,
+    chat_record,
     proposal_from,
     require_transaction,
     write_park,
 )
+from app.contracts import ExtractionResult
+from app.graph.nodes import DECLINED, SWEEP_REASON
 from app.graph.runner import GraphSession, ThreadView
 from app.policy import audit, contacts, control
 from app.policy.budget import SPENDING_STOPPED, MessageTooCostlyError
-from app.policy.hashing import INVITE, Binding, bound
+from app.policy.hashing import INVITE, Binding, bound, event_args, tool_for
 from app.policy.participants import guest_key
 from app.policy.registry import Approval, HeldError, PausedError, refuse_approved
 from app.store.ledger import TERMINAL_STATUSES, MessageLedger, MessageStatus
@@ -269,6 +273,9 @@ def apply_one(
 
 
 def _advance(session: GraphSession, decision: OpenDecision, announce: Announce | None) -> str:
+    chat = _chat(session.conn, decision.message_id)
+    if chat is not None:
+        return _advance_chat(session, decision, chat, announce)
     for _ in range(MAX_PASSES):
         decision = _with_action_status(session.conn, decision)
         view = session.thread(decision.message_id)
@@ -344,7 +351,7 @@ def _check_confirm(
         return None  # the registry answers for anything already under way
     _, tool, digest, dry_run = row
     if dry_run != session.dry_run:
-        return _expire_queued(session.conn, decision, view)
+        return _expire_queued(session.conn, decision, view.revision)
     assert view.payload is not None
     if bound(decision.message_id, view.payload.get("proposed") or {}, session.binding()) != (
         tool,
@@ -441,7 +448,7 @@ def _return_to_owner(
     conn = session.conn
     if _made_under(view.payload) != session.dry_run:
         # Never shown again as if it could run (D2): expired instead.
-        return _expire_queued(conn, decision, view)
+        return _expire_queued(conn, decision, view.revision)
     with conn.transaction():
         if not _close(
             conn,
@@ -479,7 +486,7 @@ def _made_under(payload: dict[str, Any]) -> bool:
     return bool(payload.get("dry_run", True))
 
 
-def _expire_queued(conn: psycopg.Connection, decision: OpenDecision, view: ThreadView) -> str:
+def _expire_queued(conn: psycopg.Connection, decision: OpenDecision, revision: int) -> str:
     """A proposal made under the other `DRY_RUN`, on its way back to the
     owner. Its decision settles as `no_effect`, any action is refused, and the
     proposal is expired: a sweep, recorded in the same transaction, ends the
@@ -497,9 +504,9 @@ def _expire_queued(conn: psycopg.Connection, decision: OpenDecision, view: Threa
                    updated_at = now()
              WHERE message_id = %s AND status = 'deciding'
             """,
-            (view.revision, decision.message_id),
+            (revision, decision.message_id),
         )
-        if not expire(conn, decision.message_id, view.revision):
+        if not expire(conn, decision.message_id, revision):
             # Rolls the settle back: the decision stays open and is tried
             # again, rather than leaving a live proposal from the other mode.
             raise RuntimeError(f"could not expire {decision.message_id}")
@@ -517,6 +524,9 @@ def _give_up(session: GraphSession, decision: OpenDecision, announce: Announce |
     """
     conn = session.conn
     try:
+        chat = _chat(conn, decision.message_id)
+        if chat is not None:
+            return _give_up_chat(session, decision, chat, announce)
         decision = _with_action_status(conn, decision)
         view = session.thread(decision.message_id)
         entry = MessageLedger(conn).get(decision.message_id)
@@ -627,6 +637,9 @@ def _withdraw(session: GraphSession, decision: OpenDecision) -> str:
     another worker began since the first look declines the request.
     """
     conn = session.conn
+    chat = _chat(conn, decision.message_id)
+    if chat is not None:
+        return _withdraw_chat(session, decision, chat)
     decision = _with_action_status(conn, decision)
     view = session.thread(decision.message_id)
     entry = MessageLedger(conn).get(decision.message_id)
@@ -644,7 +657,7 @@ def _withdraw(session: GraphSession, decision: OpenDecision) -> str:
                 if not _still_approved(conn, decision):
                     return _decline(conn, decision)
                 # Audited once, by the expiry.
-                expired = _expire_queued(conn, decision, view)
+                expired = _expire_queued(conn, decision, view.revision)
             return "expired" if expired == "no_effect" else expired
         with conn.transaction():
             if not _still_approved(conn, decision):
@@ -1060,7 +1073,7 @@ def _settle(
         and view.payload is not None
         and _made_under(view.payload) != dry_run
     ):
-        return _expire_queued(conn, decision, view)
+        return _expire_queued(conn, decision, view.revision)
     shows_again = step.outcome in ("reparked", "resync")
     outcome = "no_effect" if step.outcome == "resync" else step.outcome
     assert outcome is not None
@@ -1203,6 +1216,257 @@ def _close(
             reason=audit.REASONS["already_applied"],
         )
     return True
+
+
+# --- proposals from chat (M19, D8) ---------------------------------------------------
+#
+# A proposal from chat has no graph and no checkpoint. Its state is its
+# proposal row, which keeps the proposed event; its ledger row; and its
+# outbound action. Each step below reads those, never a thread, and ends as
+# mail's would: a Confirm runs through the registry after the same checks, a
+# refusal or a failed check re-parks the proposal at the next generation,
+# Cancel and the sweep end it, and giving up never settles a write it began
+# on a guess.
+
+
+@dataclass(frozen=True, slots=True)
+class ChatProposal:
+    revision: int
+    payload: dict[str, Any]
+    dry_run: bool
+    action_type: str
+    pipeline_version: str
+
+    @property
+    def proposed(self) -> dict[str, Any]:
+        proposed: dict[str, Any] = self.payload.get("proposed") or {}
+        return proposed
+
+
+def _chat(conn: psycopg.Connection, message_id: str) -> ChatProposal | None:
+    """The stored proposal, when it came from chat; None for mail's."""
+    row = conn.execute(
+        """
+        SELECT revision, payload, dry_run, action_type, pipeline_version
+          FROM proposals WHERE message_id = %s AND source = 'chat'
+        """,
+        (message_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return ChatProposal(int(row[0]), dict(row[1] or {}), bool(row[2]), row[3], row[4])
+
+
+def _advance_chat(
+    session: GraphSession, decision: OpenDecision, chat: ChatProposal, announce: Announce | None
+) -> str:
+    conn = session.conn
+    decision = _with_action_status(conn, decision)
+    entry = MessageLedger(conn).get(decision.message_id)
+    ledger_status = entry.status if entry is not None else None
+    if ledger_status in TERMINAL_STATUSES:
+        assert ledger_status is not None
+        return _settle_chat_final(conn, decision, ledger_status)
+    if decision.action in ("cancel", "sweep"):
+        return _reject_chat(conn, decision)
+    if decision.action != "confirm":
+        # `decide()` refuses an Edit for chat; one recorded anyway goes back.
+        return _return_chat(session, decision, chat, announce, action_reason="settled")
+    if decision.action_id is None or decision.nonce is None:
+        return _return_chat(session, decision, chat, announce, action_reason="legacy")
+    if decision.action_status == "approved":
+        returned = _check_chat_confirm(session, decision, chat, announce)
+        if returned is not None:
+            return returned
+        if _withdraw_requested(conn, decision):
+            return _withdraw_leased(session, decision)
+    # A pause pressed since the lease is the registry's to see: it reads it
+    # under the action's lock, before anything runs, and raises PausedError.
+    return _execute_chat(session, decision, chat)
+
+
+def _check_chat_confirm(
+    session: GraphSession, decision: OpenDecision, chat: ChatProposal, announce: Announce | None
+) -> str | None:
+    """Mail's checks before a Confirm, from the stored proposal: the mode, the
+    binding, and each guest typed in the request or a confirmed contact."""
+    conn = session.conn
+    row = conn.execute(
+        "SELECT status, tool, args_hash, dry_run FROM outbound_actions WHERE id = %s",
+        (decision.action_id,),
+    ).fetchone()
+    if row is None or row[0] != "approved":
+        return None
+    _, tool, digest, dry_run = row
+    if dry_run != session.dry_run or chat.dry_run != session.dry_run:
+        return _expire_queued(conn, decision, chat.revision)
+    if bound(decision.message_id, chat.proposed, session.binding()) != (tool, digest):
+        return _return_chat(session, decision, chat, announce, action_reason="changed")
+    if tool == INVITE:
+        guests = [str(guest) for guest in chat.proposed.get("attendees") or []]
+        outsiders = contacts.unconfirmed_outsiders(
+            conn, session.deps.gmail, decision.message_id, guests
+        )
+        if outsiders:
+            return _return_chat(
+                session,
+                decision,
+                chat,
+                announce,
+                action_reason="guests",
+                outside_guests=outsiders,
+            )
+    return None
+
+
+def _execute_chat(session: GraphSession, decision: OpenDecision, chat: ChatProposal) -> str:
+    """Run the proposal through the registry, which checks the approval again
+    and finishes a write an earlier attempt began, then settle as `act` would."""
+    conn = session.conn
+    assert decision.action_id is not None and decision.nonce is not None
+    args = event_args(ExtractionResult.model_validate(chat.proposed), decision.message_id)
+    outcome = session.deps.registry.execute(
+        tool_for(args.attendees),
+        args,
+        approval=Approval(decision.action_id, decision.nonce),
+        message_id=decision.message_id,
+    )
+    with conn.transaction():
+        if outcome.status == "created":
+            assert outcome.event_id is not None
+            _mark_final(conn, decision.message_id, MessageStatus.CREATED, event_id=outcome.event_id)
+            final = MessageStatus.CREATED
+        elif outcome.status == "dry_run":
+            _mark_final(conn, decision.message_id, MessageStatus.SKIPPED, error="dry_run")
+            final = MessageStatus.SKIPPED
+        else:
+            reason = outcome.reason or NO_OUTCOME
+            if not settle_failed(conn, decision.id, decision.message_id, reason=reason):
+                return "already settled"
+            return "failed"
+        if not settle_decided(conn, decision.id, decision.message_id, final_status=final.value):
+            return "already settled"
+    return final.value
+
+
+def _settle_chat_final(
+    conn: psycopg.Connection, decision: OpenDecision, status: MessageStatus
+) -> str:
+    with conn.transaction():
+        if not settle_decided(conn, decision.id, decision.message_id, final_status=status.value):
+            return "already settled"
+    return status.value
+
+
+def _reject_chat(conn: psycopg.Connection, decision: OpenDecision) -> str:
+    """Cancel or the sweep ends a chat proposal, with the words the graph's
+    `reject` gives mail's."""
+    reason = (decision.reason or SWEEP_REASON) if decision.action == "sweep" else DECLINED
+    with conn.transaction():
+        if not _close(conn, decision.id, MessageStatus.REJECTED.value, reason=None):
+            return "already settled"
+        _mark_final(conn, decision.message_id, MessageStatus.REJECTED, error=reason)
+        _mark_decided(conn, decision.message_id, MessageStatus.REJECTED.value)
+    return MessageStatus.REJECTED.value
+
+
+def _return_chat(
+    session: GraphSession,
+    decision: OpenDecision,
+    chat: ChatProposal,
+    announce: Announce | None,
+    *,
+    action_reason: str,
+    reason: str | None = None,
+    outside_guests: list[str] | None = None,
+) -> str:
+    """`_return_to_owner`, re-parked from the stored proposal: settled as
+    `no_effect`, its action refused, and shown again at the next generation."""
+    conn = session.conn
+    if chat.dry_run != session.dry_run:
+        return _expire_queued(conn, decision, chat.revision)
+    pending = chat_pending(
+        chat.payload,
+        action_type=chat.action_type,
+        pipeline_version=chat.pipeline_version,
+        dry_run=chat.dry_run,
+    )
+    with conn.transaction():
+        if not _close(
+            conn,
+            decision.id,
+            "no_effect",
+            reason=reason or audit.REASONS[action_reason],
+            action_reason=action_reason,
+        ):
+            return "already settled"
+        if outside_guests is None:
+            outside_guests = _marked_outside(conn, decision.message_id, chat.payload)
+        pending["outside_guests"] = outside_guests
+        record = chat_record(
+            decision.message_id, pending, revision=chat.revision, binding=session.binding()
+        )
+        record = replace(
+            record,
+            generation=write_park(conn, record, ledger_status=MessageStatus.AWAITING_APPROVAL),
+        )
+    if announce is not None:
+        _announce(announce, record)
+    return "no_effect"
+
+
+def _give_up_chat(
+    session: GraphSession, decision: OpenDecision, chat: ChatProposal, announce: Announce | None
+) -> str:
+    """No more attempts, for a chat proposal: settled from what is stored. A
+    write the registry began is looked up, never guessed (M17, D3)."""
+    conn = session.conn
+    decision = _with_action_status(conn, decision)
+    entry = MessageLedger(conn).get(decision.message_id)
+    ledger_status = entry.status if entry is not None else None
+    if ledger_status in TERMINAL_STATUSES:
+        assert ledger_status is not None
+        return _settle_chat_final(conn, decision, ledger_status)
+    if decision.action in ("cancel", "sweep"):
+        return _reject_chat(conn, decision)
+    if decision.action_status in ("executing", "done"):
+        return _unfinished_write(session, decision)
+    if decision.action_status == "dry_run":
+        return _settle_dry_run(conn, decision)
+    return _return_chat(
+        session,
+        decision,
+        chat,
+        announce,
+        action_reason="exhausted",
+        reason=ATTEMPTS_EXHAUSTED,
+    )
+
+
+def _withdraw_chat(session: GraphSession, decision: OpenDecision, chat: ChatProposal) -> str:
+    """`_withdraw` for chat: a proposal whose Confirm has not begun goes back
+    to the owner; one already being applied is declined."""
+    conn = session.conn
+    decision = _with_action_status(conn, decision)
+    entry = MessageLedger(conn).get(decision.message_id)
+    untouched = (
+        entry is not None
+        and entry.status is MessageStatus.AWAITING_APPROVAL
+        and chat.revision == decision.revision
+        and decision.action_status in (None, "approved")
+    )
+    if not untouched:
+        return _decline(conn, decision)
+    with conn.transaction():
+        if not _still_approved(conn, decision):
+            return _decline(conn, decision)
+        if chat.dry_run != session.dry_run:
+            expired = _expire_queued(conn, decision, chat.revision)
+            return "expired" if expired == "no_effect" else expired
+        outcome = _return_chat(session, decision, chat, None, action_reason="withdrawn")
+        if outcome == "no_effect":
+            _audit_withdrawn(conn, decision)
+    return "withdrawn" if outcome == "no_effect" else outcome
 
 
 def _due(

@@ -44,7 +44,15 @@ export function isAddress(value: string): boolean {
 }
 
 /** Where a guest came from (M18, D5), as `Source` in `app/policy/participants.py`. */
-export type Source = "thread" | "allowed" | "email" | "quoted" | "absent";
+export type Source =
+  | "thread"
+  | "allowed"
+  | "email"
+  | "quoted"
+  | "absent"
+  // A proposal from chat (M19, D8): typed by the owner, or a confirmed contact.
+  | "typed"
+  | "contact";
 
 /** What the card says of each source, in the words of `SOURCE_WORDS` in
  * `app/policy/participants.py`. */
@@ -54,6 +62,8 @@ export const SOURCE_WORDS: Record<Source, string> = {
   email: "named in the email",
   quoted: "named in a quoted or forwarded section",
   absent: "not found in the email",
+  typed: "named by you",
+  contact: "a confirmed contact",
 };
 
 /** The two marked as warnings, beside Allow: the email did not write the
@@ -84,6 +94,8 @@ export function cardSource(
   const where: unknown = Object.hasOwn(sources, guest)
     ? (sources as Record<string, unknown>)[guest]
     : null;
+  if (where === "typed") return "typed";
+  if (where === "contact") return allowed.has(guestKey(guest)) ? "contact" : null;
   if (typeof where !== "string" || !NAMED.has(where)) return null;
   const key = guestKey(guest);
   if (keys(card.thread_guests).has(key) && !keys(card.outside_guests).has(key)) return "thread";

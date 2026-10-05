@@ -66,6 +66,23 @@ def pipeline_version(settings: Settings) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
+def planner_version(settings: Settings) -> str:
+    """A chat proposal's pipeline version (M19, D8): the planner's model, its
+    instruction and its schema, under a prefix of its own, so M24 can leave
+    the owner's own requests out of the evidence for mail."""
+    from app.extraction.payloads import response_json_schema
+    from app.planner.plan import PlanPayload
+    from app.planner.prompts import PLAN_SYSTEM
+
+    parts = {
+        "model": settings.planner_model,
+        "system": PLAN_SYSTEM,
+        "schema": response_json_schema(PlanPayload),
+    }
+    canonical = json.dumps(parts, sort_keys=True, default=str)
+    return "chat-" + hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
 def action_type(attendees: Sequence[str]) -> ActionType:
     """Guests make it an invite. The owner is never among the attendees:
     extraction removes their address (`app/extraction/payloads.py`)."""

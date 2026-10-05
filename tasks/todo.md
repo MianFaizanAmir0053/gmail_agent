@@ -1984,10 +1984,10 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - **Chat ids without colons.** Telegram's cards have no Edit for chat.
 
 **Acceptance criteria:**
-- [ ] Each worker path is covered on Postgres.
-- [ ] Withdraw while paused stops the write.
-- [ ] Give-up never settles an executing write on a guess.
-- [ ] Telegram's buttons decode a chat id.
+- [x] Each worker path is covered on Postgres.
+- [x] Withdraw while paused stops the write.
+- [x] Give-up never settles an executing write on a guess.
+- [x] Telegram's buttons decode a chat id.
 
 **Verification:** `uv run pytest tests/test_worker.py tests/test_decide.py tests/test_contacts.py tests/test_telegram.py tests/test_participants.py`; `cd dashboard; npm test`; Neon.
 

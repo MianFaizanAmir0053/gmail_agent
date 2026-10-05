@@ -123,6 +123,11 @@ def decide(
         if len(correction) > MAX_CORRECTION_CHARS:
             return DecisionResult("invalid", detail="the correction is too long")
 
+    if action == "edit" and from_chat(conn, message_id):
+        # Chat cannot correct a proposal: the owner asks again (M19, D8). From
+        # every channel, Telegram's reply-to-correct included.
+        return DecisionResult("invalid", detail="a proposal from chat cannot be edited; ask again")
+
     if action == "confirm":
         if dry_run is None:
             return DecisionResult("invalid", detail="the current mode is unknown")
@@ -184,6 +189,14 @@ def decide(
 
     assert inserted is not None
     return DecisionResult("queued", decision_id=int(inserted[0]))
+
+
+def from_chat(conn: psycopg.Connection, message_id: str) -> bool:
+    """Whether the proposal came from a chat turn (M19, D8)."""
+    row = conn.execute(
+        "SELECT source FROM proposals WHERE message_id = %s", (message_id,)
+    ).fetchone()
+    return row is not None and row[0] == "chat"
 
 
 WithdrawStatus = Literal["requested", "settled", "not_found"]

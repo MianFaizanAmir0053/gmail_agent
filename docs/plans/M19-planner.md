@@ -703,3 +703,20 @@ A fresh-context review of the planner, read against D2 to D7 and D10, found ten 
 - **`OWNER_TIMEZONE`** is sent with each request, and Fly refuses any other zone. The web app's `.env.example` and README say so.
 - **The phase's checkpoint:** a test posts a question to the API on Postgres, runs the job on fakes, and reads back the rendered answer.
 - 13 deliberate breaks on the web side, each caught; one was missed at first, and its test was fixed. 173 web tests pass, and typecheck, lint and build are clean. 2719 Python tests pass. The browser check waits for the owner's end tests.
+
+### Task 19.12, the queue by source (2026-10-06)
+
+- **The worker reads the source first** in `_advance`, the give-up and Withdraw. A chat proposal's state is its proposal row, which keeps the proposed event, its ledger row and its outbound action. No checkpoint is read.
+  - **Confirm:** the mode, the binding and the guests are checked as for mail. The registry then runs the stored event, and the ledger is marked created, or skipped in dry run. A write Google refuses fails, with its reason.
+  - **A failed check** returns the proposal at the next generation. It is re-parked from the stored row, conflicts and sources kept, and the card announced carries the new generation.
+  - **Cancel and the sweep** end it with the words the graph's `reject` gives mail.
+  - **Give-up** looks up a write the registry began, and never settles one on a guess. A dry run the registry recorded is settled as skipped. Anything else returns to the owner.
+  - **Withdraw** follows mail's rules. A proposal nothing has touched returns, one being applied is declined, and one from the other mode is expired.
+  - **Pause:** the registry reads it under the action's lock before anything runs. The worker does not read it again for chat.
+- **`decide()` refuses an Edit** of a chat proposal, from every channel. One written past it goes back to the owner unchanged.
+- **The recipient rule by source:** for a chat proposal, the inside guests are the addresses typed in the stored request, read again at each check, and the confirmed contacts. Gmail is not asked. A request that retention has cleared names no one.
+- **Sources:** "named by you" and "a confirmed contact" join `participants.py`, `guests.ts` and Telegram's cards. A contact counts only while it is still allowed.
+- **Cards:** neither Telegram's card nor the web's has Edit for chat. Telegram's line for an outside guest says "Not typed by you, nor a confirmed contact". Chat ids are `chat-<turn>-<step>`, which Telegram's buttons decode.
+- **What reads a thread leaves chat out:** reconciliation's record, bind and close steps, and the feed's recovery of stranded claims.
+- **The pipeline version** of a chat proposal (`planner_version`) hashes the planner's model, instruction and schema, under the prefix `chat-`, for M24.
+- 59 deliberate breaks, 56 caught. Each miss had a stronger guard behind it: the registry's pause check (the worker's copy was removed), the locked re-read of the action before a Withdraw, and `write_park` refusing a second park. 2758 Python and 175 web tests pass, with lint, mypy and typecheck clean. On Neon (Postgres 18), the touched suites pass. One test lost its connection there mid-query and passed when run again.

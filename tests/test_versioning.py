@@ -13,7 +13,8 @@ import pytest
 
 from app.config import Settings
 from app.extraction import prompts
-from app.graph.versioning import action_type, pipeline_version
+from app.graph.versioning import action_type, pipeline_version, planner_version
+from app.planner import prompts as plan_prompts
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -73,6 +74,23 @@ def test_the_version_is_short_and_never_the_legacy_tag() -> None:
     version = pipeline_version(_settings())
     assert len(version) == 12
     assert version != "pre-m16"
+
+
+def test_a_chat_proposal_has_a_version_of_its_own() -> None:
+    """M19, D8: the planner's model, instruction and schema, under a prefix
+    of its own, so M24 can keep the owner's requests apart from mail's."""
+    version = planner_version(_settings())
+    assert version.startswith("chat-") and len(version) == len("chat-") + 12
+    assert version == planner_version(_settings())
+    assert version != "chat-" + pipeline_version(_settings())
+    assert planner_version(_settings(planner_model="another-planner-model")) != version
+    assert planner_version(_settings(extraction_model="another-extraction-model")) == version
+
+
+def test_a_planner_prompt_change_changes_the_chat_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    before = planner_version(_settings())
+    monkeypatch.setattr(plan_prompts, "PLAN_SYSTEM", plan_prompts.PLAN_SYSTEM + "\nOne more.")
+    assert planner_version(_settings()) != before
 
 
 def test_an_event_with_no_guests_is_a_hold() -> None:

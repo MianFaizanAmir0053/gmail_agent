@@ -19,7 +19,7 @@ import psycopg
 from app.google.gmail import MessageGoneError
 from app.policy import audit
 from app.policy.hashing import subject_hash
-from app.policy.participants import SPACE, guest_key, outside, participants
+from app.policy.participants import SPACE, addresses_in, guest_key, outside, participants
 
 __all__ = [
     "MAX_ADDRESS_CHARS",
@@ -28,6 +28,7 @@ __all__ = [
     "every_confirmed",
     "guest_key",
     "remove",
+    "typed_in_request",
     "unconfirmed_outsiders",
 ]
 
@@ -124,11 +125,32 @@ def unconfirmed_outsiders(
     unknown = [guest for guest in guests if guest_key(guest) not in allowed]
     if not unknown:
         return []
+    typed = typed_in_request(conn, message_id)
+    if typed is not None:
+        # A proposal from chat (M19, D8): inside are the addresses the owner
+        # typed in its request, read again now. Gmail is never asked.
+        return [guest for guest in unknown if guest_key(guest) not in typed]
     try:
         thread = gmail.thread_headers(gmail.message_metadata(message_id).thread_id)
     except MessageGoneError:
         thread = {"messages": []}
     return outside(unknown, participants=participants(thread), confirmed=frozenset())
+
+
+def typed_in_request(conn: psycopg.Connection, message_id: str) -> frozenset[str] | None:
+    """For a proposal from chat, the guest keys of the addresses the owner
+    typed in its request (M19, D5); None for mail's. A request retention has
+    cleared names no one, so every guest not allowed is outside."""
+    row = conn.execute(
+        """
+        SELECT t.typed FROM proposals p JOIN chat_turns t ON t.id = p.chat_turn_id
+         WHERE p.message_id = %s AND p.source = 'chat'
+        """,
+        (message_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return frozenset(addresses_in(row[0] or ""))
 
 
 def _checked(address: str) -> str:

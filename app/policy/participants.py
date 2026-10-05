@@ -62,7 +62,11 @@ Named = Literal["email", "quoted", "absent"]
 and the body down to the first quote -- only in a quoted or forwarded
 section, or nowhere."""
 
-Source = Literal["thread", "allowed", "email", "quoted", "absent"]
+Chosen = Literal["typed", "contact"]
+"""Where a guest of a proposal from chat came from (M19, D5 and D8): an
+address the owner typed in the request, or a confirmed contact."""
+
+Source = Literal["thread", "allowed", "email", "quoted", "absent", "typed", "contact"]
 
 SOURCE_WORDS: dict[Source, str] = {
     "thread": "in the thread",
@@ -70,6 +74,8 @@ SOURCE_WORDS: dict[Source, str] = {
     "email": "named in the email",
     "quoted": "named in a quoted or forwarded section",
     "absent": "not found in the email",
+    "typed": "named by you",
+    "contact": "a confirmed contact",
 }
 """What a card says of each source. The web card says the same
 (`dashboard/src/lib/guests.ts`)."""
@@ -202,8 +208,8 @@ def named(guests: Iterable[str], email: EmailMessage) -> tuple[dict[str, Named],
     """
     written, quoted = split_quoted(email.body_text)
     headers = {guest_key(a) for a in (email.sender, *email.recipients) if "@" in a}
-    own = headers | _keys(email.subject, written)
-    older = _keys(quoted)
+    own = headers | addresses_in(email.subject, written)
+    older = addresses_in(quoted)
     sources: dict[str, Named] = {}
     for guest in guests:
         key = guest_key(guest)
@@ -216,6 +222,12 @@ def card_source(guest: str, card: Mapping[str, Any], allowed: frozenset[str]) ->
     guest keys the owner has allowed. None for a payload parked before M18,
     which records no sources."""
     where = (card.get("guest_sources") or {}).get(guest)
+    # A proposal from chat (M19, D8): what the owner typed stays theirs; a
+    # contact is one only while it is still allowed.
+    if where == "typed":
+        return "typed"
+    if where == "contact":
+        return "contact" if guest_key(guest) in allowed else None
     if where not in get_args(Named):
         return None
     key = guest_key(guest)
@@ -228,7 +240,9 @@ def card_source(guest: str, card: Mapping[str, Any], allowed: frozenset[str]) ->
     return cast(Named, where)
 
 
-def _keys(*texts: str) -> set[str]:
+def addresses_in(*texts: str) -> set[str]:
+    """The guest keys of every address in the texts, found with the scrubber's
+    own pattern."""
     return {guest_key(match) for text in texts for match in _ADDRESS.findall(text)}
 
 

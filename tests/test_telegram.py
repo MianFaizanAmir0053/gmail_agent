@@ -215,6 +215,38 @@ def test_a_proposal_with_nothing_to_bind_gets_no_confirm_button() -> None:
     assert [button["text"] for button in keyboard[0]] == ["✏️ Edit", "✖️ Cancel"]
 
 
+# --- proposals from chat (M19, D8) ----------------------------------------------
+
+CHAT_ID = "chat-12345-4"
+
+
+def test_a_chat_proposals_buttons_decode_its_id() -> None:
+    """Chat ids have no colon, so the buttons still split cleanly."""
+    for data in (
+        cards.callback_data("confirm", CHAT_ID, 1, TOKEN),
+        cards.callback_data("cancel", CHAT_ID, 1),
+    ):
+        assert len(data.encode()) <= 64
+        assert cards.parse_callback(data)[3] == CHAT_ID
+
+
+def test_a_chat_card_has_no_edit_button() -> None:
+    keyboard = cards.keyboard(CHAT_ID, 1, TOKEN)
+    assert [button["text"] for button in keyboard[0]] == ["✅ Confirm", "✖️ Cancel"]
+
+
+def test_a_chat_cards_outside_guest_is_not_said_to_be_outside_a_thread() -> None:
+    record = proposal_from(
+        CHAT_ID,
+        PENDING | {"outside_guests": ["sara@example.com"], "guest_sources": {}},
+        1,
+        BINDING,
+    )
+    text = cards.approval_card(record, zone="UTC")
+    assert "Not typed by you, nor a confirmed contact: sara@example.com" in text
+    assert "email thread" not in text
+
+
 def test_callback_data_rejects_an_oversized_id() -> None:
     with pytest.raises(ValueError, match="too long"):
         cards.callback_data("confirm", "x" * 80, 1)

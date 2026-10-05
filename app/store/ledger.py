@@ -72,20 +72,21 @@ class MessageLedger:
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
 
-    def claim(self, gmail_message_id: str, thread_id: str) -> bool:
+    def claim(self, gmail_message_id: str, thread_id: str, *, source: str = "mail") -> bool:
         """Take ownership of a message. True if this caller won.
 
         False means someone already claimed it -- a concurrent run, or a
-        previous run of this one. Either way, skip it.
+        previous run of this one. Either way, skip it. `source` is `chat` for
+        a proposal from a chat turn (M19, D8), whose id is `chat-<turn>-<step>`.
         """
         row = self._conn.execute(
             """
-            INSERT INTO processed_messages (gmail_message_id, thread_id, status)
-            VALUES (%s, %s, %s)
+            INSERT INTO processed_messages (gmail_message_id, thread_id, status, source)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (gmail_message_id) DO NOTHING
             RETURNING gmail_message_id
             """,
-            (gmail_message_id, thread_id, MessageStatus.CLAIMED.value),
+            (gmail_message_id, thread_id, MessageStatus.CLAIMED.value, source),
         ).fetchone()
         return row is not None
 

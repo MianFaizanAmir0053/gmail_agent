@@ -24,7 +24,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.channel.decide import card_token
-from app.channel.park import ProposalRecord
+from app.channel.park import ProposalRecord, is_chat
 from app.policy.participants import SOURCE_WORDS, WARNINGS, card_source, outside
 
 CONFIRM = "confirm"
@@ -121,7 +121,9 @@ def keyboard(message_id: str, revision: int, token: str | None) -> list[list[dic
                 "callback_data": callback_data(CONFIRM, message_id, revision, token),
             }
         )
-    row.append({"text": "✏️ Edit", "callback_data": callback_data(EDIT, message_id, revision)})
+    if not is_chat(message_id):
+        # A proposal from chat cannot be corrected: the owner asks again (M19, D8).
+        row.append({"text": "✏️ Edit", "callback_data": callback_data(EDIT, message_id, revision)})
     row.append({"text": "✖️ Cancel", "callback_data": callback_data(CANCEL, message_id, revision)})
     return [row]
 
@@ -154,9 +156,15 @@ def approval_card(
         card.get("outside_guests") or [], participants=frozenset(), confirmed=allowed
     )
     if outsiders:
-        # Allowed in the web app only (M17, D4).
+        # Allowed in the web app only (M17, D4). A chat proposal has no thread:
+        # its guests are the ones the owner typed, and confirmed contacts (M19, D8).
+        where = (
+            "Not typed by you, nor a confirmed contact"
+            if is_chat(record.message_id)
+            else "Not in this email thread"
+        )
         lines.append(
-            f"🚧 Not in this email thread: {_escape(', '.join(outsiders))}."
+            f"🚧 {where}: {_escape(', '.join(outsiders))}."
             " Allow them in the web app before confirming."
         )
     if card.get("location"):

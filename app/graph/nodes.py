@@ -59,6 +59,9 @@ mail in Primary reaches the classifier, and its reasoning must not reach the
 ledger.
 """
 
+DECLINED = "declined by user"
+"""Ledger reason for a proposal the owner cancelled."""
+
 SWEEP_REASON = "swept: observe mode ended"
 """Ledger reason for proposals cleared in bulk (M15).
 
@@ -272,6 +275,6 @@ def reject(deps: Deps, state: GraphState) -> GraphState:
     report an operator's decision as a person's.
     """
     swept = state.get("swept")
-    reason = (state.get("sweep_reason") or SWEEP_REASON) if swept else "declined by user"
+    reason = (state.get("sweep_reason") or SWEEP_REASON) if swept else DECLINED
     deps.ledger.mark(state["message_id"], MessageStatus.REJECTED, error=reason)
     return {"action": ActionResult(status="rejected", error=reason)}

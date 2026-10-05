@@ -41,7 +41,7 @@ export async function openProposals(): Promise<{ rows: ProposalRow[]; total: num
   const rows = await query<ProposalRow & { total: string }>(
     `
     SELECT p.message_id, p.revision, p.status, p.final_status, p.action_type, p.dry_run,
-           p.args_hash, p.generation, p.payload, p.parked_at,
+           p.args_hash, p.generation, p.payload, p.parked_at, p.source,
            d.id::text AS decision_id, d.action AS decision_action,
            d.withdraw_requested_at IS NOT NULL AS withdraw_requested,
            EXISTS (SELECT 1 FROM audit_log a

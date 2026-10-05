@@ -272,6 +272,25 @@ def test_stranded_claims_are_left_released_or_failed(mail: psycopg.Connection) -
     assert settled is not None and settled.status is MessageStatus.SKIPPED
 
 
+def test_a_chat_claim_is_never_taken_for_stranded_mail(mail: psycopg.Connection) -> None:
+    """A proposal from chat (M19, D8) has no mail to offer again and no
+    thread to ask about. `park_chat` claims and parks it at once."""
+    MessageLedger(mail).claim("chat-7-1", "chat-7", source="chat")
+    mail.execute(
+        "UPDATE processed_messages SET created_at = %s WHERE gmail_message_id = 'chat-7-1'",
+        (BOOT - timedelta(hours=1),),
+    )
+
+    def never_asked(message_id: str) -> bool:
+        raise AssertionError(f"{message_id} was asked about")
+
+    result = _recover(mail, parked=never_asked)
+
+    assert (result.left, result.released, result.failed, result.errors) == (0, 0, 0, 0)
+    entry = MessageLedger(mail).get("chat-7-1")
+    assert entry is not None and entry.status is MessageStatus.CLAIMED
+
+
 def test_a_claim_younger_than_an_hour_is_no_longer_left_claimed_for_ever(
     mail: psycopg.Connection,
 ) -> None:

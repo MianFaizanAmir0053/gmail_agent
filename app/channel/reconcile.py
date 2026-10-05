@@ -131,12 +131,13 @@ def reconcile(
             log.exception("could not bind %s", message_id)
             errors += 1
 
-    for message_id, final_status in _closable(session.conn):
+    for message_id, final_status, source in _closable(session.conn):
         try:
             # A final ledger beside a live interrupt is contradictory. Leave
             # it for a person rather than guess which half is wrong -- but
-            # counted, so the tick is not reported healthy.
-            if session.thread(message_id).parked:
+            # counted, so the tick is not reported healthy. A proposal from
+            # chat has no thread (M19, D8).
+            if source == "mail" and session.thread(message_id).parked:
                 log.warning(
                     "%s is %s yet still parked; left for a person", message_id, final_status
                 )
@@ -180,7 +181,8 @@ def reconcile(
 def _unbound(conn: psycopg.Connection) -> list[tuple[str, int]]:
     """Pending proposals with no hash yet: parked before M17."""
     rows = conn.execute(
-        "SELECT message_id, revision FROM proposals WHERE status = 'pending' AND args_hash IS NULL"
+        "SELECT message_id, revision FROM proposals"
+        " WHERE status = 'pending' AND args_hash IS NULL AND source = 'mail'"
     ).fetchall()
     return [(row[0], row[1]) for row in rows]
 
@@ -211,6 +213,7 @@ def _unrecorded(conn: psycopg.Connection) -> list[str]:
           FROM processed_messages m
           LEFT JOIN proposals p ON p.message_id = m.gmail_message_id
          WHERE p.message_id IS NULL
+           AND m.source = 'mail'
            AND (   (m.status = %s AND m.updated_at < now() - %s)
                 OR  m.status = %s
                 OR (m.status = %s AND m.updated_at >= now() - %s))
@@ -227,10 +230,10 @@ def _unrecorded(conn: psycopg.Connection) -> list[str]:
     return [row[0] for row in rows]
 
 
-def _closable(conn: psycopg.Connection) -> list[tuple[str, str]]:
+def _closable(conn: psycopg.Connection) -> list[tuple[str, str, str]]:
     rows = conn.execute(
         """
-        SELECT p.message_id, m.status
+        SELECT p.message_id, m.status, p.source
           FROM proposals p
           JOIN processed_messages m ON m.gmail_message_id = p.message_id
          WHERE p.status IN ('pending', 'failed')
@@ -242,7 +245,7 @@ def _closable(conn: psycopg.Connection) -> list[tuple[str, str]]:
             MessageStatus.REJECTED.value,
         ),
     ).fetchall()
-    return [(row[0], row[1]) for row in rows]
+    return [(row[0], row[1], row[2]) for row in rows]
 
 
 def _close(conn: psycopg.Connection, message_id: str, final_status: str) -> bool:

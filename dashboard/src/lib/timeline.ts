@@ -59,6 +59,8 @@ export type ProposalRow = {
   /** Null once retention has cleared it. */
   payload: CardPayload | null;
   parked_at: string | Date;
+  /** `chat` for a proposal from a chat turn (M19, D8); absent means mail's. */
+  source?: string | null;
   /** The open decision, while one is queued: what Withdraw names (M17, D6). */
   decision_id?: string | null;
   decision_action?: string | null;
@@ -162,7 +164,8 @@ export function cardView(
     invite: row.action_type === "calendar_invite",
     applying,
     canDecide: pending,
-    canEdit: pending && row.revision <= LAST_EDITABLE_REVISION,
+    // A proposal from chat cannot be corrected: the owner asks again (M19, D8).
+    canEdit: pending && row.source !== "chat" && row.revision <= LAST_EDITABLE_REVISION,
     canConfirm: pending && token !== null,
     token,
     live: !row.dry_run,

@@ -21,6 +21,7 @@ import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
+from app.contracts import ExtractionResult
 from app.graph.runner import GraphSession
 from app.graph.versioning import LEGACY_PIPELINE_VERSION, ActionType, action_type
 from app.policy.hashing import Binding, bound
@@ -223,3 +224,79 @@ def _upsert_proposal(conn: psycopg.Connection, record: ProposalRecord) -> int:
     if row is None:
         raise ParkConflictError(f"{record.message_id} already has a proposal that is not deciding")
     return int(row[0])
+
+
+# --- proposals from chat (M19, D8) -------------------------------------------------
+
+CHAT_PREFIX = "chat-"
+
+
+def is_chat(message_id: str) -> bool:
+    """Whether an id names a proposal from chat. Gmail's ids are hex, so
+    none starts with the prefix."""
+    return message_id.startswith(CHAT_PREFIX)
+
+
+def chat_message_id(turn_id: int, step: int) -> str:
+    """A chat proposal's id: no colon, since Telegram's buttons split on each."""
+    return f"{CHAT_PREFIX}{turn_id}-{step}"
+
+
+def park_chat(
+    conn: psycopg.Connection,
+    *,
+    turn_id: int,
+    step: int,
+    proposed: ExtractionResult,
+    guest_sources: dict[str, str],
+    conflicts: list[str],
+    pipeline_version: str,
+    binding: Binding,
+    dry_run: bool,
+) -> ProposalRecord:
+    """Claim a chat proposal's ledger row and park it, in the caller's
+    transaction (D8). There is no graph: the proposal row keeps the proposed
+    event itself, which the worker re-parks from and the registry runs."""
+    require_transaction(conn)
+    message_id = chat_message_id(turn_id, step)
+    if not MessageLedger(conn).claim(message_id, f"{CHAT_PREFIX}{turn_id}", source="chat"):
+        raise ParkConflictError(f"{message_id} was parked before")
+    pending: dict[str, Any] = {
+        "proposed": proposed.model_dump(mode="json"),
+        "action_type": action_type(proposed.attendees),
+        "pipeline_version": pipeline_version,
+        "dry_run": dry_run,
+        "conflicts": conflicts,
+        "guest_sources": guest_sources,
+    }
+    record = chat_record(message_id, pending, revision=1, binding=binding)
+    generation = write_park(conn, record, ledger_status=MessageStatus.CLAIMED)
+    conn.execute(
+        "UPDATE proposals SET source = 'chat', chat_turn_id = %s WHERE message_id = %s",
+        (turn_id, message_id),
+    )
+    return replace(record, generation=generation)
+
+
+def chat_record(
+    message_id: str, pending: dict[str, Any], *, revision: int, binding: Binding | None
+) -> ProposalRecord:
+    """The row for a chat proposal: mail's, with the proposed event kept in it."""
+    record = proposal_from(message_id, pending, revision, binding)
+    return replace(record, payload={**record.payload, "proposed": pending.get("proposed") or {}})
+
+
+def chat_pending(
+    payload: dict[str, Any], *, action_type: str, pipeline_version: str, dry_run: bool
+) -> dict[str, Any]:
+    """What `chat_record` needs, read back from a stored chat proposal, for a
+    re-park: the stored row is all the state a chat proposal has."""
+    return {
+        "proposed": payload.get("proposed") or {},
+        "action_type": action_type,
+        "pipeline_version": pipeline_version,
+        "dry_run": dry_run,
+        "conflicts": list(payload.get("conflicts") or []),
+        "guest_sources": dict(payload.get("guest_sources") or {}),
+        "outside_guests": list(payload.get("outside_guests") or []),
+    }

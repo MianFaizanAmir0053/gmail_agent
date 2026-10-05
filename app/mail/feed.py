@@ -223,6 +223,7 @@ def recover_stranded(
                           AND m.internal_at >= %(fresh)s)
           FROM processed_messages p
          WHERE p.status = %(claimed)s AND p.created_at < %(claimed_before)s
+           AND p.source = 'mail'
          ORDER BY p.created_at
         """,
         {
