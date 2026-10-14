@@ -6,7 +6,7 @@ argument for running both:
 - **Vector search** matches meaning. It finds "can we push the review?" from a
   query about rescheduling, and it is hopeless at exact strings -- a ticket ID
   or an unusual surname embeds to roughly nothing.
-- **Keyword search** matches terms. It finds `ORD-20260814-4WJWF` and `Ahmed`
+- **Keyword search** matches terms. It finds `ORDER-20260101-ABCD` and `Ahmed`
   precisely, and returns nothing at all when the query and the document happen
   to use different words for the same thing.
 
@@ -146,8 +146,8 @@ def or_terms(query: str) -> str:
     """Rewrite free text as an OR query for `websearch_to_tsquery`.
 
     **`plainto_tsquery` ANDs its terms**, which is the single most damaging
-    default in this file. "who is Alice from Zetafonts and what does she want"
-    becomes `alic & zetafont & want`, so a chunk has to contain all three or it
+    default in this file. "who is Dana from Initech and what does she want"
+    becomes `dana & initech & want`, so a chunk has to contain all three or it
     does not match *at all* -- and the keyword half silently degrades to working
     only on bare identifiers. Measured at 34% hit@5 before this, 66% after.
 

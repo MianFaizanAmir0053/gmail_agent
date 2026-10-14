@@ -65,7 +65,7 @@ def test_weighting_tilts_towards_the_list_it_favours() -> None:
 
 def test_keyword_terms_are_ored_not_anded() -> None:
     """plainto_tsquery ANDs, which made the keyword half work only on identifiers."""
-    assert or_terms("who is Alice from Zetafonts") == "who or is or Alice or from or Zetafonts"
+    assert or_terms("who is Dana from Initech") == "who or is or Dana or from or Initech"
 
 
 def test_a_query_with_no_word_characters_returns_nothing() -> None:

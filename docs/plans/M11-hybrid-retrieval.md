@@ -129,11 +129,11 @@ a person only by first name:
 
 ```
 --- without search_context ---
-  attendees   ['aarthi@elliottmoss.com']
+  attendees   ['attendee1@example.com']
   searches    0
 
 --- with search_context ---
-  attendees   ['aarthi@elliottmoss.com', 'molly.bhills@docorto.ai']
+  attendees   ['attendee1@example.com', 'attendee2@example.com']
   searches    1
 ```
 

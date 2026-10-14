@@ -29,7 +29,7 @@ from app.telegram.notify import send_approval_card
 
 CHAT = 4242
 OTHER_CHAT = 9999
-MESSAGE_ID = "1a00a9d35c937b2f"
+MESSAGE_ID = "1000000000000001"
 
 START = datetime(2026, 8, 19, 11, 0, tzinfo=UTC)
 

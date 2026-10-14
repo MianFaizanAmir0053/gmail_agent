@@ -1,6 +1,6 @@
 [
   {
-    "query": "ORD-20260814-4WJWF",
+    "query": "ORDER-20260101-ABCD",
     "relevant": ["18f3a1b2c4d5e6f7"],
     "kind": "exact",
     "note": "A bare identifier. Embeddings have nothing to work with; BM25 should win outright."

@@ -56,7 +56,7 @@ search had missed, so fusion had nothing to add and could only displace correct
 results with wrong ones.
 
 **BM25 lost the one category it was supposed to win.** Nine queries used bare
-order references and PR numbers — `ORD-20260814-4WJWF`, `pull request 183` —
+order references and PR numbers — `ORDER-20260101-ABCD`, `pull request 183` —
 against a corpus containing dozens of near-identical emails differing only in
 that code. Keyword search scored 100% on them. So did vector search, at rank 1,
 with a similarity of 0.68. The received wisdom that embeddings cannot handle
@@ -100,7 +100,7 @@ behaves differently, which is a hypothesis, not a result.
 
 **One bug found here changes how the earlier numbers should be read.** The first
 run scored keyword search at 34% hit@5. That was not BM25 being weak; it was
-`plainto_tsquery` ANDing every term, so `who is Alice from Zetafonts` required
+`plainto_tsquery` ANDing every term, so `who is Dana from Initech` required
 one chunk to contain all three stems or it matched nothing at all. Rewriting the
 query as an OR through `websearch_to_tsquery` took it from 34% to 83%. Every
 keyword number above is post-fix.

@@ -103,9 +103,9 @@ pytest                          355 tests, 0 skipped
 Live run against the real inbox and Gemini, three messages, all correctly classified as non-meetings and skipped:
 
 ```
-1a00a9d35c937b2f  skipped
-1a00a6a626e03fe3  skipped
-1a00a616d1ad290e  skipped
+1000000000000001  skipped
+1000000000000002  skipped
+1000000000000003  skipped
 ```
 
 **Not yet exercised live: the approval path.** The inbox contains no meeting email, so nothing has parked at `await_approval` outside the test suite. `python -m app.jobs.approve --list` exists as a separate-process front-end for exactly that, and M06 replaces it with Telegram. Send yourself a meeting invite to see it end to end.

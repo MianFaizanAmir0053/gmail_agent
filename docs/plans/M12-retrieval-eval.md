@@ -66,7 +66,7 @@ full table and reasoning are in [`results/retrieval-comparison.md`](../../result
 | RRF 2:1 | 97% | 0.900 |
 
 **The keyword half lost the category it was built for.** Nine of the 29 queries
-were bare identifiers — `ORD-20260814-4WJWF`, `pull request 183` — chosen
+were bare identifiers — `ORDER-20260101-ABCD`, `pull request 183` — chosen
 specifically so BM25 would win. It scored 100% on them. So did vector search, at
 rank 1, against dozens of near-identical emails differing only in that code.
 `gemini-embedding-001` encodes rare tokens far better than the usual "embeddings
@@ -81,8 +81,8 @@ different queries, and when one of them never fails, the bet has no upside.
 
 The first run scored keyword search at 34%. That looked like a plausible story
 about BM25 being weak on natural language, and it was wrong.
-`plainto_tsquery` **ANDs** its terms — `who is Alice from Zetafonts` becomes
-`alic & zetafont & want`, so a chunk had to contain all three stems or it did not
+`plainto_tsquery` **ANDs** its terms — `who is Dana from Initech` becomes
+`dana & initech & want`, so a chunk had to contain all three stems or it did not
 match at all. The keyword half had silently been working only on bare
 identifiers, in production as well as in the eval. Rewriting the query as an OR
 through `websearch_to_tsquery` moved it from 34% to 83%.
