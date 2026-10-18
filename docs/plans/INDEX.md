@@ -48,7 +48,7 @@ All modules speak `app/contracts.py`. Get it right early — see [M00](M00-skele
 
 Plan, decisions and capability map: `../../ASSISTANT-PLAN.md`. Evidence: `../research/assistant-landscape-2026-09.md`. The active task list lives in `../../tasks/todo.md`.
 
-Each module is specified and approved just before it is built. M15 to M20 have specs so far. The owner moved every end-to-end test to the end (2026-10-01), so modules are built ahead of the deploys that would otherwise prove them.
+Each module is specified and approved just before it is built. M15 to M21 have specs so far. The owner moved every end-to-end test to the end (2026-10-01), so modules are built ahead of the deploys that would otherwise prove them.
 
 ```
 M15 ─┬─► M16 ─────────────────┬─► M19 ─┬─► M22 ─┬─► M23
@@ -66,7 +66,7 @@ M15 ─┬─► M16 ─────────────────┬─�
 | [M18](M18-untrusted-input.md) | Untrusted input | 4d | ◐ built through 18.15 and reviewed; the model runs wait for a development key, the exit criteria for the owner |
 | [M19](M19-planner.md) | Planner | 8d | ◐ built through 19.17 but 19.16, whose model run waits for a development key; reviewed twice, then two doubt reviews of the fixes; decision 5 amended by the owner on 2026-10-18 (only confirmed contacts are inside) |
 | [M20](M20-mail-sync.md) | Mail sync | 4d | ◐ built and reviewed; the exit criterion waits for the owner's end tests |
-| M21 | Loose ends | 7d | ☐ not specified |
+| [M21](M21-loose-ends.md) | Loose ends | 7d | ◐ specified 2026-10-18 after two review rounds; awaiting the owner's approval; the build waits for M15's measurement to say go |
 | M22 | Connector gateway | 4d | ☐ not specified |
 | M23 | Connectors, wave 1 | 5d | ☐ not specified |
 | M24 | Earned autonomy | 3d | ☐ not specified |
