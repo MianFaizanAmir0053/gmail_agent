@@ -79,7 +79,7 @@ never extracted titles.
 
 ### A3. Liveness
 
-- **`job_runs` table** (migration `005_job_runs.sql`). One row per scheduled tick, with job, start, finish, success, counts and error. A poll tick succeeds only if it raised nothing **and** marked no message `FAILED`.
+- **`job_runs` table** (migration `005_job_runs.sql`). One row per scheduled tick, with job, start, finish, success, counts and error. A poll tick succeeds only if it raised nothing **and** marked no message `FAILED`. Since 2026-10-18, a pass held by an outage fails too (M20's running notes).
 - **`/health` reads in-memory state.** It uses the last tick's result and time, and the token state. It makes no database round-trip per request: every tick already connects to the database, so tick success is the database check.
   - It returns **503** when no poll has succeeded within three intervals (with a one-interval grace after boot), or when every Google token is expired.
   - It never echoes exception text.
@@ -291,7 +291,7 @@ fly ssh console -C "sh -c 'cd /app && python -m app.jobs.measure cost --since <U
 
 - **Deploy.** The image builds with `--locked`. A shutdown during a tick leaves no `claimed` row that boot does not recover.
 - **Liveness.**
-  - A tick that marks any message `FAILED` records `ok = false`.
+  - A tick that marks any message `FAILED` records `ok = false`, and since 2026-10-18 so does one an outage held.
   - `/health` returns 503 after three intervals without success, but not within the boot grace, and never makes a database call.
   - The gap query catches gaps at the start, middle and end of a window.
 - **Retries.** A call that succeeds after two 429s writes `retry_count = 2`.
@@ -461,7 +461,7 @@ unattended window and the owner's labelling remain.
   - 3 became cards, which the owner confirmed from the phone, each ending as a dry run;
   - 1 failed: Gemini answered `503 UNAVAILABLE` ("high demand") on all four attempts.
 - The third poll, at 19:09, ran clean, and `/health` reports it.
-- A FAILED message is never tried again: the feed offers only mail with no ledger row. M20 left that open for M21, and M21's spec does not take it up.
-- The hourly recall at 18:49 reported "Mail sync missed messages". It ran two minutes before the sync caught up.
+- A FAILED message was never tried again: the feed offers only mail with no ledger row. M20 had left that open for M21, whose spec did not take it up. It was closed for outages the same day: M20's running notes.
+- The day's recall ran at 18:49, ten minutes after the start, since that day's check had not run, and reported "Mail sync missed messages": the sync caught up two minutes later. A false alarm, and its push. The next check comes after 05:15 UTC.
 
 **For the window.** Day 0 is still not recorded, so none of the eight days has run. Mail from the gap that is over seven days old is recorded `SKIPPED` ("too old when reached"), with no model call. The day-4 standby token was never made, so `/health` reports it `unreadable`.
