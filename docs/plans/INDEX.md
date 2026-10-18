@@ -66,7 +66,7 @@ M15 ─┬─► M16 ─────────────────┬─�
 | [M18](M18-untrusted-input.md) | Untrusted input | 4d | ◐ built through 18.15 and reviewed; the model runs wait for a development key, the exit criteria for the owner |
 | [M19](M19-planner.md) | Planner | 8d | ◐ built through 19.17 but 19.16, whose model run waits for a development key; reviewed twice, then two doubt reviews of the fixes; decision 5 amended by the owner on 2026-10-18 (only confirmed contacts are inside) |
 | [M20](M20-mail-sync.md) | Mail sync | 4d | ◐ built and reviewed; the exit criterion waits for the owner's end tests |
-| [M21](M21-loose-ends.md) | Loose ends | 7d | ◐ specified 2026-10-18 after two review rounds; awaiting the owner's approval; the build waits for M15's measurement to say go |
+| [M21](M21-loose-ends.md) | Loose ends | 7d | ◐ approved 2026-10-18 after two review rounds; tasks 21.1–21.28; the build waits for M15's measurement to say go, and its model runs for a paid-tier key |
 | M22 | Connector gateway | 4d | ☐ not specified |
 | M23 | Connectors, wave 1 | 5d | ☐ not specified |
 | M24 | Earned autonomy | 3d | ☐ not specified |

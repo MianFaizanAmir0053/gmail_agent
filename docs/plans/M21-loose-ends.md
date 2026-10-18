@@ -7,11 +7,13 @@ Plan and decisions: [`ASSISTANT-PLAN.md`](../../ASSISTANT-PLAN.md), sections
 "Security model". Evidence: [`../research/assistant-landscape-2026-09.md`](../research/assistant-landscape-2026-09.md),
 "Unmet needs" (closure, not briefs) and "Proactivity".
 
-**Status: drafted on 2026-10-18 from five rounds of the owner's decisions.
-Two fresh-context reviews' findings are folded in, with the owner's
-decisions 24 to 26 (see Review). It awaits the owner's approval.**
+**Status: approved by the owner on 2026-10-18, after five rounds of decisions
+and two fresh-context reviews whose findings are folded in, with the owner's
+decisions 24 to 26 (see Review). The tasks are 21.1–21.28 in
+[`tasks/todo.md`](../../tasks/todo.md); a review of them settled the
+clarifications in the running notes.**
 - **The build begins only after M15's mail measurement says go** (M15, B4: at least 5 loose ends a week, counted cautiously). A no-go re-plans M21.
-- **Its model runs need a paid-tier Gemini key,** as M18's and M19's do. The plan never sends real mail through a free-tier key. M21 also changes files in M18's and M19's hashed sets (Deliverables), so those committed runs, which wait for the same key, are made after it.
+- **Its model runs need a paid-tier Gemini key,** as M18's and M19's do. The plan never sends real mail through a free-tier key. M21 also changes files in M18's and M19's hashed sets (Deliverables). Those committed runs need the same key; one made before M21's changes is made again after them, and its CI gate fails until it is.
 
 ## Goal
 
@@ -180,7 +182,7 @@ Migration `014_loose_ends.sql`:
 **When anything is read.** No ask is read, and nothing is closed or sent, unless the mailbox is current:
 - the sync reached the end of history within 30 minutes;
 - no gap is being worked off (`gap_from` is null);
-- no fetch is queued (`gmail_fetch_queue`, which has no thread to narrow it to);
+- no fetch is queued: no row of `gmail_fetch_queue` with status `queued`, which has no thread to narrow it to. An `unreadable` fetch does not block; M20 reports it;
 - until the first run ends, the backfill has reached 14 days before `started_at` (`backfill_until`).
 
 A reply the owner sent from the phone during an outage is stored before any ask it answered is read.
@@ -190,7 +192,7 @@ A reply the owner sent from the phone during an outage is stored before any ask 
 - not to self, not gone, not in spam or trash;
 - no List-Unsubscribe; Precedence not `bulk`, `list` or `junk`; Auto-Submitted absent or `no`;
 - not from a no-reply or calendar sender, nor from a muted sender (the muted senders are M15's excluded senders here);
-- addressed to the owner: To or Cc holds the profile address or an `OWNER_ALIASES` entry, normalised as M15's `normalise_address` does.
+- addressed to the owner: To or Cc holds the profile address or an `OWNER_ALIASES` entry, normalised as M15's `normalise_address` does. Every other comparison of addresses in M21 (the asker, a Reply-To, recipients, mutes) uses `guest_key`.
 
 And it must also be:
 - **unanswered:** no SENT message of the owner's later in the thread holds its sender, or its Reply-To, in To or Cc;
@@ -235,7 +237,7 @@ Every run, in code. Every change is conditional on the item's state as read, so 
   - a later message in the thread whose invite's guests include the asker, read from the proposal's payload before the purge clears it.
   
   A hold, a dry run, a Cancel, a Withdraw, an expiry, and an invite without the asker close nothing.
-- **The ask gone** closes it, `gone`: its row moved to spam or trash, or was deleted. It is shown among the closes ("the email was deleted"), and does not count against accuracy.
+- **The ask gone** closes it, `gone`: its row carries the SPAM or TRASH label, or `gone_at` is set. A row missing because M20's purge deleted it is never `gone` (D10). It is shown among the closes ("the email was deleted"), and does not count against accuracy.
 - **The owner's Done, Dismiss or Mute** close it (D8).
 - **Asked again** (decision 23): a later ask read as such (D2) reopens the item as `asked_again`. One update:
   - moves `message_id`, `counterpart`, `reply_to`, `sender_verified`, `ask_at`, `quote` and `opened_at` to the new ask;
@@ -266,14 +268,15 @@ The Subject and the headers are never read. The credential check runs on what is
 
 **Due days are checked in code.** A day between the day sent and a year later is used. Anything else, or none, becomes 7 days after the day sent.
 
-**Each promise is an item:** `open`, with its sentence as the quote (cut to 200 characters), the email's first To recipient as the counterpart, the email's time as `ask_at`, and its order as `position`.
+**Each promise is an item:** `open`, with its sentence as the quote (cut to 200 characters, and scrubbed), the first To or Cc recipient that is not the owner's as the counterpart (or none), the email's time as `ask_at`, and its order as `position`.
 
 ### D5. Promises: closed
 
 **The check.** When the owner sends again in the thread (SENT, after the promise's email, and after any Reopen), the job asks once about that message, for all the promises still open in the thread together: "For each promise below, does the message deliver it?"
 - Each promise and the message's own part (read as D4 reads) go in the user turn, each between fresh markers of its own, as M18's `proposal_block` does for an Edit.
 - The instruction carries no text from mail.
-- The answer is typed: yes or no for each promise, by its number.
+- The answer is typed: yes or no for each promise, by its number. A number that was not asked about is ignored.
+- Only promises made in earlier messages are asked about. A credential message is not checked.
 
 **The close:**
 - **Yes** closes that promise, `delivered`, with the message's id and time. The next digest shows "closed: «the promise» (your message on <date>)", with a Reopen.
@@ -283,8 +286,10 @@ The Subject and the headers are never read. The credential check runs on what is
 
 ### D6. The jobs
 
+**Both jobs run only with `LOOSE_ENDS_ENABLED`** (default off, as `INGEST_ENABLED` is): a deploy before the build is done reads no mail, and `started_at` is set by the first run with it on.
+
 **`loose_ends`, every 15 minutes**, one run at a time under an advisory lock, a command-line run included. Each run:
-1. **Waits for a current mailbox** (D2): nothing is closed or read otherwise.
+1. **Waits for a current mailbox** (D2): nothing is closed or read otherwise. The run records in `job_runs` whether it began on one.
 2. **Closes what closed, in code** (D3, and D5's code part), and ends snoozes whose day has come, recording `unsnoozed`.
 3. **Reads, within the caps,** at most 10 reads a run, in this order:
    1. asks from people the owner has written to before (an outbound message to them in M20's records);
@@ -299,13 +304,13 @@ The Subject and the headers are never read. The credential check runs on what is
 **The first run** reads the 14-day backlog with a one-off budget of $1.50, in place of the daily cap (decision 25):
 - **Order:** threads newest first, each thread's candidates in order.
 - **Limit:** at most 200 reads. Candidates beyond them are recorded `skipped` and never read.
-- **Its end:** when the backlog is read or skipped, or the $1.50 is spent. It may span days, and the budget does not reset at midnight. After it, the daily cap applies.
+- **Its end:** when the $1.50 is spent, or no backlog candidate is left that it can read. Candidates waiting behind an open item, or held by the day's per-sender limit, do not count. It may span days, and the budget does not reset at midnight. After it, the daily cap applies.
 
-**The "behind" alert** is its own alert code, `loose_ends_behind`, sent once a day with the fixed text "Loose ends are behind on reading mail". It fires when a candidate has waited more than a day for its read, counted from the later of when it became a candidate and the first run's end. It has its own tag and Telegram words, so it never replaces another alert, such as the sign-in one.
+**The "behind" alert** is its own alert code, `loose_ends_behind`, sent once a day with the fixed text "Loose ends are behind on reading mail". It fires when a candidate has waited more than a day for its read, counted from the later of when it qualified (an ask 48 hours after it arrived, a sent email when it was sent) and the first run's end. It is judged on every run, even when the gate stops reads, and sent at most once a day (`alerts_sent`). It has its own tag and Telegram words, so it never replaces another alert, such as the sign-in one.
 
 **`loose_ends_digest`, every 15 minutes:**
 - **The day is judged once,** at the first run at or after 9:00 on a working day, in `USER_TIMEZONE`, before the end of `WORKING_HOURS`, and after a `loose_ends` run that began on a current mailbox. A row is written whatever the outcome, so the day is never judged twice.
-- **New since the last digest** (decision 26):
+- **New since the last digest that went out** (decision 26), read from the events by their sequence ids, so that nothing committed while a digest is made is lost:
   - an item opened or asked again;
   - a promise falling due today, or turning overdue since;
   - a snooze that ended;
@@ -313,7 +318,7 @@ The Subject and the headers are never read. The credential check runs on what is
   
   The owner's own taps (Done, Dismiss, Mute, Snooze, Reopen) are never new.
 - **Nothing new:** the row says `nothing_new`, and no push goes out.
-- **Something new:** the row is written with its ids first, then the push goes out, its own alert code (`loose_ends_digest`), tag and Telegram words. A push that fails marks the row `push_failed`, and is not retried that day.
+- **Something new:** the row is written with its ids first, then the push goes out, its own alert code (`loose_ends_digest`), tag and Telegram words. The row is `sent` when at least one channel delivered it. When none did, it is `push_failed`: the push is not retried that day, and its news carries over to the next digest.
 - **The service worker** maps each tag to a page (`loose-ends` and `loose-ends-behind` both open `/loose-ends`). It never takes a URL from a push.
 
 ### D7. The digest
@@ -337,7 +342,7 @@ Composed by code from the records, never by a model, and stored by item id on it
 - **Done** and **Dismiss** close the item. A Dismiss is for this ask: a later ask in the thread reopens it, unless its sender is muted.
 - **Snooze:** tomorrow, next week (the next week's first working day), or a date.
 - **Mute sender,** on a "they asked". It closes that sender's open replies owed, `muted`, counts as a dismissal for accuracy, and leaves their mail out from then on. **Unmute** stops leaving them out. What it closed stays closed, with a Reopen while its quote is kept.
-- **Reopen,** on a closed item, while its quote is kept (7 days).
+- **Reopen,** on a closed item, while its quote is kept (7 days). The page lists what closed in the last 7 days, each with a Reopen.
 
 **Every action:**
 - is owner-only: the server action checks the owner, then calls Fly's API with `WEB_API_SECRET`;
@@ -347,7 +352,7 @@ Composed by code from the records, never by a model, and stored by item id on it
 **Accuracy** (decision 21), for each kind:
 - the last published test-set score (`loose_end_scores`), with its models;
 - **the dismiss rate:** items dismissed or muted, over items opened, in the last 30 days;
-- **the reopen rate:** Reopens, over automatic closes, in the last 30 days.
+- **the reopen rate:** Reopens of automatic closes, over the automatic closes, in the last 30 days. `gone` is left out of both, and a Reopen of the owner's own close never counts.
 
 Under 10 in a denominator, only the counts show.
 
@@ -363,7 +368,8 @@ Under 10 in a denominator, only the counts show.
 - **`LOOSE_ENDS_DAILY_CAP_USD`,** default `0.25`, summed over `loose-` ids in the owner's day. Reaching it stops reads until the next day; the code rules go on.
 - **`LOOSE_ENDS_FIRST_RUN_USD`,** default `1.50`: the first run's budget, in place of the daily cap.
 - **The estimate:** after the first run, about $0.10 to $0.17 a day at a few dozen reads. D11 measures it on the owner's mail.
-- **An unpriced model** is never called.
+- **An unpriced model** is never called. `LOOSE_ENDS_CHECK_MODEL` counts among the models in use (`models.in_use()`), so an unpriced one stops new work, as any model does.
+- **The eval** meters its calls under a prefix of its own, never `loose-`, so it never spends production's daily cap.
 
 ### D10. Retention
 
@@ -380,13 +386,13 @@ Under 10 in a denominator, only the counts show.
 2. The owner labels.
 3. Then the reads are built and scored against the labels.
 
-**The labeller,** `.\tasks.ps1 loose-ends label`, runs in the owner's terminal only (`require_terminal`), and only on a current mailbox. It paces its own Gmail reads, at most 30 a minute, since it shares the per-user quota with the sync. It shows each message's own part, as D2 and D4 read it, and asks:
+**The labeller,** `.\tasks.ps1 loose-ends label`, runs in the owner's terminal only (`require_terminal`), and only on a current mailbox. It paces its own Gmail reads, at most 30 a minute, since it shares the per-user quota with the sync. Its window is the last 90 days, which M20's backfill holds, using D2's and D4's rules with that window instead of `started_at`'s 14 days. It can be stopped, resumed and extended, and never labels a message twice. It shows each message's own part, as D2 and D4 read it, and asks:
 - **Replies owed:**
   - for 40 candidates drawn by D2's rule (seeded): "Did it ask you for something? Was it still unanswered 48 hours later?";
-  - for 20 threads where D3's rule closes an ask on the owner's reply, found in code with no model: "Did that message answer them?".
-- **Promises:** for sent emails sampled (seeded) until 30 promises turn up: "Does it promise something? How many? When is each due? Was each kept later in this thread?".
+  - for 20 threads where D3's rule closes an ask the owner answered more than 48 hours after it came, found in code with no model: "Did that message answer them?".
+- **Promises:** for sent emails sampled (seeded) until 30 promises turn up, 15 of them kept later in their thread, or the window ends: "Does it promise something? How many? When is each due? Was each kept later in this thread?".
 
-**What is kept** goes to the gitignored `data/loose_ends/labels.jsonl`:
+**What is kept** goes to `data/loose_ends/labels.jsonl`, which is gitignored and dockerignored:
 - message ids, and each labelled thread's messages up to the labelled point, so that the eval sees the thread as the owner labelled it;
 - the owner's answers.
 
@@ -409,7 +415,11 @@ It never holds email text. It is deleted when the test set is retired (DEPLOY §
 
 **The bar** (decision 24) is a point estimate of at least 90%, for each kind on open items and on closes. It is judged only with at least 30 open items and 15 closes per kind; fewer is "not enough evidence", and the owner labels more. Wilson 95% intervals are reported.
 
-**What it writes:** `results/loose-ends-<timestamp>.json`, with counts only, the models and the shaping hash. It is committed. `.\tasks.ps1 publish` copies it into `loose_end_scores`, so the page shows it. The timestamp makes a same-day re-run a new file, which is then published too.
+**Never tuned on what it reports.** After any change to the instructions or the extraction made after a score, the bar is judged on newly labelled mail (a fresh seed), at the same minimum counts.
+
+**`--check-labels`** reports the labels' counts, with no key and no current mailbox needed.
+
+**What it writes:** `results/loose-ends-<timestamp>.json`, marked as a run on labels or on fixtures, with counts only, the models and the shaping hash. It is committed. `.\tasks.ps1 publish` copies runs on the owner's labels, never fixture runs, into `loose_end_scores`, so the page shows them. The timestamp makes a same-day re-run a new file, which is then published too.
 
 **Invented fixtures, in CI** (`data/loose_ends/fixtures/`), metadata and bodies:
 - **The rule:**
@@ -483,7 +493,8 @@ They run with the compliant fake reader, so a check that passes only because a m
   - `app/policy/models.py`: the daily cap and the first run's budget;
   - `app/channel/channels.py` and `app/channel/webpush.py`: the alert codes `loose_ends_digest` and `loose_ends_behind`, with their own tags and Telegram words;
   - `app/eval/publish.py`: M21's results;
-  - `app/config.py`: `LOOSE_ENDS_CHECK_MODEL`, `LOOSE_ENDS_DAILY_CAP_USD`, `LOOSE_ENDS_FIRST_RUN_USD` and `GEMINI_PAID_TIER`;
+  - `app/config.py`: `LOOSE_ENDS_ENABLED`, `LOOSE_ENDS_CHECK_MODEL`, `LOOSE_ENDS_DAILY_CAP_USD`, `LOOSE_ENDS_FIRST_RUN_USD` and `GEMINI_PAID_TIER`, all five in `.env.example`;
+  - `.gitignore` and `.dockerignore`, for the labels; `data/injection/README.md`, for M21's cases;
   - the purge, for quotes, counterparts and `reply_to`;
   - `tests/test_no_tools.py`, to cover `app/loose_ends/`.
 
@@ -626,7 +637,7 @@ A second fresh-context review read the revision, adding a pre-mortem: two weeks 
   - the no-tools test now covers M21;
   - the smaller gaps are settled in D1 to D8.
 
-No third review has been run: the second review's findings were narrower than the first's, and the build's own phase reviews cover the implementation. The owner may still ask for one before approving. A second opinion from another model was offered; none has been run.
+No third review was run: the second review's findings were narrower than the first's, and the build's own phase reviews cover the implementation. A second opinion from another model was offered; none was run. The owner approved the spec on 2026-10-18 as it stood.
 
 ## Running notes
 
@@ -635,3 +646,21 @@ No third review has been run: the second review's findings were narrower than th
 Drafted from four rounds of the owner's decisions, all as recommended, then revised after each review: a fifth round (decisions 24 and 25), and one question (26). Two findings while mapping the code shaped the first draft:
 - **M15's labelling keeps counts only.** The first draft added `--keep` to it. The first review showed that would arrive after M15's decision run, and break that module's rule of keeping ids to itself. Decision 24 gives M21 its own labelling instead.
 - **Pushes carry fixed text,** so the digest's push only says it is ready, and the digest is the top of the page.
+
+### Tasks review (2026-10-18)
+
+A fresh-context review of the first breakdown, read against this spec and the repository, found 25 problems. The breakdown was rewritten as 21.1–21.28, and these clarifications came into the spec. None changes an owner's decision.
+- **An off switch,** `LOOSE_ENDS_ENABLED`, default off: a deploy midway through the build would otherwise have read real mail with no M21 cap, and fixed `started_at` for good (D6).
+- **The gate's queue check** counts only `queued` fetches (D2). Every comparison of addresses but the owner's own uses `guest_key` (D2).
+- **`gone`** is SPAM, TRASH or `gone_at`, never a row M20's purge deleted (D3).
+- **A promise's counterpart** skips the owner's own addresses (D4). **The delivery check** asks only about earlier promises, and skips a credential message (D5).
+- **The first run's end,** the "behind" alert's clock, and the alert judged even when the gate stops reads (D6). **A digest is `sent`** when any channel delivered it, and "new" is counted by the events' sequence ids from the last digest that went out (D6).
+- **The reopen rate** counts only Reopens of automatic closes, without `gone` (D8). The page lists the last 7 days' closes, with Reopen (D8).
+- **The check model counts among the models in use,** and the eval meters apart from production (D9).
+- **The labeller's window** is 90 days. Its sample of reply closes is asks answered after 48 hours, and its promise sample aims for 15 kept ones. It resumes, extends and never repeats. `--check-labels` needs no key. Only runs on labels are published. A score is never tuned on the mail it reports (D11).
+- **The breakdown itself:**
+  - the job, the alerts and the spending are built on a fake reader before the labels, as D11's order requires;
+  - the fetch, the cleaner and the own-words extraction are three tasks, the fetch on M18's hidden-text defences, and the cleaner run against every user's tests;
+  - M21's alert tags and the service worker's map are one task;
+  - snoozes end in 21.3;
+  - a deploy task turns the switch on (21.27).

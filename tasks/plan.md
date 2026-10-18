@@ -280,3 +280,59 @@ from chat share the mail queue. The spec is
 ## Open questions
 
 - Where writes go: M17's open question, before `DRY_RUN` goes off.
+
+---
+
+# Implementation Plan: M21 · Loose ends
+
+## Overview
+
+Every working morning the owner sees the replies they owe and the promises
+they made, and each one closes by itself when it is done. That means a Loose
+ends page and a 9:00 digest, built from M20's records by M15's rule,
+confirmed and quoted by a reader with no tools, and closed in code. The spec
+is [`docs/plans/M21-loose-ends.md`](../docs/plans/M21-loose-ends.md), approved
+on 2026-10-18 after two adversarial reviews; a review of these tasks added
+the clarifications in its running notes. The tasks are 21.1–21.28 in
+[`todo.md`](todo.md). Nothing in M21 writes to Gmail.
+
+## Architecture decisions
+
+- **Off until the deploy turns it on.** M21's jobs run only with `LOOSE_ENDS_ENABLED`, so no deploy midway through the build reads real mail uncapped, or fixes `started_at` early.
+- **Rules in code before any model.** The rules, the closes, the fetch, the own-words extraction, the job on a fake reader, the alerts and the spending are all built and tested first. The reads come after (D11).
+- **The golden set before the model features.** The owner labels by M21's own rule, over a 90-day window, once the rules exist. The reads are then built and scored against those labels (decision 24). A score is never tuned on the mail it reports.
+- **The riskiest piece early.** Attacker text could become "you promised" through the own-words extraction. So it comes in Phase 1, on M18's hidden-text defences, with Gmail, Apple Mail and Outlook fixtures, and the labeller shows exactly what it keeps.
+- **A current mailbox, everywhere.** Every job and tool waits for the sync, its gap, its queued fetches and, at first, its backfill (D2).
+- **Status is decided in code.** A model's verdict only opens or reopens an ask in its own thread, or closes a promise on the owner's own words.
+
+## Phases
+
+1. **The ground, with no model** (21.1–21.9): the records; the rules and the gate; the closes and snoozes; Gmail's fetch; the cleaner; the own-words extraction; the job on a fake reader; the alerts and the service worker; spending and the first run.
+2. **The test set** (21.10–21.12): the labeller, the eval's harness, and the owner's labelling.
+3. **The reads** (21.13–21.17): the ask check, the promise read, the batched delivery check, the eval's runner, and the first score.
+4. **The digest and the page** (21.18–21.23): judging and sending, what the digest shows, the API, the page's rules, the page, and retention.
+5. **Safety, evidence, docs and the deploy** (21.24–21.28): the fixtures and the injection suite, the committed model run and its gate, the runbook, the deploy, and the exit evidence.
+
+21.4, 21.5 and 21.8 depend on nothing, and can be built alongside 21.1–21.3.
+Checkpoints follow 21.9, 21.12, 21.17, 21.23 and 21.28.
+
+## Risks and mitigations
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| A mail client's quoting, or hidden text, slips into the owner's words | High | M18's hidden-text walk; structure for Gmail, Apple Mail and Outlook; the cut on flattened text; the matching guard; the injection suite with hidden variants; and Exit 3 answered from the iPhone |
+| A deploy midway through the build reads real mail | High | `LOOSE_ENDS_ENABLED` stays off until 21.27 |
+| M15 says no-go | High | Nothing is built until it says go, and a no-go re-plans M21 |
+| The cleaner's change breaks its other users | Medium | 21.5 runs every user's tests: cards, the reader, chunking and both injection suites |
+| The labels fall short of the minimum counts | Medium | The bar reads "not enough evidence", and the labeller can be extended |
+| A score tuned on the mail it reports | Medium | After any tuning, the bar is judged on newly labelled mail |
+| No paid-tier key | Medium | Everything but the scored runs is built and tested with fakes, and the eval refuses a key not declared paid |
+| An ask shown that was already answered | Medium | The current-mailbox gate, with tests for a gap and a queued fetch |
+| The cost at 2027 prices | Medium | The cheap model for asks, one batched check per message, the daily cap and the first run's budget; the eval meters apart from production |
+| The labeller or the eval pushes the sync over Gmail's quota | Low | Each paces itself at 30 reads a minute, and runs only on a current mailbox |
+| M21 changes files in M18's and M19's hashed sets | Low | Their CI gates fail until those runs are made again |
+
+## Open questions
+
+- The Gmail link to a thread from its id: settled in 21.21.
+- Sent volume against the daily cap: measured by M15, and by 21.17 on the owner's mail.

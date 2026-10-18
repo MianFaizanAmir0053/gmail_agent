@@ -1723,6 +1723,8 @@ The run spends on the development key: a few hundred calls, well inside the cap.
 
 **Dependencies:** 18.12 · **Files:** `app/eval/injection.py`, `tasks.ps1`, `results/injection-baseline.json`, `tests/test_injection_baseline.py` · **Scope:** M
 
+*M21 changes files this run hashes. If M21's 21.4 (`gmail.py`) or 21.9 (`models.py`) lands after this run, it is made again: its CI gate fails until it is.*
+
 ### Task 18.14: The golden set and the retrieval eval, again
 
 **Description:** D9:
@@ -1739,6 +1741,8 @@ The run spends on the development key: a few hundred calls, well inside the cap.
 **Verification:** `.\tasks.ps1 eval --extractor gemini`; `.\tasks.ps1 retrieval-eval --by-kind`; results committed.
 
 **Dependencies:** 18.13 · **Files:** `app/eval/dataset.py`, `app/eval/run.py`, the golden fixtures, `results/` · **Scope:** M
+
+*M21 changes files this run hashes. If M21's 21.5 (the cleaner) lands after this run, it is made again: its CI gate fails until it is.*
 
 ### Task 18.15: Runbook and README
 
@@ -2055,6 +2059,8 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 
 **Dependencies:** 19.8 and a development Gemini key · **Files:** `results/planner-baseline.json`, tests · **Scope:** M
 
+*M21 changes files this run hashes. If M21's 21.9 (`models.py`) lands after this run, it is made again: its CI gate fails until it is.*
+
 ### Task 19.17: Runbook and README
 
 **Description:** DEPLOY.md §14 (the migration, settings, the grant, the caps, the eval after any prompt change, the owner's end tests) and the README.
@@ -2071,3 +2077,534 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 - [ ] Python and web checks green, locally and in CI, with the routing baseline current. *Green locally on 2026-10-18; CI waits for a push, and the baseline for 19.16.*
 - [x] Fresh-context review of the module: two reviews, of 19.1–19.8 (2026-10-04) and of 19.9–19.17 (2026-10-05). Every finding was fixed with a test that a deliberate break showed fails without it; one suggestion was left out, with its reason (running notes). Two doubt reviews of those fixes followed (2026-10-18), and the owner amended decision 5: only confirmed contacts are inside.
 - [ ] The exit criterion at the owner's end tests.
+
+---
+
+# M21 · Loose ends — tasks
+
+Spec: [`docs/plans/M21-loose-ends.md`](../docs/plans/M21-loose-ends.md), approved by the owner on 2026-10-18 after two adversarial rounds, with the clarifications from the review of these tasks (the spec's running notes). Where a task and the spec differ, the spec wins.
+- **No task starts until M15's measurement says go.**
+- Nothing in M21 writes to Gmail.
+- M21's jobs stay off (`LOOSE_ENDS_ENABLED=false`) until the deploy task turns them on.
+- Phase 3's reads start only once the owner's labels exist (decision 24).
+
+## Phase 1 · The ground, with no model
+
+### Task 21.1: The records (D1)
+
+**Description:**
+- Migration `014_loose_ends.sql`: `loose_ends`, `loose_end_events` (with a sequence id, and append-only by trigger as `010`'s audit log is), `loose_end_reads`, `loose_end_checks`, `muted_senders`, `loose_end_digests`, `loose_end_state` and `loose_end_scores`, with their keys and checks, and `web_reader`'s grants.
+- A helper sets `loose_end_state.started_at` once, and only from a run with `LOOSE_ENDS_ENABLED` on.
+
+**Acceptance criteria:**
+- [ ] It applies and can be re-run. The unique keys hold: one reply owed per thread, and one promise per email and position. An event cannot be changed or deleted.
+- [ ] `web_reader` reads the items (quote, counterpart and `reply_to` included), the events, the muted senders, the digests and the scores, and nothing else of M21's. It writes nothing.
+- [ ] `started_at` is set once, never moved, and never set with the switch off.
+
+**Verification:** `uv run pytest tests/test_loose_ends_records.py tests/test_web_reader.py`; Neon.
+
+**Dependencies:** None · **Files:** `migrations/014_loose_ends.sql`, `app/loose_ends/__init__.py`, `app/loose_ends/records.py`, `tests/test_loose_ends_records.py`, `tests/test_web_reader.py` · **Scope:** M
+
+### Task 21.2: Asks and sent mail, by rule, on a current mailbox (D2, D4)
+
+**Description:** `app/loose_ends/rules.py`:
+- **the gate:**
+  - the sync caught up within 30 minutes;
+  - no gap being worked off;
+  - no fetch with status `queued`; an `unreadable` fetch does not block;
+  - until the first run ends, the backfill at its bound;
+- **the ask candidates,** by M15's rule on the stored row:
+  - unanswered and 48 hours old, unread for the question;
+  - the order within a thread: nothing while its item is open or snoozed, and the rest in order once it is closed;
+  - a window: 14 days before `started_at` for production, or one given for the labeller;
+- **the sent mail D4 reads:** SENT, with some To or Cc address not the owner's, in the same window, and unread;
+- **address spellings:** the owner's own addresses are matched with M15's `normalise_address`, and every other comparison (asker, recipients, mutes) with `guest_key`.
+
+The fixtures begin in `data/loose_ends/fixtures/`, as metadata rows.
+
+**Acceptance criteria:**
+- [ ] Each part of M15's rule, and each part of the gate (a gap, a queued fetch, an unreadable fetch, a backfill short of its bound), has a test.
+- [ ] A follow-up while an item is open is not a candidate. A second asker's ask that the reply did not answer is one, once the item closes. A "Thanks!" leaves the next message as the candidate.
+- [ ] A SCHEDULED send, a draft and mail only to the owner are never read for promises; a reply-all keeping an alias is. Dotted Gmail and `+tag` addresses match, in fixtures.
+
+**Verification:** `uv run pytest tests/test_loose_ends_rules.py`; Neon.
+
+**Dependencies:** 21.1 · **Files:** `app/loose_ends/rules.py`, `data/loose_ends/fixtures/`, `tests/loose_ends_fixtures.py`, `tests/test_loose_ends_rules.py` · **Scope:** M
+
+### Task 21.3: The closes and the snoozes, in code (D3, D6)
+
+**Description:** `app/loose_ends/closing.py`. Each change is a conditional update that records its event:
+- **reply:**
+  - SENT, after the ask and any Reopen;
+  - some To or Cc address not the owner's;
+  - holding the asker or the ask's Reply-To (`guest_key`);
+- **meeting:** a `calendar_invite` proposal with `final_status` `created`, parked from the ask, or from a later message whose invite's guests include the asker;
+- **gone:** the ask's row has `gone_at` set, or the SPAM or TRASH label. A row missing after M20's purge is never `gone`;
+- **ask again:** moves `message_id`, `counterpart`, `reply_to`, `sender_verified`, `ask_at`, `quote` and `opened_at`, and resets the close and `cleared_at`;
+- **Reopen** sets `reopened_at`. **Done**, **Dismiss** and **Mute** close;
+- **snoozes:** a snooze whose day has come ends, records `unsnoozed`, and the item is open again.
+
+**Acceptance criteria:**
+- [ ] Each close has a test, and so does each non-close in the spec's list: a forward, a note to self, a scheduled send, a hold, a dry run, a Cancel, a Withdraw, an expiry, and an invite to someone else from a later message. A reply-all keeping an alias closes.
+- [ ] An ask again moves and resets exactly the spec's fields. A Reopen is never closed again by the same message. An item whose ask row was purged stays open.
+- [ ] Between the job's change and the owner's action on one item, the first wins. Every change records its event.
+
+**Verification:** `uv run pytest tests/test_loose_ends_closing.py`; Neon.
+
+**Dependencies:** 21.2 · **Files:** `app/loose_ends/closing.py`, `tests/test_loose_ends_closing.py`, fixtures · **Scope:** M
+
+### Task 21.4: Gmail's fetch for M21 (D2, D4)
+
+**Description:** In `app/google/gmail.py`, a fetch for M21 that keeps the HTML part as a tree, with `Reply-To` and `Authentication-Results`. It goes through M18's defences as they stand: `_shown` skips attachments and attached messages, and the walk drops hidden text (`display:none`, zero sizes, comments, SVG, MathML, `template`).
+
+**Acceptance criteria:**
+- [ ] Hidden text and an attached message never reach what the fetch returns as visible.
+- [ ] The two headers come back as Gmail gives them, and M18's existing tests still pass.
+
+**Verification:** `uv run pytest tests/test_gmail.py tests/test_injection.py`.
+
+**Dependencies:** None · **Files:** `app/google/gmail.py`, `tests/test_gmail.py`, `tests/gmail_payloads.py` · **Scope:** S
+
+### Task 21.5: The cleaner's attribution and header block (D4)
+
+**Description:** In `app/rag/clean.py`, the attribution line is matched with no length limit, and the From/Sent/To/Subject header block is found on flattened HTML as on text.
+- The attribution needs "wrote:" on its own line or the next, so an owner's line that begins "On" is not cut.
+- The scan stays linear on a large body.
+
+**Acceptance criteria:**
+- [ ] A long display name or address in the attribution is cut, and an owner's line beginning "On" is kept.
+- [ ] A body of a thousand "On" lines with no "wrote:" is cleaned within a fixed time bound.
+- [ ] Every user of the cleaner still passes: cards' guest sources, the reader, chunking and both injection suites.
+
+**Verification:** `uv run pytest tests/test_rag_clean.py tests/test_participants.py tests/test_planner_reader.py tests/test_rag_chunk.py tests/test_injection.py tests/test_chat_injection.py`.
+
+**Dependencies:** None · **Files:** `app/rag/clean.py`, `tests/test_rag_clean.py` · **Scope:** S
+
+### Task 21.6: The owner's own words (D4)
+
+**Description:** `app/loose_ends/own_words.py`, on 21.4's tree and 21.5's cuts:
+- remove Gmail's, Apple Mail's and Outlook's quote containers, and any `blockquote`, then flatten through M18's walk;
+- cut at the first quote marker, attribution line, "Original Message" line or header block;
+- drop any line found in the body of an earlier inbound message in the thread;
+- return the own words, or `unreadable` for a reply of which half or more was dropped. It records nothing itself;
+- never read the Subject or the headers.
+
+**Acceptance criteria:**
+- [ ] Replies written in Gmail, Apple Mail and Outlook (HTML), and in text, keep only the owner's lines. The fixtures include a long display name, a long address, a non-English attribution, and hidden text in the quoted part.
+- [ ] A quoted line in an unknown client's format is dropped by the matching guard, and a mostly quoted reply is `unreadable`.
+
+**Verification:** `uv run pytest tests/test_loose_ends_own_words.py`.
+
+**Dependencies:** 21.4, 21.5 · **Files:** `app/loose_ends/own_words.py`, `tests/test_loose_ends_own_words.py`, HTML fixtures · **Scope:** M
+
+### Task 21.7: The job, on a fake reader (D6)
+
+**Description:** The `loose_ends` scheduler job, every 15 minutes, registered only when `LOOSE_ENDS_ENABLED` is on (default off, as `INGEST_ENABLED`). Under an advisory lock, it:
+- checks the gate, and records in `job_runs` whether the run began on a current mailbox;
+- runs the closes and snoozes in code (21.3);
+- makes at most 10 reads, through a reader protocol, in the spec's order: known people's asks, then promises and checks, then other asks, oldest first within each;
+- holds asks to at most 3 reads a sender a day.
+
+A failure charges a strike unless it is an outage (`UnavailableError`, `is_outage`). Three strikes make `unreadable`, and `python -m app.loose_ends --retry-unreadable` clears them.
+
+**Acceptance criteria:**
+- [ ] With the switch off, nothing is scheduled and `started_at` stays unset. Two runs at once never both read. A run on a mailbox that is not current reads and closes nothing.
+- [ ] The order of reads, and the per-sender limit on asks only, have tests.
+- [ ] A Gmail outage and a model outage charge no strike. A third ordinary failure makes `unreadable`, and the retry clears it.
+
+**Verification:** `uv run pytest tests/test_loose_ends_job.py tests/test_scheduler.py`; Neon.
+
+**Dependencies:** 21.3 · **Files:** `app/loose_ends/job.py`, `app/loose_ends/__main__.py`, `app/jobs/scheduler.py`, `app/config.py`, `tests/test_loose_ends_job.py` · **Scope:** M
+
+### Task 21.8: M21's alerts and the service worker (D6)
+
+**Description:**
+- Two alert codes, `loose_ends_digest` and `loose_ends_behind`, each with fixed text, Telegram words and its own tag.
+- In `sw.js`, each tag gets its own entry in `TAGS`, so no M21 push replaces a proposal or another alert. A tag-to-page map lets a tap on either open `/loose-ends`. The page comes from the notification's own tag, never from a URL in a push.
+
+**Acceptance criteria:**
+- [ ] The test that the service worker knows every tag Fly sends counts eight tags, in Python and in `swRules.test.ts`.
+- [ ] From push data, to the notification's tag, to the page opened, each of the eight tags is tested; both of M21's open `/loose-ends`, and the rest still open `/`.
+
+**Verification:** `uv run pytest tests/test_webpush.py`; `cd dashboard; npm test`.
+
+**Dependencies:** None · **Files:** `app/channel/channels.py`, `app/channel/webpush.py`, `dashboard/public/sw.js`, `tests/test_webpush.py`, `dashboard/src/lib/swRules.test.ts` · **Scope:** M
+
+### Task 21.9: Spending, the first run and the "behind" alert (D6, D9)
+
+**Description:**
+- **Metering:** each read under `loose-<message_id>`, and each check under the later message's id, through M17's path.
+- **The caps:** `LOOSE_ENDS_DAILY_CAP_USD` and `LOOSE_ENDS_FIRST_RUN_USD` in `app/policy/models.py` and the settings. `LOOSE_ENDS_CHECK_MODEL` counts in `models.in_use()`, so an unpriced one stops new work as any model does.
+- **The first run:**
+  - threads newest first, at most 200 reads, and the rest recorded `skipped`;
+  - it ends when its budget is spent, or no backlog candidate is left that it can read. Candidates waiting behind an open item, or held by today's per-sender limit, do not count.
+- **The "behind" alert:** evaluated every run, even when the gate stops reads; once a day through `alerts_sent`. A candidate's start is the later of when it qualified (an ask 48 hours after it arrived, a sent email when sent) and the first run's end.
+
+**Acceptance criteria:**
+- [ ] The daily cap and the first run's budget stop reads, but never closes. Pause stops reads. An unpriced check model stops new work.
+- [ ] The first run's overflow is recorded `skipped`, and its end is recorded under each rule above.
+- [ ] The alert fires once a day for a candidate waiting more than a day, by that clock, and not before.
+
+**Verification:** `uv run pytest tests/test_loose_ends_job.py tests/test_budget.py`.
+
+**Dependencies:** 21.7, 21.8 · **Files:** `app/policy/models.py`, `app/config.py`, `app/loose_ends/job.py`, `tests/test_loose_ends_job.py`, `tests/test_budget.py` · **Scope:** M
+
+### Checkpoint: the ground
+
+- [ ] Checks green, locally and on Neon, with no model call anywhere in M21.
+- [ ] A fresh-context review of 21.1–21.9, the fetch, the cleaner and the own-words extraction above all.
+
+## Phase 2 · The test set
+
+### Task 21.10: The labeller (D11)
+
+**Description:** `.\tasks.ps1 loose-ends label` (`app/loose_ends/label.py`).
+- **Where it runs:** in the owner's terminal only, on a current mailbox, at most 30 Gmail reads a minute.
+- **Its window** is the last 90 days, which M20's backfill holds. It uses 21.2's rules with that window, not `started_at`.
+- **What it samples** (seeded):
+  - 40 ask candidates;
+  - 20 threads where 21.3's reply rule closes an ask the owner answered more than 48 hours after it came;
+  - sent emails until 30 promises, and 15 of them kept later in their thread, or until the window runs out.
+- **What it does:** it shows each message's own part (21.6) and asks the spec's questions. It can be stopped and resumed, extended, and never labels a message twice.
+- **What it writes:** the ids, each thread's messages up to the labelled point, and the answers, to `data/loose_ends/labels.jsonl`, which is gitignored and dockerignored. Never email text.
+
+**Acceptance criteria:**
+- [ ] It refuses without a terminal, or on a mailbox that is not current.
+- [ ] A run on fixtures writes ids, snapshots and answers, and no subject, body or quote. A resumed run neither repeats a message nor loses one.
+- [ ] The seed is printed, and the file is in both ignore lists.
+
+**Verification:** `uv run pytest tests/test_loose_ends_label.py`.
+
+**Dependencies:** 21.2, 21.3, 21.6 · **Files:** `app/loose_ends/label.py`, `tasks.ps1`, `.gitignore`, `.dockerignore`, `tests/test_loose_ends_label.py` · **Scope:** M
+
+### Task 21.11: The eval's harness, part one (D11)
+
+**Description:** `app/eval/loose_ends.py`:
+- the labels' loading;
+- the scoring of the spec's measures, with Wilson intervals;
+- the bar, with its minimum counts ("not enough evidence" below them);
+- the result types, and `results/loose-ends-<timestamp>.json` marked by kind (`labels` or `fixtures`).
+
+`.\tasks.ps1 loose-ends-eval --check-labels` reports the labels' counts. It needs neither the paid key nor a current mailbox. `publish` copies only runs on labels into `loose_end_scores`.
+
+**Acceptance criteria:**
+- [ ] Each measure's numerator and denominator are as the spec defines them, on hand-made results. Too few items read "not enough evidence".
+- [ ] `--check-labels` runs with no key. A fixture run is never published, and a same-day re-run on labels publishes as a new file.
+
+**Verification:** `uv run pytest tests/test_loose_ends_eval.py`.
+
+**Dependencies:** 21.1, 21.10 · **Files:** `app/eval/loose_ends.py`, `app/eval/publish.py`, `tasks.ps1`, `tests/test_loose_ends_eval.py` · **Scope:** M
+
+### Task 21.12: The owner labels [owner]
+
+**Description:** On the laptop, after `.\tasks.ps1 reauth` and with the sync caught up, run `.\tasks.ps1 loose-ends label`. It takes about 1.5 to 2 hours, in one sitting or several: the seed carries on.
+
+**Acceptance criteria:**
+- [ ] 40 ask candidates and 20 reply closes are labelled, and sent mail until 30 promises with 15 kept, or the window's end.
+- [ ] `--check-labels` reports the counts. Whether the bar's minimums are met is judged at the first score (21.17), since they count confirmed items.
+
+**Verification:** `.\tasks.ps1 loose-ends-eval --check-labels`.
+
+**Dependencies:** 21.10, 21.11 · **Files:** the running notes · **Scope:** S
+
+### Checkpoint: the test set
+
+- [ ] The labels exist, with their counts in the running notes.
+- [ ] Checks green.
+
+## Phase 3 · The reads
+
+### Task 21.13: The ask check (D2's read)
+
+**Description:** `app/loose_ends/reader.py`, M21's own reader entry point: it neither imports nor changes M19's `Ask`, `plan.py` or the planner's prompts. The ask check:
+- reads the own body only, with no Subject and no headers, through M18's preparation, at most 6,000 characters, with the credential check on what is read;
+- runs on `LOOSE_ENDS_CHECK_MODEL`; an evaluation-only model is refused at startup;
+- has a fixed instruction that names the owner's addresses.
+
+An ask opens the item, or reopens it as asked again, with:
+- its quote, cut and cleaned as the renderer cuts;
+- `reply_to`, `sender_verified` and the checked address;
+- the `opened` or `asked_again` event.
+
+Wired into 21.7's job. An ask whose Reply-To the owner already answered opens as the spec says, and D3 closes it on the next run.
+
+**Acceptance criteria:**
+- [ ] With a fake model:
+  - an ask opens the item, and no ask records `no_ask`;
+  - credential mail records `credential` and is never sent to a model;
+  - a Subject that mentions a code does not set aside the thread.
+- [ ] The instruction holds no text from mail. `app/loose_ends/` does not import `Ask`, and `plan.py` and `prompts.py` are unchanged.
+- [ ] An evaluation-only check model is refused.
+
+**Verification:** `uv run pytest tests/test_loose_ends_reader.py tests/test_no_tools.py`.
+
+**Dependencies:** 21.6, 21.7, 21.12 · **Files:** `app/loose_ends/reader.py`, `app/loose_ends/job.py`, `tests/test_loose_ends_reader.py`, `tests/test_no_tools.py` · **Scope:** M
+
+### Task 21.14: The promise read (D4's read)
+
+**Description:** On `PLANNER_MODEL`, the own words (21.6) and the fixed instruction (the day sent, the owner's zone and working days, decisions 15 and 16) give up to 5 promises, with due days. Code then:
+- checks each day: between the day sent and a year later, or else 7 days after it;
+- makes one item per promise, with its quote cut to 200 characters and scrubbed, its position, and the `opened` event;
+- takes as the counterpart the first To or Cc recipient that is not the owner's, or none.
+
+**Acceptance criteria:**
+- [ ] With a fake model: each due-day rule; up to 5 items per email; a counterpart that skips the owner's aliases; a credential email never read.
+- [ ] Neither the Subject nor quoted text reaches the model, checked on the prompt.
+
+**Verification:** `uv run pytest tests/test_loose_ends_reader.py`.
+
+**Dependencies:** 21.13 · **Files:** `app/loose_ends/reader.py`, `tests/test_loose_ends_reader.py` · **Scope:** S
+
+### Task 21.15: The delivery check (D5)
+
+**Description:** One call per later message of the owner's in the thread, for the open promises made in earlier messages:
+- each promise, and the message's own part, goes in the user turn between fresh markers of its own;
+- the answer is a typed yes or no for each promise, by number. A number not asked about is ignored;
+- a yes closes that promise `delivered`;
+- a credential message is not checked, and is recorded as such. An unreadable one charges strikes as reads do;
+- a Reopen keeps that message, and every earlier one, from closing it again.
+
+**Acceptance criteria:**
+- [ ] With a fake model, one call covers three open promises, and each verdict closes or leaves its own. A promise made in the checked message itself is not asked about.
+- [ ] The instruction holds no text from mail, and a reopened promise is not checked again against the same message.
+
+**Verification:** `uv run pytest tests/test_loose_ends_reader.py tests/test_loose_ends_closing.py`.
+
+**Dependencies:** 21.14 · **Files:** `app/loose_ends/reader.py`, `app/loose_ends/closing.py`, tests · **Scope:** M
+
+### Task 21.16: The eval's harness, part two (D11)
+
+**Description:** The runner:
+- D2 to D5 on the labelled snapshots, through the production code of 21.13–21.15;
+- Gmail fetches at most 30 a minute;
+- a labelled message deleted since is counted and left out;
+- the eval's model calls metered under their own prefix, so they never spend production's daily cap;
+- its results carry the models and the shaping hash.
+
+It refuses to run unless `GEMINI_PAID_TIER=true` and the mailbox is current.
+
+**Acceptance criteria:**
+- [ ] With a fake model on fixture labels, the run scores through the same functions the job calls.
+- [ ] It refuses a key not declared paid. Its spend never counts under `loose-`.
+
+**Verification:** `uv run pytest tests/test_loose_ends_eval.py`.
+
+**Dependencies:** 21.11, 21.15 · **Files:** `app/eval/loose_ends.py`, `app/config.py`, `tests/test_loose_ends_eval.py` · **Scope:** S
+
+### Task 21.17: The first score [owner + agent]
+
+**Description:** With the paid key in `.env`, and the labels:
+- run `.\tasks.ps1 loose-ends-eval`;
+- commit the results and publish them;
+- record in the running notes the measures, the counts, and the cost per read.
+
+A miss of the bar is worked on (the instructions, the extraction). After any such change, the bar is judged on newly labelled mail, a fresh seed at the same minimums, so the score is never tuned on the mail it reports.
+
+**Acceptance criteria:**
+- [ ] Each kind meets the bar with its minimum counts on mail it was not tuned on, or the running notes say what failed and the next step.
+- [ ] The result file is committed and published.
+
+**Verification:** the result file; `loose_end_scores` on the database.
+
+**Dependencies:** 21.9, 21.12, 21.16, and a paid-tier key · **Files:** `results/`, the running notes · **Scope:** S
+
+### Checkpoint: the reads
+
+- [ ] Checks green, locally and on Neon.
+- [ ] A fresh-context review of 21.13–21.16.
+
+## Phase 4 · The digest and the page
+
+### Task 21.18: The digest: judging and sending (D6)
+
+**Description:** The `loose_ends_digest` job, registered only with the switch on:
+- **When:** the day is judged once, at 9:00 or the first run after it, on a working day, before the end of `WORKING_HOURS`. It needs a `loose_ends` run since 9:00 that `job_runs` shows began on a current mailbox.
+- **The row** is written whatever the outcome.
+- **What is new** (decision 26) is read from the events after the last day whose digest went out, by sequence id.
+- **The outcome:** the row is written before the push goes out. `sent` means at least one channel delivered, and `push_failed` means none did. A failed day leaves its news for the next.
+
+**Acceptance criteria:**
+- [ ] The day is judged once, never on a day off, and not after working hours. The owner's taps, and an old overdue item, are not new. A day with nothing new writes `nothing_new`.
+- [ ] An event committed while a digest is being made is counted by the next one.
+- [ ] A push that fails on every channel is `push_failed`, is not retried that day, and its news is carried over.
+
+**Verification:** `uv run pytest tests/test_loose_ends_digest.py tests/test_scheduler.py`.
+
+**Dependencies:** 21.7, 21.8 · **Files:** `app/loose_ends/digest.py`, `app/jobs/scheduler.py`, `tests/test_loose_ends_digest.py` · **Scope:** M
+
+### Task 21.19: The digest: what it shows (D7)
+
+**Description:** The composition, by code, stored by id:
+- **the items:** new ones first, marked "new", then the most overdue, by each kind's lateness; up to 10, then "and N more";
+- **the closes:** up to 5 automatic closes, then "and N more closed". "closed: «the promise» (your message on <date>)" carries a Reopen, and a `gone` close says "the email was deleted";
+- **the coverage line;**
+- **the push's fixed text.**
+
+**Acceptance criteria:**
+- [ ] Each rule above has a test, with exact wording.
+
+**Verification:** `uv run pytest tests/test_loose_ends_digest.py`.
+
+**Dependencies:** 21.18 · **Files:** `app/loose_ends/digest.py`, `tests/test_loose_ends_digest.py` · **Scope:** S
+
+### Task 21.20: The page's API (D8)
+
+**Description:** In `app/web_api.py`, through `app/loose_ends/actions.py`:
+- Done, Dismiss, and Snooze (tomorrow, next week, or a date);
+- Mute and Unmute, with addresses spelled by `guest_key`;
+- Reopen, on any closed item while its quote is kept.
+
+Each checks the secret, is conditional on the item's state, and records its event.
+
+**Acceptance criteria:**
+- [ ] Each action, and its refusals, has a test. A repeat changes nothing, and a Reopen after the quote is cleared is refused.
+- [ ] Mute closes the sender's open asks as `muted`, and Unmute only stops leaving them out.
+
+**Verification:** `uv run pytest tests/test_loose_ends_api.py`; Neon.
+
+**Dependencies:** 21.3 · **Files:** `app/web_api.py`, `app/loose_ends/actions.py`, `tests/test_loose_ends_api.py` · **Scope:** M
+
+### Task 21.21: The page's rules (D8)
+
+**Description:** `dashboard/src/lib/looseEnds.ts`, a plain module tested with `node --test`:
+- the grouping: late, due, replies owed, snoozed, and closed in the last 7 days;
+- the Gmail link to a thread;
+- for each kind:
+  - the dismiss rate: dismissed and muted, over the items opened, in 30 days;
+  - the reopen rate: Reopens of automatic closes, over the automatic closes, in 30 days, `gone` left out of both;
+  - counts only, under 10 in a denominator.
+
+**Acceptance criteria:**
+- [ ] Each rule has a test. The reopen rate never counts a Reopen of an owner's close, and never passes 100%.
+
+**Verification:** `cd dashboard; npm test`.
+
+**Dependencies:** 21.1 · **Files:** `dashboard/src/lib/looseEnds.ts`, `dashboard/src/lib/looseEnds.test.ts` · **Scope:** S
+
+### Task 21.22: The page (D8)
+
+**Description:** `/loose-ends`, and "Loose ends" in the menu:
+- today's digest, from its stored ids;
+- the groups from 21.21, each item with its kind, quote, sender with Gmail's verdict, age or due day, and link;
+- the actions, through server actions that check the owner and call Fly once;
+- the accuracy line: the last score with its models, and the two rates;
+- the muted senders.
+
+**Acceptance criteria:**
+- [ ] Quotes are plain text, and each action calls Fly once, after checking the owner.
+- [ ] Typecheck, lint and build are clean.
+
+**Verification:** `cd dashboard; npm test; npm run typecheck; npm run lint; npm run build`. The browser check waits for the owner's end tests.
+
+**Dependencies:** 21.11, 21.19, 21.20, 21.21 · **Files:** `dashboard/src/app/loose-ends/page.tsx`, `dashboard/src/app/actions.ts`, `dashboard/src/lib/fly.ts`, `dashboard/src/app/layout.tsx` · **Scope:** M
+
+### Task 21.23: Retention (D10)
+
+**Description:** The purge clears an item's quote, counterpart and `reply_to` a week after it closes, and sets `cleared_at`. Unmute deletes the muted row. The events, reads, checks, digests and scores are kept.
+
+**Acceptance criteria:**
+- [ ] On day 6 the words are kept, and on day 8 cleared. An open or snoozed item keeps its words.
+
+**Verification:** `uv run pytest tests/test_purge.py`; Neon.
+
+**Dependencies:** 21.3, 21.20 · **Files:** `app/jobs/purge.py`, `tests/test_purge.py` · **Scope:** S
+
+### Checkpoint: the digest and the page
+
+- [ ] On Postgres, a fixture mailbox goes from M20's records to a digest through every job, with the switch on.
+- [ ] Python and web checks green.
+
+## Phase 5 · Safety, evidence and docs
+
+### Task 21.24: The fixtures and the injection suite (D11, D12)
+
+**Description:** The fixture set completed as the spec lists it, and the injection cases in `data/injection/loose_ends/`. The cases are cited by id and never quoted, each attack also hidden three ways, as M18's are, with the format added to `data/injection/README.md`. They run through the real rules, fetch, extraction and reads, with a compliant fake reader that obeys every instruction. The checks:
+- an item's kind and status come only from code;
+- a model's verdict changes a status only as D2 and D5 allow;
+- no case's marker text reaches a promise read or a delivery check;
+- no promise comes from another sender;
+- quotes are labelled;
+- nothing is sent.
+
+**Acceptance criteria:**
+- [ ] Every case's checks hold. A failure names its case id, and never prints the payload.
+- [ ] Deliberate breaks of the extraction, the hidden-text walk, the verdicts' scopes and the quote's cut are each caught.
+
+**Verification:** `uv run pytest tests/test_loose_ends_injection.py tests/test_no_tools.py`.
+
+**Dependencies:** 21.13–21.15 · **Files:** `data/loose_ends/fixtures/`, `data/injection/loose_ends/`, `data/injection/README.md`, `tests/test_loose_ends_injection.py` · **Scope:** M
+
+### Task 21.25: The committed model run and its gate (D11)
+
+**Description:** `.\tasks.ps1 loose-ends-eval --fixtures --baseline`, on the paid key, runs the fixtures and the injection cases through the real models, offline from the mailbox. It is committed as a run tied by hash to everything that shapes what the models see:
+- `app/loose_ends/`, the cleaner, Gmail's fetch, the scrubber and the prompt blocks;
+- `models.py`, `llm.py` and the models' names;
+- the fixture and case files.
+
+CI fails when any of them changes, until the run is redone.
+
+**Acceptance criteria:**
+- [ ] The committed run has no failure, and changing any hashed file, a case file included, fails the CI test.
+
+**Verification:** `uv run pytest tests/test_loose_ends_baseline.py`.
+
+**Dependencies:** 21.24, and every task that changes `app/loose_ends/` (21.1–21.23), and a paid-tier key · **Files:** `results/loose-ends-baseline.json`, `tests/test_loose_ends_baseline.py`, `app/eval/loose_ends.py` · **Scope:** S
+
+### Task 21.26: Runbook, README and settings
+
+**Description:**
+- **DEPLOY.md §15:**
+  - the migration and grants;
+  - the settings, `LOOSE_ENDS_ENABLED` and `RUN_SCHEDULER`;
+  - the paid key, and that M18's and M19's runs are made after M21;
+  - labelling: when, how long, and the quota;
+  - Dismiss, not Done, for a wrong item;
+  - retiring the labels;
+  - the alerts and their tags;
+  - opening the app on each phone once after the deploy, so the service worker learns the new tags.
+- **The Checklist** gains an M21 block.
+- **`.env.example`** gains the five new settings.
+- **The README:** loose ends in the architecture, the safety defaults and the commands.
+
+**Acceptance criteria:**
+- [ ] A read-through against the spec finds no step outside the docs.
+
+**Verification:** the read-through, recorded in the spec's running notes.
+
+**Dependencies:** 21.1–21.25 · **Files:** `docs/DEPLOY.md`, `README.md`, `.env.example`, `docs/plans/M21-loose-ends.md` · **Scope:** M
+
+### Task 21.27: Deploy [owner + agent]
+
+**Description:** Deploy to the laptop. The migration applies on boot. Then:
+- open the app on each phone;
+- turn `LOOSE_ENDS_ENABLED` on;
+- watch the first run, recording its spend, its `skipped` count and its end in the running notes.
+
+**Acceptance criteria:**
+- [ ] The first run ends within its budget, and the first digest arrives on a working day with something new, opening `/loose-ends`.
+
+**Verification:** `loose_end_state`, the digests' rows, and the phones.
+
+**Dependencies:** 21.26, and M15's go · **Files:** the running notes · **Scope:** S
+
+### Task 21.28: Exit evidence [owner + agent]
+
+**Description:** The spec's exit criteria, on the owner's real mail:
+1. **The scored labels** meet the bar (21.17).
+2. **Two weeks of digests:**
+   - a row marked `sent` on every working day that had something new;
+   - the items dismissed, muted or reopened, under 20% of the items opened, over at least 30 items; the run is extended until there are.
+3. **A planted email** beside an open promise, answered "Thanks" from Gmail and from Apple Mail on the iPhone, makes no "you promised" and closes nothing.
+
+**Acceptance criteria:**
+- [ ] Exit criteria 1–3 hold, each with its evidence in the running notes.
+
+**Verification:** the events, the digests' rows, and the planted email's outcome.
+
+**Dependencies:** 21.17, 21.27 · **Files:** the running notes · **Scope:** S
+
+### Checkpoint: M21 built
+
+- [ ] Python and web checks green, locally and in CI, with the committed run current.
+- [ ] A fresh-context review of the module.
+- [ ] The exit criteria, at the owner's end tests.
