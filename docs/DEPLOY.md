@@ -616,12 +616,12 @@ run skips its turn while a command holds the lock.
 On the laptop (§12), in the `..\mailagent-prod` worktree:
 
 ```powershell
-uv run --env-file <prod.env> python -m app.mail.sync --status
-uv run --env-file <prod.env> python -m app.mail.sync --show "<Message-ID>"
-uv run --env-file <prod.env> python -m app.mail.sync --once
-uv run --env-file <prod.env> python -m app.mail.sync --catch-up
-uv run --env-file <prod.env> python -m app.mail.sync --retry-unreadable
-uv run --env-file <prod.env> python -m app.mail.sync --check-feed
+.\tasks.ps1 mail-sync --status -EnvFile <prod.env>
+.\tasks.ps1 mail-sync --show "<Message-ID>" -EnvFile <prod.env>
+.\tasks.ps1 mail-sync --once -EnvFile <prod.env>
+.\tasks.ps1 mail-sync --catch-up -EnvFile <prod.env>
+.\tasks.ps1 mail-sync --retry-unreadable -EnvFile <prod.env>
+.\tasks.ps1 mail-sync --check-feed -EnvFile <prod.env>
 ```
 
 On Fly, the same through `fly ssh console`:
@@ -644,7 +644,7 @@ the trash too.
 | `--retry-unreadable` | Queues every unreadable message again with no strikes, within the backfill's 90 days. Run it once whatever failed them is fixed |
 | `--check-feed` | The exit criterion's checks. The second asks Gmail for the switch-over hour and gives each message a verdict -- processed, held (it says why) or left out by the feed's rule; a message never stored, or met by the rule and left waiting, fails it. Exits 1 on any failure |
 
-Locally, against the dev mailbox: `uv run python -m app.mail.sync --once`.
+Locally, against the dev mailbox: `.\tasks.ps1 mail-sync --once`.
 
 ### 10.6 Catch-ups
 
@@ -949,14 +949,19 @@ never mix in, and later edits to the main working copy never touch it.
 
 | Part | Where |
 |---|---|
-| The code | `..\mailagent-prod`, a git worktree detached at the deployed commit (`git worktree add --detach ..\mailagent-prod v2-plan`, then `uv sync --frozen` in it) |
+| The code | `..\mailagent-prod`, a git worktree detached at the deployed commit (`git worktree add --detach ..\mailagent-prod v2-plan`, then `uv sync --frozen` in it; while Windows blocks the venv's Python, any `.\tasks.ps1` command brings the venv into line instead) |
 | Settings | `secrets\prod.env`: §2's variables, with absolute file paths for the client and the tokens |
-| The agent | `secrets\start-prod.ps1` runs `uv run --env-file <settings> uvicorn app.api:app --host 127.0.0.1 --port 8000` in the worktree |
+| The agent | `secrets\start-prod.ps1` runs `.\tasks.ps1 agent -EnvFile <settings>` in the worktree: `uvicorn app.api:app --host 127.0.0.1 --port 8000` |
 | The public address | `secrets\start-ngrok.ps1`: ngrok's free fixed domain in front of `127.0.0.1:8000` |
 
 **Settings that differ from Fly's:**
 - **`DATABASE_URL`** is Supabase's **session pooler**, `postgres.<project-ref>@aws-0-<region>.pooler.supabase.com:5432`. The direct host has only IPv6, and the laptop has none. Never port 6543.
-- **Paths:** each `--env-file` path is written with forward slashes. `uv` drops the backslashes from a Windows path, and then cannot find the file.
+- **Paths:** each `--env-file` and `-EnvFile` path is written with forward slashes. `uv` drops the backslashes from a Windows path, and then cannot find the file.
+
+**Smart App Control.** Since 2026-10-18 at the latest, Windows blocks the venv's `python.exe` on the laptop ("An Application Control policy has blocked this file"), and with it every `uv run`: the agent's old start command, and the `uv run --env-file` commands this file used to give. The agent had stopped by then.
+- `tasks.ps1` runs uv's own Python as the venv instead, as the README says, and prints a yellow line when it does. So every production command goes through it, in the worktree, with `-EnvFile <prod.env>`: `.\tasks.ps1 approve --list -EnvFile <prod.env>`.
+- `-EnvFile` reads only plain `KEY=value` lines, as `prod.env` is. A line with quotes, `$`, `#` or a backslash in its value stops the command and names the line.
+- Turning Smart App Control off is the owner's call. Windows cannot turn it back on without a reset.
 
 **The first start** applies every migration, so the `web_reader` role exists only after it. Set its password then (§9.3).
 
@@ -975,6 +980,7 @@ never mix in, and later edits to the main working copy never touch it.
 - The laptop stays plugged in, and never sleeps while plugged in. A sleep stops the agent itself, not only its address: on 2026-10-03 one sleep cost 40 minutes with no poll (13:29 to 14:08 UTC).
 - While the laptop is off or asleep, mail waits. The sync catches up when it is back, but mail older than seven days is skipped (§10).
 - Only one copy of the agent may run, or Gmail is polled twice.
+- **A week down pauses the database.** Supabase pauses a free project after a week with little activity. The agent stopped in early October, and by 2026-10-18 the pooler refused it with `(ENOTFOUND) tenant/user postgres.<project-ref> not found`. The owner restores the project in Supabase's dashboard, within 90 days of the pause, and then starts the agent. The web app reads the same database, so it is down too until then.
 
 **Vercel values** are pasted with nothing around them. The value box keeps a pasted line break. Since `a244d0d` the web app trims `FLY_API_URL`, `WEB_API_SECRET` and the push key itself. A failed call to the agent is logged with its code, for example `TypeError (ECONNRESET)`, never with the address.
 
@@ -988,14 +994,16 @@ M18 changes what a model reads, not what the owner has to set. Its spec is [`doc
 
 ### 13.1 Before the deploy
 
-- **Drain the parked threads first.** The graph lost its review node, so a thread parked by the old code must not be resumed by the new one. List them, then decide each in the web app, or end them all. On the laptop, in the `..\mailagent-prod` worktree, with `prod.env` as `--env-file` (§12):
+- **Drain the parked threads first.** The graph lost its review node, so a thread parked by the old code must not be resumed by the new one. List them, then decide each in the web app, or end them all. On the laptop, in the `..\mailagent-prod` worktree, with `prod.env` (§12):
 
   ```powershell
-  uv run --env-file <prod.env> python -m app.jobs.approve --list
-  uv run --env-file <prod.env> python -m app.jobs.approve --sweep-all
+  .\tasks.ps1 approve --list -EnvFile <prod.env>
+  .\tasks.ps1 approve --sweep-all -EnvFile <prod.env>
   ```
 
   Deploy only when `--list` shows none.
+  - Only the old agent's worker applies a decision, a sweep included, so the old agent runs while they drain. Its first mail poll comes ten minutes after it starts: stop it before then, or that poll reads mail with the old code.
+  - A worktree at a commit from before 2026-10-18 has a `tasks.ps1` with no `-EnvFile`. From the worktree, run the main copy's instead: `& ..\gmail_agent\tasks.ps1 approve --list -EnvFile <prod.env>`. It runs the code of the folder it is run from.
 - **No migration and no new secret.** `REVIEWER_ENABLED`, `REVIEWER_MODEL` and `SEARCH_CONTEXT_ENABLED` are gone. Left in an environment file, they are ignored.
 - **What removing search and the reviewer means.** Extraction reads the email alone: it no longer searches past mail to resolve a name, and no reviewer second-guesses it. Conflicts still come from code and show on the card. Production ran with both off, so proposals change only by the prompt's new layout. Search returns with M19's planner, which reads the owner's requests rather than raw mail.
 - **The pipeline version changes** (`PIPELINE_REVISION` 4). Proposals made from now on record the new version, so M24 counts their evidence apart.

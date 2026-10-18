@@ -378,6 +378,14 @@ anything useful.
 .\tasks.ps1 planner-eval --baseline     # the planner's routing eval (M19)
 ```
 
+**When Windows blocks the venv's Python.** Smart App Control can block
+`.venv\Scripts\python.exe` ("An Application Control policy has blocked this
+file"), and with it `uv run`, `uv sync` and `uv lock`. `tasks.ps1` notices, says
+so, brings the venv into line with `uv.lock` itself, and runs uv's own Python
+as the venv, as the blocked launcher would have. To lock after changing
+`pyproject.toml`, point uv away from the venv:
+`$env:UV_PROJECT_ENVIRONMENT = "$env:TEMP\no-env"; uv lock; Remove-Item Env:UV_PROJECT_ENVIRONMENT`.
+
 Dashboard:
 
 ```bash
