@@ -53,7 +53,13 @@ service.
 **Ask (`/chat`) shows text from mail as text.** Answers are written by the
 agent's code, never a model, and the page renders them as React text: nothing
 becomes markup or a link, and a test scans the page for any way to make some.
-A content policy on `/chat` loads no image from anywhere but the app
-(`next.config.ts`). The box marks each character typed or pasted, and sends the
-request as runs of each, so the agent's planner reads only what was typed.
+A content policy on every page but sign-in loads no image from anywhere but
+the app (`next.config.ts`), so it holds however the owner reaches Ask. The box
+marks each character typed or pasted, by each input event's own type and text
+(a paste, a drop, an undo, a redo, more than a word put in at once, or text
+that appears with no event of its own counts as pasted), and sends the request
+as runs of each, so the agent's planner reads only what was typed. One
+keyboard case is a known limitation: see the main README. The marks never
+decide whose an address is: on a card from chat, any address that is not a
+confirmed contact needs the owner's Allow.
 

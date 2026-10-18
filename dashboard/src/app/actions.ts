@@ -16,6 +16,7 @@ import {
   type Notice,
 } from "@/lib/decisionForm";
 import {
+  type ChatNotice,
   describeChat,
   describeChatAllow,
   parseAllowAddress,
@@ -118,7 +119,10 @@ export async function switchFromHeader(_previous: Notice | null, data: FormData)
  * the web app's zone, and the page's key, so a resend is never a second turn.
  * The owner is checked first, as for every action.
  */
-export async function askFromChat(_previous: Notice | null, data: FormData): Promise<Notice> {
+export async function askFromChat(
+  _previous: ChatNotice | null,
+  data: FormData,
+): Promise<ChatNotice> {
   const session = await auth();
   if (!isOwnerSession(session?.user?.email, process.env.OWNER_EMAIL)) {
     return { tone: "error", message: "Sign in as the owner first." };

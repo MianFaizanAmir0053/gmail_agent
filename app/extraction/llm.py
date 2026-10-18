@@ -79,6 +79,11 @@ class TruncatedError(LlmError):
     """Hit the output token cap mid-JSON."""
 
 
+class UnavailableError(LlmError):
+    """The provider kept failing in a way that looks temporary, and the
+    retries ran out: an outage, not an answer."""
+
+
 class ModelsResource(Protocol):
     def generate_content(self, **kwargs: Any) -> Any: ...
 
@@ -183,7 +188,7 @@ def call_with_retry[R](
                 record_retry()
                 time.sleep(_server_retry_delay(exc) or base_delay * (2**attempt))
 
-    raise LlmError(f"{what} unavailable after {attempts} attempts: {last}") from last
+    raise UnavailableError(f"{what} unavailable after {attempts} attempts: {last}") from last
 
 
 def _call_with_retry(

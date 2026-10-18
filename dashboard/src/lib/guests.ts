@@ -50,7 +50,7 @@ export type Source =
   | "email"
   | "quoted"
   | "absent"
-  // A proposal from chat (M19, D8): typed by the owner, or a confirmed contact.
+  // A proposal from chat (M19, D8): in the request, or a confirmed contact.
   | "typed"
   | "contact";
 
@@ -62,7 +62,7 @@ export const SOURCE_WORDS: Record<Source, string> = {
   email: "named in the email",
   quoted: "named in a quoted or forwarded section",
   absent: "not found in the email",
-  typed: "named by you",
+  typed: "in your request",
   contact: "a confirmed contact",
 };
 
@@ -94,7 +94,9 @@ export function cardSource(
   const where: unknown = Object.hasOwn(sources, guest)
     ? (sources as Record<string, unknown>)[guest]
     : null;
-  if (where === "typed") return "typed";
+  // From the request: outside until the owner allows it (M19, D8, as amended
+  // on 2026-10-18).
+  if (where === "typed") return allowed.has(guestKey(guest)) ? "allowed" : "typed";
   if (where === "contact") return allowed.has(guestKey(guest)) ? "contact" : null;
   if (typeof where !== "string" || !NAMED.has(where)) return null;
   const key = guestKey(guest);

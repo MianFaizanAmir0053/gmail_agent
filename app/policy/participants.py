@@ -64,7 +64,9 @@ section, or nowhere."""
 
 Chosen = Literal["typed", "contact"]
 """Where a guest of a proposal from chat came from (M19, D5 and D8): an
-address the owner typed in the request, or a confirmed contact."""
+address in the typed part of the request, or a confirmed contact. Only the
+contact is inside: the first needs the owner's Allow (decision 5, as amended
+on 2026-10-18)."""
 
 Source = Literal["thread", "allowed", "email", "quoted", "absent", "typed", "contact"]
 
@@ -74,7 +76,7 @@ SOURCE_WORDS: dict[Source, str] = {
     "email": "named in the email",
     "quoted": "named in a quoted or forwarded section",
     "absent": "not found in the email",
-    "typed": "named by you",
+    "typed": "in your request",
     "contact": "a confirmed contact",
 }
 """What a card says of each source. The web card says the same
@@ -222,10 +224,11 @@ def card_source(guest: str, card: Mapping[str, Any], allowed: frozenset[str]) ->
     guest keys the owner has allowed. None for a payload parked before M18,
     which records no sources."""
     where = (card.get("guest_sources") or {}).get(guest)
-    # A proposal from chat (M19, D8): what the owner typed stays theirs; a
-    # contact is one only while it is still allowed.
+    # A proposal from chat (M19, D8, as amended on 2026-10-18): an address
+    # from the request is outside until the owner allows it, and a contact is
+    # one only while it is still allowed.
     if where == "typed":
-        return "typed"
+        return "allowed" if guest_key(guest) in allowed else "typed"
     if where == "contact":
         return "contact" if guest_key(guest) in allowed else None
     if where not in get_args(Named):

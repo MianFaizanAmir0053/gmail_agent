@@ -1,11 +1,16 @@
 import type { NextConfig } from "next";
 
 /**
- * The chat page shows text from mail (M19, D7). It renders all of it as text,
- * and this policy lets it load no image from anywhere but this app, so no
- * text can make the browser call out.
+ * Pages show text from mail (M19, D7). They render all of it as text, and
+ * this policy lets them load no image from anywhere but this app, so no text
+ * can make the browser call out.
+ *
+ * It is sent on every page, not only on Ask: a client navigation, or a Back
+ * after a reload, keeps the first page's document, and so its policy.
+ * Sign-in is left out. It shows no mail, and Auth.js loads its provider logos
+ * from authjs.dev.
  */
-export const CHAT_POLICY = "img-src 'self'";
+export const IMAGE_POLICY = "img-src 'self'";
 
 const config: NextConfig = {
   // Every page reads live trace data, so nothing may be statically cached at
@@ -13,7 +18,10 @@ const config: NextConfig = {
   experimental: {},
   async headers() {
     return [
-      { source: "/chat", headers: [{ key: "Content-Security-Policy", value: CHAT_POLICY }] },
+      {
+        source: "/((?!api/auth/).*)",
+        headers: [{ key: "Content-Security-Policy", value: IMAGE_POLICY }],
+      },
     ];
   },
 };

@@ -12,10 +12,16 @@ import psycopg
 import pytest
 
 from app.eval.planner import CaseCalendar, CaseMail, load_world
-from app.extraction.llm import LlmError
+from app.extraction.llm import LlmError, UnavailableError
+from app.jobs.purge import _clear_chat
 from app.planner import chat, turns
 from app.planner.chat import (
+    CARD_LEFT,
+    CARDS_LEFT,
+    MODEL_UNAVAILABLE,
+    NOT_STARTED,
     OUT_OF_TIME,
+    QUEUE_DEADLINE,
     STRANDED,
     TURN_DEADLINE,
     WENT_WRONG,
@@ -264,6 +270,19 @@ def test_a_plan_that_cannot_run_fails_the_turn(
 
 
 @pytest.mark.integration
+def test_a_model_outage_fails_the_turn_as_an_outage(db: psycopg.Connection) -> None:
+    """Retries that run out are an outage, not an unusable plan: the owner is
+    told to ask again later, not to ask another way."""
+    turn_id = _ask(db)
+    outage = UnavailableError("planner unavailable after 4 attempts: 503")
+    chat.answer_next(_session(db, Planner(outage)))
+    assert (_turn(db, turn_id)["status"], _turn(db, turn_id)["reason"]) == (
+        "failed",
+        MODEL_UNAVAILABLE,
+    )
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("refusal", "reason"),
     [
@@ -323,6 +342,138 @@ def test_a_turn_running_past_its_deadline_is_failed_as_stranded(db: psycopg.Conn
     assert chat.strand(db, now=datetime.now(UTC)) == [turn_id]
     assert (_turn(db, turn_id)["status"], _turn(db, turn_id)["reason"]) == ("failed", STRANDED)
     assert _turn(db, young)["status"] == "running"
+
+
+@pytest.mark.integration
+def test_a_turn_never_taken_up_is_failed_and_its_words_can_be_cleared(
+    db: psycopg.Connection,
+) -> None:
+    """A chat job that cannot open its session leaves every turn queued: each
+    is failed once it has waited too long, so the page unlocks and retention
+    can clear its words."""
+    old = _ask(db, "Asked while the chat job was down")
+    db.execute(
+        "UPDATE chat_turns SET asked_at = now() - %s - interval '1 second' WHERE id = %s",
+        (QUEUE_DEADLINE, old),
+    )
+    young = _ask(db, "Asked just now")
+
+    assert chat.strand(db, now=datetime.now(UTC)) == [old]
+    turn = _turn(db, old)
+    assert (turn["status"], turn["reason"], turn["finished"]) == ("failed", NOT_STARTED, True)
+    assert _turn(db, young)["status"] == "queued"
+
+    db.execute(
+        "UPDATE chat_turns SET finished_at = now() - interval '8 days' WHERE id = %s", (old,)
+    )
+    _clear_chat(db)
+    words = db.execute("SELECT typed FROM chat_turns WHERE id = %s", (old,)).fetchone()
+    assert words == (None,)
+
+
+def _two_holds() -> dict[str, Any]:
+    """Two holds, next week's Tuesday and Wednesday: the executor refuses a
+    time gone by."""
+    tuesday = datetime.now(UTC).date() + timedelta(days=7)
+    tuesday += timedelta(days=(1 - tuesday.weekday()) % 7)
+    plan = dict(HOLD)
+    plan["steps"] = [
+        {
+            "op": "calendar.propose_hold",
+            "title": "Focus",
+            "start": f"{day}T14:00:00",
+            "end": f"{day}T16:00:00",
+        }
+        for day in (tuesday, tuesday + timedelta(days=1))
+    ]
+    return plan
+
+
+@pytest.mark.integration
+def test_a_turn_stopped_after_a_park_still_names_its_card(db: psycopg.Connection) -> None:
+    """A card parked before the stop waits on the queue all the same, so the
+    stopped turn's answer must lead the owner to it."""
+    turn_id = _ask(db, "Block Tuesday from 2 to 4pm, and Wednesday too")
+
+    def pause_after_the_first(record: Any) -> None:
+        db.execute("UPDATE control SET paused = true WHERE id = 1")
+
+    chat.answer_next(_session(db, Planner(_two_holds()), announce=pause_after_the_first))
+
+    turn = _turn(db, turn_id)
+    assert (turn["status"], turn["reason"]) == ("stopped", CHAT_STOPS["paused"])
+    assert turn["answer"] is not None
+    assert turn["answer"]["cards"] == [f"chat-{turn_id}-1"]
+    assert turn["answer"]["text"].startswith("A card is waiting for your Confirm: Focus")
+    parked = db.execute(
+        "SELECT count(*) FROM proposals WHERE chat_turn_id = %s", (turn_id,)
+    ).fetchone()
+    assert parked == (1,)
+
+
+@pytest.mark.integration
+def test_a_turn_out_of_time_after_a_park_names_its_card_and_does_not_ask_again(
+    db: psycopg.Connection,
+) -> None:
+    """Its time runs out once the first card is parked: the card waits, so
+    the reason no longer says "please ask again", which would make it twice."""
+    turn_id = _ask(db, "Block Tuesday from 2 to 4pm, and Wednesday too")
+    clock = Clock(datetime.now(UTC))
+
+    def time_passes(record: Any) -> None:
+        clock.now += TURN_DEADLINE + timedelta(minutes=1)  # clear of any clock skew
+
+    chat.answer_next(_session(db, Planner(_two_holds()), clock=clock, announce=time_passes))
+
+    turn = _turn(db, turn_id)
+    assert (turn["status"], turn["reason"]) == ("stopped", "This took too long, so I stopped.")
+    assert turn["answer"]["cards"] == [f"chat-{turn_id}-1"]
+
+
+@pytest.mark.integration
+def test_a_turn_that_fails_after_a_park_still_names_its_cards(
+    db: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Something unforeseen once the cards are parked: the turn fails, and
+    its answer still leads the owner to them rather than only to "ask
+    again", which would make more. (A step that fails is refused, and the
+    turn goes on, so the failure here is in the answer's rendering.)"""
+    turn_id = _ask(db, "Block Tuesday from 2 to 4pm, and Wednesday too")
+
+    def unforeseen(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("unforeseen")
+
+    monkeypatch.setattr(chat, "render", unforeseen)
+    chat.answer_next(_session(db, Planner(_two_holds())))
+
+    turn = _turn(db, turn_id)
+    # Not "please ask again": the cards wait, and asking again would make more.
+    assert (turn["status"], turn["reason"]) == ("failed", "Something went wrong, so I stopped.")
+    assert turn["answer"] == {
+        "text": CARDS_LEFT,
+        "allow": [],
+        "cards": [f"chat-{turn_id}-1", f"chat-{turn_id}-2"],
+    }
+
+
+@pytest.mark.integration
+def test_a_turn_stranded_after_a_park_still_names_its_card(db: psycopg.Connection) -> None:
+    """A crash after the first card leaves the turn running; the sweep that
+    fails it gives it an answer naming the card."""
+    turn_id = _ask(db, "Block Tuesday from 2 to 4pm, and Wednesday too")
+
+    def crash(record: Any) -> None:
+        raise SystemExit("the process stops")  # not an Exception: it ends the turn's run
+
+    with pytest.raises(SystemExit):
+        chat.answer_next(_session(db, Planner(_two_holds()), announce=crash))
+    assert _turn(db, turn_id)["status"] == "running"
+
+    later = datetime.now(UTC) + TURN_DEADLINE + timedelta(seconds=1)
+    assert chat.strand(db, now=later) == [turn_id]
+    turn = _turn(db, turn_id)
+    assert (turn["status"], turn["reason"]) == ("failed", "This was stopped by a restart.")
+    assert turn["answer"] == {"text": CARD_LEFT, "allow": [], "cards": [f"chat-{turn_id}-1"]}
 
 
 @pytest.mark.integration

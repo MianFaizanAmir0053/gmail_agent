@@ -35,6 +35,7 @@ CALENDAR = "test-calendar"
 START = datetime.now(UTC).replace(microsecond=0) + timedelta(days=3)
 SARA = "sara.khan@example.com"
 ALI = "ali.raza@example.org"
+ZOE = "zoe.typed@example.net"
 
 
 class NoGmail:
@@ -99,6 +100,9 @@ def db(conn: psycopg.Connection) -> psycopg.Connection:
     conn.execute("DELETE FROM chat_turns")
     conn.execute("DELETE FROM confirmed_contacts")
     conn.execute("UPDATE control SET paused = false WHERE id = 1")
+    # Sara is a confirmed contact, so the queue's own tests are about the
+    # queue; the recipient rule's tests name other guests.
+    contacts.allow(conn, SARA, via="web", key=KEY)
     return conn
 
 
@@ -143,6 +147,7 @@ def _park(
             proposed=proposed,
             request=typed,
             guest_sources=sources if sources is not None else dict.fromkeys(guests, "typed"),
+            outside_guests=contacts.unconfirmed(conn, guests),  # as the chat job parks
             conflicts=list(conflicts),
             pipeline_version="chat-test",
             binding=Binding(calendar_id=CALENDAR, key=KEY),
@@ -321,17 +326,30 @@ def test_a_decision_on_a_proposal_already_final_settles_as_that(
 
 
 @pytest.mark.integration
-def test_a_guest_the_owner_typed_needs_no_allow(db: psycopg.Connection) -> None:
-    message_id = _park(db, typed=f"invite {SARA} to a call on Monday")
-    _confirm(db, message_id)
+def test_a_guest_from_the_request_needs_an_allow(db: psycopg.Connection) -> None:
+    """D8, as amended on 2026-10-18: only confirmed contacts are inside. An
+    address from the request is outside on the card, and a Confirm is
+    refused until the owner allows it."""
+    message_id = _park(db, typed=f"invite {ZOE} to a call on Monday", guests=(ZOE,))
+    outside = db.execute(
+        "SELECT payload->'outside_guests' FROM proposals WHERE message_id = %s", (message_id,)
+    ).fetchone()
+    assert outside == ([ZOE],)
+    assert _confirm(db, message_id).status == "outside"
+
+    contacts.allow(db, ZOE, via="web", key=KEY)
+    assert _confirm(db, message_id).status == "queued"
     assert apply_open(_session(db, Calendar())) == [(message_id, "skipped")]
 
 
 @pytest.mark.integration
-def test_a_guest_neither_typed_nor_allowed_comes_back_marked(db: psycopg.Connection) -> None:
-    """Inside are the addresses typed in the request, read again at the
-    Confirm, and the confirmed contacts (D8)."""
+def test_a_contact_removed_before_the_confirm_comes_back_marked(db: psycopg.Connection) -> None:
+    """Inside are the confirmed contacts, read again at the Confirm (D8): a
+    contact allowed when the card was parked, and removed since, is
+    outside."""
+    contacts.allow(db, ALI, via="web", key=KEY)
     message_id = _park(db, typed="call with Ali on Monday", guests=(ALI,), sources={ALI: "contact"})
+    contacts.remove(db, ALI, key=KEY)
     _confirm(db, message_id)
 
     assert apply_open(_session(db, Calendar())) == [(message_id, "no_effect")]
@@ -356,6 +374,7 @@ def test_a_returned_proposal_keeps_its_card_and_is_shown_at_its_new_generation(
     """Re-parked from the stored row, which is all a chat proposal has: the
     conflicts and the guests' sources stay, and the card announced carries
     the generation a Confirm from it needs."""
+    contacts.allow(db, ALI, via="web", key=KEY)
     message_id = _park(
         db,
         typed="call with Ali on Monday",
@@ -363,6 +382,7 @@ def test_a_returned_proposal_keeps_its_card_and_is_shown_at_its_new_generation(
         sources={ALI: "contact"},
         conflicts=("Overlaps Standup",),
     )
+    contacts.remove(db, ALI, key=KEY)
     _confirm(db, message_id)
     announced: list[ProposalRecord] = []
 
@@ -385,12 +405,16 @@ def test_a_returned_proposal_keeps_its_card_and_is_shown_at_its_new_generation(
 
 
 @pytest.mark.integration
-def test_a_request_retention_has_cleared_names_no_guest(db: psycopg.Connection) -> None:
-    message_id = _park(db, typed=f"invite {SARA} to a call on Monday")
-    assert unconfirmed_outsiders(db, NoGmail(), message_id, [SARA]) == []
+def test_what_the_request_says_never_makes_a_guest_inside(db: psycopg.Connection) -> None:
+    """The request is not read at all: a guest typed in it is outside until
+    allowed, before retention clears the words and after."""
+    message_id = _park(db, typed=f"invite {ZOE} to a call on Monday", guests=(ZOE,))
+    assert unconfirmed_outsiders(db, NoGmail(), message_id, [ZOE]) == [ZOE]
 
     db.execute("UPDATE chat_turns SET typed = NULL")
-    assert unconfirmed_outsiders(db, NoGmail(), message_id, [SARA]) == [SARA]
+    assert unconfirmed_outsiders(db, NoGmail(), message_id, [ZOE]) == [ZOE]
+    contacts.allow(db, ZOE, via="web", key=KEY)
+    assert unconfirmed_outsiders(db, NoGmail(), message_id, [ZOE]) == []
 
 
 @pytest.mark.integration

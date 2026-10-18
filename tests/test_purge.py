@@ -551,6 +551,7 @@ def _chat_card(conn: psycopg.Connection, turn_id: int, *, status: str) -> None:
             proposed=proposed,
             request="Book 30 minutes with Sara",
             guest_sources={"sara.khan@example.com": "typed"},
+            outside_guests=["sara.khan@example.com"],
             conflicts=[],
             pipeline_version="chat-test",
             binding=Binding(calendar_id="test-calendar", key=args_key("test-key")),

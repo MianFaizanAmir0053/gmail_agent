@@ -340,17 +340,20 @@ def test_every_source_has_a_case() -> None:
     assert expected == set(get_args(Source)) - set(get_args(Chosen))
 
 
-def test_a_chat_guest_is_named_by_the_owner_or_a_confirmed_contact() -> None:
-    """M19, D8: what the owner typed stays theirs; a contact counts while allowed."""
+def test_a_chat_guest_is_from_the_request_or_a_confirmed_contact() -> None:
+    """M19, D8, as amended on 2026-10-18: an address from the request is
+    shown as such, and becomes an allowed contact once the owner allows it;
+    a contact counts while allowed."""
     card = {
         "guest_sources": {"sara@example.com": "typed", "ali@example.org": "contact"},
         "outside_guests": ["sara@example.com"],
     }
     allowed = frozenset({"ali@example.org"})
     assert card_source("sara@example.com", card, allowed) == "typed"
+    assert card_source("sara@example.com", card, allowed | {"sara@example.com"}) == "allowed"
     assert card_source("ali@example.org", card, allowed) == "contact"
     assert card_source("ali@example.org", card, frozenset()) is None
-    assert SOURCE_WORDS["typed"] == "named by you"
+    assert SOURCE_WORDS["typed"] == "in your request"
     assert SOURCE_WORDS["contact"] == "a confirmed contact"
 
 

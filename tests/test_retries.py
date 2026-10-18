@@ -14,7 +14,7 @@ from typing import Any, cast
 import psycopg
 import pytest
 
-from app.extraction.llm import LlmError, call_with_retry
+from app.extraction.llm import LlmError, UnavailableError, call_with_retry
 from app.obs.trace import Tracer
 
 
@@ -57,6 +57,17 @@ def test_retries_that_run_out_are_counted_too() -> None:
         call_with_retry(_flaky(10), what="m", attempts=4, base_delay=0)
 
     assert usage.retries == 3
+
+
+def test_retries_that_run_out_are_an_outage() -> None:
+    """A caller can tell an outage from an unusable answer (M19's chat says
+    "ask again later", not "ask another way"); every caller that catches
+    `LlmError` still catches it."""
+    with pytest.raises(UnavailableError) as raised:
+        call_with_retry(_flaky(10), what="m", attempts=2, base_delay=0)
+
+    assert isinstance(raised.value, LlmError)
+    assert isinstance(raised.value.__cause__, _TransientError)
 
 
 def test_retrying_outside_a_span_needs_no_tracing() -> None:

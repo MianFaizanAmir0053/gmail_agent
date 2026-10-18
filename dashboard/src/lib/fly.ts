@@ -1,7 +1,7 @@
 import "server-only";
 
 import { isPairingCode } from "@/lib/access";
-import type { ChatAnswer, ChatRequest } from "@/lib/chat";
+import { type ChatAnswer, type ChatRequest, chatConflict } from "@/lib/chat";
 import { failureKind, flyConfig } from "@/lib/flyConfig";
 import type {
   Allow,
@@ -132,7 +132,7 @@ export async function postChat(request: ChatRequest): Promise<ChatAnswer> {
     case 202:
       return "queued";
     case 409:
-      return "zone_mismatch";
+      return chatConflict(await response.json().catch(() => null));
     case 422:
       return "invalid";
     default:

@@ -40,16 +40,18 @@ describe("cardSource", () => {
     assert.equal(cardSource("sara@example.com", { ...card, thread_guests: ["Sara@Example.com"] }, none), "thread");
   });
 
-  it("names a chat guest as typed by the owner, or a contact while allowed (M19, D8)", () => {
+  it("names a chat guest as from the request until allowed, or a contact while allowed (M19, D8)", () => {
+    // As amended on 2026-10-18: an address from the request needs an Allow.
     const card = {
       guest_sources: { "sara@example.com": "typed", "ali@example.org": "contact" },
       outside_guests: ["sara@example.com"],
     };
     const ali = new Set(["ali@example.org"]);
     assert.equal(cardSource("sara@example.com", card, ali), "typed");
+    assert.equal(cardSource("sara@example.com", card, new Set([...ali, "sara@example.com"])), "allowed");
     assert.equal(cardSource("ali@example.org", card, ali), "contact");
     assert.equal(cardSource("ali@example.org", card, none), null);
-    assert.equal(SOURCE_WORDS.typed, "named by you");
+    assert.equal(SOURCE_WORDS.typed, "in your request");
     assert.equal(SOURCE_WORDS.contact, "a confirmed contact");
   });
 });

@@ -284,7 +284,7 @@ def run_chat(settings: Settings) -> None:
             stranded = chat.strand(conn, now=started_at)
             waiting = chat.has_queued(conn)
         if stranded:
-            log.warning("chat: %d turn(s) stranded by a restart were failed", len(stranded))
+            log.warning("chat: %d turn(s) left behind were failed", len(stranded))
         if not waiting or STOPPING.is_set():
             return
         with chat.chat_session(settings) as session:

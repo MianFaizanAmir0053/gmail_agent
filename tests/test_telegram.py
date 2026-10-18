@@ -243,7 +243,7 @@ def test_a_chat_cards_outside_guest_is_not_said_to_be_outside_a_thread() -> None
         BINDING,
     )
     text = cards.approval_card(record, zone="UTC")
-    assert "Not typed by you, nor a confirmed contact: sara@example.com" in text
+    assert "Not a confirmed contact: sara@example.com" in text
     assert "email thread" not in text
 
 

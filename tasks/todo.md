@@ -2068,6 +2068,6 @@ Spec: [`docs/plans/M19-planner.md`](../docs/plans/M19-planner.md), approved by t
 
 ### Checkpoint: M19 built
 
-- [ ] Python and web checks green, locally and in CI, with the routing baseline current.
-- [ ] Fresh-context review of the module.
+- [ ] Python and web checks green, locally and in CI, with the routing baseline current. *Green locally on 2026-10-18; CI waits for a push, and the baseline for 19.16.*
+- [x] Fresh-context review of the module: two reviews, of 19.1–19.8 (2026-10-04) and of 19.9–19.17 (2026-10-05). Every finding was fixed with a test that a deliberate break showed fails without it; one suggestion was left out, with its reason (running notes). Two doubt reviews of those fixes followed (2026-10-18), and the owner amended decision 5: only confirmed contacts are inside.
 - [ ] The exit criterion at the owner's end tests.

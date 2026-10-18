@@ -114,7 +114,7 @@ describe("cardView", () => {
 
   it("words a chat card as Telegram's does (app/telegram/cards.py)", () => {
     assert.equal(CHAT_TITLE, "Title: from your request");
-    assert.equal(OUTSIDE_WORDS.chat, "Not typed by you, nor a confirmed contact");
+    assert.equal(OUTSIDE_WORDS.chat, "Not a confirmed contact");
     assert.equal(OUTSIDE_WORDS.mail, "Not in this email thread");
     assert.equal(REQUEST_CHARS, 300);
   });

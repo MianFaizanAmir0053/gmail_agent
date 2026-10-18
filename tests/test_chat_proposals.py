@@ -25,7 +25,7 @@ from app.channel.worker import apply_open
 from app.config import Settings, WorkingHours
 from app.google.calendar import BusyInterval, CalendarClient, CalendarEvents
 from app.graph.nodes import Deps
-from app.graph.runner import GraphSession
+from app.graph.runner import GraphSession, graph_session
 from app.graph.versioning import planner_version
 from app.planner import chat, turns
 from app.planner.chat import OUT_OF_TIME, STRANDED, TURN_DEADLINE, Cards, ChatSession
@@ -271,6 +271,9 @@ def test_a_turn_parks_a_card_that_runs_through_decide_the_worker_and_the_registr
     assert card["title"] == "Call with Sara"
     assert card["attendees"] == [SARA]
     assert card["guest_sources"] == {SARA: "typed"}
+    # Decision 5 as amended (2026-10-18): an address from the request is
+    # outside until the owner allows it, so the card offers the Allow.
+    assert card["outside_guests"] == [SARA]
     assert card["conflicts"] == []
     assert card["proposed"]["reasoning"] == chat.CHAT_REASONING
     # Conflicts were read for exactly the event's time.
@@ -283,7 +286,10 @@ def test_a_turn_parks_a_card_that_runs_through_decide_the_worker_and_the_registr
         proposal["args_hash"],
     )
 
-    # A typed guest needs no Allow: the Confirm runs, in dry run.
+    # A typed guest needs an Allow: Confirm is refused until the owner gives
+    # it, then runs, in dry run.
+    assert _confirm(db, message_id) == "outside"
+    contacts.allow(db, SARA, via="web", key=KEY)
     assert _confirm(db, message_id) == "queued"
     writer = Writer(dry_run=True)
     assert apply_open(_worker(db, writer)) == [(message_id, "skipped")]
@@ -294,6 +300,21 @@ def test_a_turn_parks_a_card_that_runs_through_decide_the_worker_and_the_registr
         (message_id,),
     ).fetchone()
     assert action == ("dry_run",)
+
+
+@pytest.mark.integration
+def test_a_guest_from_the_request_is_outside_until_allowed(db: psycopg.Connection) -> None:
+    """The check before a Confirm and the registry's at execution read the
+    same rule: for chat, only confirmed contacts are inside. The box's marks
+    cannot prove an address was typed, so none counts as the owner's until
+    they allow it. Gmail is never asked."""
+    turn_id = _ask(db, f"Book 30 minutes with {SARA} next week")
+    chat.answer_next(_chat(db, _invite(guests=[SARA])))
+    message_id = f"chat-{turn_id}-1"
+
+    assert unconfirmed_outsiders(db, cast(Any, NoGmail()), message_id, [SARA]) == [SARA]
+    contacts.allow(db, SARA, via="web", key=KEY)
+    assert unconfirmed_outsiders(db, cast(Any, NoGmail()), message_id, [SARA]) == []
 
 
 @pytest.mark.integration
@@ -459,17 +480,25 @@ def test_the_session_binds_a_card_as_the_worker_binds_its_confirm(
     migrated_database: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """To the write calendar with the hash's key, as `graph_session` binds
-    the worker's: otherwise every Confirm would come back as changed."""
-    monkeypatch.setattr("app.google.auth.load_credentials", lambda settings: object())
-    monkeypatch.setattr("app.google.auth.build_service", lambda *args: object())
+    the worker's: otherwise every Confirm would come back as changed. The
+    worker's own session is opened to compare with, so a change to either
+    side fails here."""
+    for where in ("app.google.auth", "app.graph.runner"):
+        monkeypatch.setattr(f"{where}.load_credentials", lambda settings: object())
+        monkeypatch.setattr(f"{where}.build_service", lambda *args: object())
+    monkeypatch.setattr("app.extraction.pipeline.build_pipeline", lambda **kwargs: None)
     settings = _settings(migrated_database)
 
     with chat.chat_session(settings) as session:
         cards = session.cards
+    with graph_session(settings) as worker:
+        binds = worker.binding()
+        worker_dry_run = worker.dry_run
 
-    assert cards.binding == Binding(calendar_id="cal_test", key=args_key("a-fernet-key-for-tests"))
+    assert cards.binding == binds
+    assert binds == Binding(calendar_id="cal_test", key=args_key("a-fernet-key-for-tests"))
+    assert cards.dry_run is worker_dry_run is True
     assert cards.pipeline_version == planner_version(settings)
-    assert cards.dry_run is True
     assert cards.announce is not None
 
 

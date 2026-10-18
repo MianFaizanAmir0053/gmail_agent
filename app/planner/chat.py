@@ -37,10 +37,11 @@ from psycopg.types.json import Jsonb
 from app.channel.park import Announce, chat_proposal_id, park_chat
 from app.config import Settings, WorkingHours
 from app.contracts import ExtractionResult
-from app.extraction.llm import LlmError
+from app.extraction.llm import LlmError, UnavailableError
 from app.obs.trace import Tracer
 from app.planner.execute import (
     STOPS_THE_TURN,
+    Parked,
     Proposal,
     Tools,
     Turn,
@@ -50,8 +51,8 @@ from app.planner.execute import (
 from app.planner.ops import FoundMessage, MailReads
 from app.planner.origins import PastedText
 from app.planner.plan import Ask, InvalidPlanError, PlanPayload, to_plan
-from app.planner.render import COULD_NOT_PLAN, render
-from app.policy import models
+from app.planner.render import COULD_NOT_PLAN, cards_made, render
+from app.policy import contacts, models
 from app.policy.budget import (
     CHAT_STOPS,
     TURN_CEILING_STOP,
@@ -75,6 +76,22 @@ wakes it at once; this bounds the wait otherwise."""
 STRANDED = "This was stopped by a restart. Please ask again."
 OUT_OF_TIME = "This took too long, so I stopped. Please ask again."
 WENT_WRONG = "Something went wrong, so I stopped. Please ask again."
+MODEL_UNAVAILABLE = "The model could not be reached just now. Please ask again in a few minutes."
+NOT_STARTED = "This could not be started in time. Please ask again."
+
+QUEUE_DEADLINE = timedelta(minutes=10)
+"""How long a turn may wait to start. One still queued after this was never
+taken up -- the chat job cannot open its session -- and is failed, so the
+page unlocks and retention can clear it."""
+
+CARD_LEFT = "A card from this request is waiting for your Confirm."
+CARDS_LEFT = "Cards from this request are waiting for your Confirm."
+"""The answer of a turn that failed or was stranded after it parked: its cards
+wait on the queue all the same, and asking again would make more."""
+
+ASK_AGAIN = " Please ask again."
+"""Ends the reasons a turn gives when it stops early, unless it left cards."""
+
 CHAT_REASONING = "Proposed from a chat turn."
 """The stored event's reasoning. No model wrote the event: the executor
 built it from the checked plan (D8)."""
@@ -141,16 +158,51 @@ def finish(
 
 
 def strand(conn: psycopg.Connection, *, now: datetime) -> list[int]:
-    """Fail every turn still `running` past its deadline: a restart left it."""
-    rows = conn.execute(
-        """
-        UPDATE chat_turns SET status = 'failed', reason = %s, finished_at = now()
-         WHERE status = 'running' AND started_at < %s
-        RETURNING id
-        """,
-        (STRANDED, now - TURN_DEADLINE),
-    ).fetchall()
+    """Fail every turn left behind: one still `running` past its deadline,
+    which a restart left, and one still `queued` past `QUEUE_DEADLINE`, which
+    the job never took up. A stranded turn that had parked a card answers
+    with it (`cards_left`)."""
+    with conn.transaction():
+        rows = conn.execute(
+            """
+            UPDATE chat_turns
+               SET status = 'failed', finished_at = now(),
+                   started_at = coalesce(started_at, now()),
+                   reason = CASE WHEN status = 'running' THEN %s ELSE %s END
+             WHERE (status = 'running' AND started_at < %s)
+                OR (status = 'queued' AND asked_at < %s)
+            RETURNING id, reason
+            """,
+            (STRANDED, NOT_STARTED, now - TURN_DEADLINE, now - QUEUE_DEADLINE),
+        ).fetchall()
+        for turn_id, reason in rows:
+            left = cards_left(conn, int(turn_id)) if reason == STRANDED else None
+            if left is not None:
+                conn.execute(
+                    "UPDATE chat_turns SET answer = %s, reason = %s WHERE id = %s",
+                    (Jsonb(left), left_cards(reason), turn_id),
+                )
     return [int(row[0]) for row in rows]
+
+
+def left_cards(reason: str) -> str:
+    """The reason of a turn that ended after it parked: without "please ask
+    again", which would make the cards twice."""
+    return reason.removesuffix(ASK_AGAIN)
+
+
+def cards_left(conn: psycopg.Connection, turn_id: int) -> dict[str, Any] | None:
+    """The answer of a turn that ended before it could give its own: the
+    cards it parked, which wait on the queue all the same. None if it parked
+    none."""
+    rows = conn.execute(
+        "SELECT message_id FROM proposals WHERE chat_turn_id = %s ORDER BY message_id",
+        (turn_id,),
+    ).fetchall()
+    if not rows:
+        return None
+    cards = [str(row[0]) for row in rows]
+    return {"text": CARD_LEFT if len(cards) == 1 else CARDS_LEFT, "allow": [], "cards": cards}
 
 
 def has_queued(conn: psycopg.Connection) -> bool:
@@ -240,6 +292,12 @@ def answer_turn(session: ChatSession, turn: Claimed) -> None:
         log.warning("chat turn %d failed: %s", turn.id, type(exc).__name__)
         failure = exc
         status, written = "failed", {"reason": WENT_WRONG}
+        try:
+            left = cards_left(session.conn, turn.id)
+        except psycopg.Error:  # the failure may be the database's own
+            left = None
+        if left is not None:
+            written = {"reason": left_cards(WENT_WRONG), "answer": left}
     finally:
         models.CURRENT_MESSAGE.reset(serving)
     if not finish(session.conn, turn.id, status, **written):
@@ -267,6 +325,8 @@ def _run(
         with _span(tracer, "plan", turn.id):
             payload = session.plan(turn.typed, bool(turn.pasted), turn.asked_at)
         plan = to_plan(payload, pasted=bool(turn.pasted))
+    except UnavailableError:
+        return "failed", {"reason": MODEL_UNAVAILABLE}
     except (InvalidPlanError, LlmError):
         return "failed", {"reason": COULD_NOT_PLAN}
     except STOPS_THE_TURN as stop:
@@ -280,8 +340,12 @@ def _run(
         with _span(tracer, "read", turn.id):
             return reader(source, ask)
 
+    parked: list[Parked] = []
+
     def park(proposal: Proposal) -> str:
-        return _park(session, turn, proposal, go_on=go_on)
+        made = _park(session, turn, proposal, go_on=go_on)
+        parked.append(Parked(made, proposal))
+        return made
 
     tools = Tools(
         gmail=session.gmail,
@@ -295,7 +359,13 @@ def _run(
     try:
         outcome = execute(plan, owner, tools, now=session.clock(), before_step=go_on)
     except STOPS_THE_TURN as stop:
-        return "stopped", written | {"reason": _why(stop)}
+        stopped = written | {"reason": _why(stop)}
+        if parked:
+            # A card made before the stop waits on the queue all the same.
+            made = cards_made(parked, zone=session.zone)
+            stopped["answer"] = {"text": made.text, "allow": [], "cards": list(made.cards)}
+            stopped["reason"] = left_cards(_why(stop))
+        return "stopped", stopped
 
     answer = render(plan, outcome, zone=session.zone)
     return "answered", written | {
@@ -339,6 +409,9 @@ def _park(
     check = check_conflicts(session.calendar, event_args(proposed, message_id))
     go_on()
     with while_running(session.conn, turn.id):
+        # Only confirmed contacts are inside (D8, as amended on 2026-10-18):
+        # an address from the request waits for the owner's Allow.
+        outsiders = contacts.unconfirmed(session.conn, proposed.attendees)
         record = park_chat(
             session.conn,
             turn_id=turn.id,
@@ -346,6 +419,7 @@ def _park(
             proposed=proposed,
             request=turn.typed,
             guest_sources={guest.address: guest.source for guest in proposal.guests},
+            outside_guests=outsiders,
             conflicts=[check.describe()] if check.has_conflict else [],
             pipeline_version=cards.pipeline_version,
             binding=cards.binding,

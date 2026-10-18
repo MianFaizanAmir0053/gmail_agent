@@ -48,7 +48,7 @@ export const CHAT_TITLE = "Title: from your request";
  * the request and the confirmed contacts (M19, D8). */
 export const OUTSIDE_WORDS = {
   mail: "Not in this email thread",
-  chat: "Not typed by you, nor a confirmed contact",
+  chat: "Not a confirmed contact",
 } as const;
 
 /** One guest on a card, and where they came from (M18, D5). */

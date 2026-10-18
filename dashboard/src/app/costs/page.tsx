@@ -1,4 +1,5 @@
 import { Bars } from "@/components/Bars";
+import { perHundredEmails, TOTALS_SQL } from "@/lib/costs";
 import { num, query } from "@/lib/db";
 import { cost, ms, tokens } from "@/lib/format";
 
@@ -53,14 +54,21 @@ export default async function CostsPage() {
      GROUP BY model ORDER BY count(*) DESC
   `);
 
-  const [totals] = await query<{ cost: string | null; runs: string }>(`
-    SELECT sum(total_cost_usd) AS cost, count(*) AS runs
-      FROM runs WHERE started_at > now() - interval '30 days'
-  `);
+  const [totals] = await query<{
+    cost: string | null;
+    runs: string;
+    mail_cost: string | null;
+    mail_emails: string;
+  }>(TOTALS_SQL);
 
   const totalCost = num(totals?.cost) ?? 0;
   const runCount = Number(totals?.runs ?? 0);
-  const perHundred = runCount > 0 ? (totalCost / runCount) * 100 : null;
+  // Per email, not per run: chat turns are left out (M19), and an email run
+  // more than once counts once.
+  const perHundred = perHundredEmails(
+    num(totals?.mail_cost) ?? 0,
+    Number(totals?.mail_emails ?? 0),
+  );
 
   return (
     <>

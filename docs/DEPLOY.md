@@ -1060,6 +1060,7 @@ M19 adds **Ask**, the web app's chat page (`/chat`). The owner types a question 
   | `WORKING_HOURS` | `Mon-Fri 09:00-18:00` | Where a free slot may fall, in `USER_TIMEZONE`. |
 
 - **Chat needs `TEST_CALENDAR_ID` and `FERNET_KEY`**, which M17 already set. Cards from chat are written to the write calendar and bound with the same key as mail's.
+- **Chat needs `RUN_SCHEDULER=true`**, which production sets (§2). The chat job answers turns, and its sweep fails any left behind. Without the scheduler, as in a local `.\tasks.ps1 serve`, the API still accepts a question, but nothing answers it, and the Ask page waits.
 - **Vercel:** set `OWNER_TIMEZONE` to the agent's `USER_TIMEZONE`, then redeploy. Every question carries it, and the agent refuses one asked in another zone.
 - **What changes for mail's cards:**
   - Their conflicts now come from the primary calendar, not the write calendar. A calendar Google cannot read is reported as unavailable, never taken as free.
@@ -1067,7 +1068,7 @@ M19 adds **Ask**, the web app's chat page (`/chat`). The owner types a question 
 
 ### 14.2 What the owner sees
 
-- **The Ask page** lists the last 20 turns, with their answers. Text pasted into the box is marked as pasted, and the planner never reads it. The reader may read it when asked to, and the addresses in it are offered for an Allow.
+- **The Ask page** lists the last 20 turns, with their answers. Text pasted into the box is marked as pasted, and the planner never reads it. So is text an undo or a redo brings back, typing that puts in more than a word at once, and text that appears in the box with no event of its own. The reader may read it when asked to, and the addresses in it are offered for an Allow. One keyboard case is a known limitation (README): a single word a keyboard's clipboard, an extension or a text expander puts in as typing counts as typed, and so does what an input method or voice typing composes. None of it decides whose an address is.
 - **Answers are plain text written by code:**
   - Every value from mail says who sent it (their address, never a display name), whether Gmail verified their domain, and when.
   - What a message says is shown in quotation marks.
@@ -1076,7 +1077,7 @@ M19 adds **Ask**, the web app's chat page (`/chat`). The owner types a question 
 - **What Ask declines:** sending or replying to email, changing or deleting mail or events, and acting on what an email asks.
 - **A card from chat** appears on the timeline and in Telegram like mail's, with these differences:
   - It shows "You asked: …" and "Title: from your request".
-  - Each guest is "named by you" or "a confirmed contact". Any other guest must be allowed first.
+  - Each guest is "in your request" or "a confirmed contact". Only a confirmed contact counts as the owner's: an address from the request is offered for an Allow, and a Confirm is refused until it is given (M19 decision 5, as amended on 2026-10-18).
   - It has **no Edit**. To change it, the owner cancels it and asks again.
   - Reads use the primary calendar; the card is written to the write calendar.
 - **A turn's limits:**
@@ -1112,7 +1113,7 @@ On the deployed stack, with `DRY_RUN` on and the primary calendar:
    - "When did <someone> last write?";
    - "What's on Thursday?".
 2. **Cards:**
-   - "Book 30 minutes with <an address> next week": the guest is "named by you".
+   - "Book 30 minutes with <an address> next week": the guest is "in your request", and the card asks for an Allow. Confirm before the Allow is refused; after it, the Confirm runs.
    - "Book 30 minutes with <a confirmed contact's name>": the guest is "a confirmed contact".
    - Paste an address into the box: it is offered for an Allow, and never placed on a card.
    - Confirm one card: the timeline shows it skipped, as a dry run. The same card in Telegram has no Edit.

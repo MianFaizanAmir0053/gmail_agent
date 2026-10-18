@@ -351,7 +351,7 @@ def test_a_card_names_its_guests_and_how_each_was_named() -> None:
     answer = render(_plan(Template.PROPOSAL), _outcome(parked), zone=ZONE)
     assert answer.text == (
         "A card is waiting for your Confirm: Call with Sara, Thu 8 Oct 2026 15:00-15:30, "
-        "inviting sara.khan@example.com (named by you), "
+        "inviting sara.khan@example.com (in your request), "
         "ali.raza@example.org (a confirmed contact)."
     )
     assert answer.cards == ("chat-1-3",)
@@ -462,7 +462,7 @@ def test_the_answer_is_plain_text() -> None:
             "book-sara-next-week",
             [
                 "A card is waiting for your Confirm: Meeting with Sara, Mon 12 Oct 2026 "
-                "09:00-09:30, inviting sara.khan@example.com (named by you)."
+                "09:00-09:30, inviting sara.khan@example.com (in your request)."
             ],
         ),
         ("is-ali-free", [DECLINES[Decline.OUT_OF_SCOPE]]),

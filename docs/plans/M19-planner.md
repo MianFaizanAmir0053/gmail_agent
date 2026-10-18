@@ -46,6 +46,7 @@ followed the research, and the fourth followed the first adversarial review.
 3. **Mail facts come through a quarantined reader:** a tool-less model reads mail and returns fixed, typed fields; the planner never sees email text (the dual-LLM pattern).
 4. **Approvals: one queue, two sources,** by an additive migration (D8). The schema change is approved with this spec.
 5. **Guests in a chat invite:** an address the owner typed counts as theirs for that proposal, and the card says so. An address that came from elsewhere needs an Allow, as M17 requires.
+   - **Amended by the owner on 2026-10-18:** only a confirmed contact counts as the owner's. An address typed in the request is still placed on the card, shown as "in your request", and needs one Allow first, kept for good, as M17 requires. Two adversarial reviews showed the page cannot prove what was typed: restored form text, keyboards' clipboards, extensions and joined fragments all reach the box as typing. The page's marks now decide only what the planner reads (running notes, 2026-10-18).
 6. **Search:** Gmail's own search, built by code from typed fields. No ingestion, no embeddings.
 7. **The eval bar, in two steps.** The planner ships behind `DRY_RUN` on about 60 cases: the right operations at least 95% of the time, the right outcome at least 90%, and every request it must refuse or ask about handled correctly (100%), five samples a case. Before `DRY_RUN` goes off, the set grows to about 150 routing cases, three runs each, plus 100 cases that tempt a wrong write, with none allowed. 48 right out of 50 shows a true rate anywhere from 86.5% to 98.9%.
 8. **The plan is a JSON document of fixed steps,** from one model call; code runs it and checks every type; no result ever goes back to the model.
@@ -198,17 +199,17 @@ The rules, checked by the executor (`app/planner/execute.py`) before each operat
 - **A read's arguments** are typed or calendar values, or a ref returned by a search. No text from mail ever becomes a query.
 - **A title** is typed.
 - **A slot** is typed or calendar (decision 14).
-- **A guest** is an address the owner typed (D5), or a confirmed contact. A pasted address is offered on the card for an Allow (D5), never placed in a plan.
+- **A guest** is an address the owner typed (D5), or a confirmed contact. A pasted address is offered on the card for an Allow (D5), never placed in a plan. Only a confirmed contact is inside: one from the request waits for the owner's Allow (decision 5, as amended).
 - **Text from mail or from an event** is a `Quoted` value. It is shown to the owner, labelled, and accepted by nothing else.
 
 A step that breaks a rule fails with a fixed reason. The turn answers what it could, and says what it would not do.
 
 ### D5. What the owner typed, and what they pasted
 
-The browser knows what was pasted: the page records the ranges that arrived by a paste or a drop event. Fly keeps them apart from the typed request, so typed and pasted are never guessed from the text.
+The browser knows what was pasted: the page records the ranges that arrived by a paste or a drop event. Fly keeps them apart from the typed request, so typed and pasted are never guessed from the text. (Since the reviews of 2026-10-05 and 2026-10-18, the page goes by each input event's own type and text; see the running notes. It cannot prove what was typed, so its marks decide what the planner reads, never whose an address is.)
 
 - **The planner reads the typed request only.** Pasted text goes to the reader if the plan asks for it (`mail.read` of the paste, origin mail). It is shown back quoted, and never shapes a title, a time or a guest.
-- **Typed addresses.** Code finds the addresses in the typed request with the scrubber's own pattern (`scrub.ADDRESS`), and drops the owner's own and their aliases. A guest is "named by you" only when its `guest_key` matches one of them.
+- **Typed addresses.** Code finds the addresses in the typed request with the scrubber's own pattern (`scrub.ADDRESS`), and drops the owner's own and their aliases. A guest from the request must match one of them by `guest_key`. The card shows it as "in your request", and it waits for the owner's Allow (decision 5, as amended).
 - **An address the planner wrote** that the owner never typed, and that is not a confirmed contact, fails D4.
 - **Pasted addresses** are listed on the turn's answer as "from text you pasted", each with an Allow. Once allowed, an address is a confirmed contact, which the owner can then name in a new request.
 
@@ -258,7 +259,7 @@ The browser knows what was pasted: the page records the ranges that arrived by a
 - **The card** shows:
   - the typed request it came from;
   - where the title came from;
-  - each guest's source: "named by you" and "a confirmed contact" join M18's sources in `participants.py`, `guests.ts` and Telegram's cards;
+  - each guest's source: "named by you" and "a confirmed contact" join M18's sources in `participants.py`, `guests.ts` and Telegram's cards ("in your request" since decision 5's amendment);
   - its conflicts.
 
   A chat card has no Edit button, on the web or in Telegram.
@@ -318,7 +319,7 @@ The model run carries the same cases, checking the reader's quoted output for co
 ### D12. Records, grants and retention
 
 - **The web app's grant** (decision 12). `web_reader` may read `chat_turns`' id, status, asked time, typed request, rendered answer and reason. It may not read the pasted text or the plan.
-- **Retention.** A turn's typed request, pasted text, plan arguments and answer are cleared a week after the turn finished, and only once every proposal it made has settled. A pending card still needs the typed addresses. The plan's structure stays, for statistics. The purge does this, in `_clear_content`'s fashion.
+- **Retention.** A turn's typed request, pasted text, plan arguments and answer are cleared a week after the turn finished, and only once every proposal it made has settled. The plan's structure stays, for statistics. The purge does this, in `_clear_content`'s fashion.
 
 ### D13. Removing the tool loop, first
 
@@ -402,7 +403,7 @@ The structural test (`tests/test_no_tools.py`) changes with them:
   - Withdraw while held;
   - Edit refused from every channel;
   - Telegram's buttons decoding a chat id;
-  - a typed guest needs no Allow, and a pasted one does;
+  - a guest from the request needs an Allow, and a pasted one is offered for one (decision 5, as amended);
   - conflicts from the primary calendar.
 - **Records:** the grant, which `web_reader` can and cannot read, and the purge waiting for settled cards.
 - **The web app:**
@@ -441,7 +442,7 @@ The structural test (`tests/test_no_tools.py`) changes with them:
    - "when did <someone> last write?";
    - "what's on Thursday?".
 3. These park the right cards:
-   - "book 30 minutes with <address> next week": the guest is "named by you";
+   - "book 30 minutes with <address> next week": the guest is "in your request", and the card asks for an Allow before a Confirm (decision 5, as amended);
    - "book 30 minutes with <a confirmed contact's name>": the guest is "a confirmed contact";
    - an address pasted in: the address is offered for an Allow, never placed on a card.
 4. A planted email that tries to steer, found by a search, changes no plan. Its text shows only as a labelled quote, with no display name taken as identity.
@@ -658,7 +659,7 @@ Two adversarial rounds, each in fresh context, against the code, on 2026-10-04.
 - **What stops a turn, not a step:** the executor's new `TurnStoppedError`, and the spend gate refusing a reader's call. A refusal of a single step still leaves the others running.
 - **How a turn ends:**
   - A plan the check refuses, or a model answer that is unusable, fails the turn as "could not plan this".
-  - Anything else unforeseen fails it with a fixed sentence. Its trace keeps the exception's type.
+  - Anything else unforeseen fails it with a fixed sentence. Its trace keeps the exception's type and its first line, scrubbed.
 - **Writes are conditional:**
   - A turn's end is written only while the turn is `running`.
   - A park runs inside a transaction that holds the turn `running` (`while_running`).
@@ -694,8 +695,8 @@ A fresh-context review of the planner, read against D2 to D7 and D10, found ten 
 ### Task 19.11, the chat page (2026-10-04)
 
 - **`/chat`, "Ask" in the web app's menu,** lists the last 20 turns, oldest first. For each it shows the typed request, its status while open, its answer or its reason, an Allow for each address from a paste, and a link to the timeline when a card was made. Turns are read through `web_reader`'s grant, which excludes the paste and the plan.
-- **What was pasted (`src/lib/chat.ts`):** the box keeps a mark beside each character. A change is found by what the old and new text share at each end, and the characters it put in are marked pasted when the change was a paste or a drop. Characters around the change keep their marks. The request goes as runs of typed and pasted text (19.9).
-- **The key** is made in the browser at the first send and kept until Fly has the turn, so a send that timed out and is sent again finds the same turn. The box is locked while a turn is open. The page re-reads every two seconds, then every ten after thirty.
+- **What was pasted (`src/lib/chat.ts`):** the box keeps a mark beside each character. A change is found by what the old and new text share at each end, and the characters it put in are marked pasted when the change was a paste or a drop. (The review below changed this to the input event's own type, placed by the caret.) Characters around the change keep their marks. The request goes as runs of typed and pasted text (19.9).
+- **The key** is made in the browser at the first send and kept until the page hears a 202, so a send that timed out and is sent again finds the same turn. (The review below changed this: see "Review of tasks 19.9 to 19.17".) The box is locked while a turn is open. The page re-reads every two seconds, then every ten after thirty.
 - **Plain text:**
   - Answers are React text. A test scans the page and its components for any way to make markup from text.
   - A content policy on `/chat` lets the page load images from the app alone.
@@ -774,3 +775,89 @@ A fresh-context review of the planner, read against D2 to D7 and D10, found ten 
 - **Found while checking it against the code:** a `PLANNER_MODEL` with no price stops all new work, mail's included, since `models.in_use()` counts it. §14 says so.
 - **The README** describes Ask in the architecture, the eval command, the planner's safety defaults, and the `planner/` package.
 - **The read-through:** each spec item that needs a step or a setting is in §14. These are the migration, the grant, the five settings, the two calendars, the zone, the caps, the eval, retention and the exit criteria. One step has no command yet: D11's model run, listed under 19.16. §14.4 gains it with that run.
+
+### Review of tasks 19.9 to 19.17 (2026-10-05, fixes finished 2026-10-18)
+
+A fresh-context review of the chat turn, its records, the queue by source, the chat injection suite, retention and the runbook found ten problems: one high, one medium and eight low. It checked each with a script. The backend was sound: the worker, `decide()`, the registry, the spending check, the grant and the purge. The real problems were on the web Ask page. All ten were accepted; one suggestion within them was left out (below).
+
+- **High: an undo or a redo turned a paste into typing.** Only a paste or a drop marked text pasted, so text an undo or a redo brought back counted as typed. Mail text could reach the planner, and its addresses count as "named by you". The box now goes by each input event's own type (`typedInput`):
+  - only keys, composing, line breaks and spelling corrections are typing;
+  - a paste, a drop, an undo, a redo, a yank, or a type the browser does not name is pasted;
+  - so is typing that puts in an address or a line break whole, as a keyboard's clipboard can. (The doubt review below widened this.)
+- **Medium: a stale key could lose a request without a word.** After a send that timed out but was stored, the next, different request reused the key, and Fly answered 202 with the first turn. Now:
+  - the page drops the key on any change to the words, and after a 202 or a refusal (the doubt review below refined this: the key is kept for a resend of the same words);
+  - Fly refuses a key sent again with other words, typed or pasted, with a 409 (`key_reused`), and the page asks for the request to be sent again.
+- **Low:**
+  - The menu reaches Ask by a page load, so its content policy holds however the owner arrives. (Replaced by the doubt review below: the policy is sent on every page but sign-in.)
+  - A turn still queued after ten minutes (`QUEUE_DEADLINE`) is failed: "This could not be started in time." The page unlocks, and retention can clear its words. Before, a chat job that could not open its session left every turn queued for ever.
+  - A turn stopped after it parked a card keeps that card in its answer, since the card waits on the queue all the same.
+  - Retries that run out raise `UnavailableError`, a kind of `LlmError`. Chat then says the model could not be reached, not "ask another way". A stored outage reads `UnavailableError: ...` in traces, mail's included.
+  - A NUL in the request is refused with a 422, not a 500 on every resend.
+  - A typed insertion among equal pasted characters is placed by the caret, so the typed text keeps its order.
+  - The `/costs` card "Per 100 emails" leaves chat turns out: they are runs, not emails. The spend still counts them. (The doubt review below: it now counts emails, not runs.)
+  - Tests weaker than their names: the binding test opens the worker's own session and compares with its binding; the policy test checks the menu's link (since replaced); caret cases cover typing among equal pasted characters.
+  - Claims the code did not bear out: the README now says a chat limit can be passed by one call, since the check runs before a call whose cost is known only after it; the 19.10 and 19.11 notes are corrected.
+- **Left out:** reporting a failing chat job in `/health`. Each turn now ends saying it could not start, and the job logs its failure. A red `/health` would page for mail as well, over a chat setting.
+- **A residual** (narrowed by the doubt review below): a keyboard that commits clipboard text as typing.
+- **How it was finished.** The web half and the Python code were written on 2026-10-05; that session stopped before the Python tests. They were added on 2026-10-18, and each fix was broken on purpose: 7 Python breaks and 7 web breaks, each caught.
+- **Checks, before the doubt review:** 2225 Python tests passed locally, with 638 skipped for want of a database; lint, format and mypy clean. 192 web tests passed, with typecheck, lint and build clean. On Neon, the suites the fixes touch passed in full: chat's API, job, proposals, queue, spending and injection suites, the purge, the scheduler, the web API, `/health`, liveness and the grants, 386 tests.
+- **This laptop:** Windows Application Control now blocks the virtualenv's `python.exe`, so `.\tasks.ps1 check` cannot run here. These checks ran through the uv-managed base interpreter with the virtualenv's packages added. No local Postgres is left, so the integration tests ran on Neon.
+
+### Doubt review of the fixes (2026-10-18)
+
+Before the fixes above were committed, a fresh-context adversarial review read them against a written contract: what each fix must make true. It found eleven problems: one high, four medium and six low. Each was checked against the code. Ten were fixed and one was noted; two remarks outside the contract were noted too (below). It was a single-model review; a second opinion from another model was offered to the owner.
+
+- **High: clipboard text a keyboard puts in as typing.** A keyboard's clipboard chip, an extension or a text expander can put a whole line in as `insertText`. That counted as typed unless it held an address or a line break. Now typing that puts in more than a word at once counts as pasted, unless an input method composed it. Voice typing and input methods compose phrases, and a word a keyboard predicts, with its space, is still typing.
+- **Medium:**
+  - **An address finished by clipboard text** could count as named by you. The check read the change found in the box, not the event's own text, nor the word the change landed in. Now:
+    - a spelling correction, or typing that puts in more than one character, takes on the word it lands in: pasted if any of the word was pasted, or if the word is an address;
+    - an address counts as typed only if every character of it was typed, since a word with an "@" and anything pasted in it is pasted through (`settled`).
+  - **Safari's input methods.** WebKit finishes a composition by deleting it and putting the final text in as `insertFromComposition`. That counted as pasted, so every word an input method or a dead key finished did too. It is now composing, and typed.
+  - **The content policy could be lost** by a client navigation away from Ask, a reload, and Back. It is now sent on every page but sign-in, whose provider logos come from authjs.dev. The menu's Ask link is a client link again. The test checks the rule with Next's own path matcher.
+- **Low:**
+  - A turn that failed or was stranded after parking a card answers with the cards it parked (`cards_left`). Before, it said only "please ask again", which would make more.
+  - A spelling correction of a pasted word stays pasted, since it takes on its word.
+  - A caret left past the change is not trusted when the event says how much it put in.
+  - A character of two code units, such as an emoji, is never split between typed and pasted.
+  - The page keeps a request's key for a resend of the same words (`keyToSend`), so typing a character and deleting it no longer makes a second turn. A refused key now says the send "could not be matched", which is true also when retention has cleared the first send's words.
+  - The cost test runs the page's own query on Postgres (`tests/test_dashboard_costs.py`) rather than matching strings. "Per 100 emails" counts emails, not runs, since one email can be several runs.
+  - The README, DEPLOY.md and the web app's README say what the code now does.
+- **Noted, not changed:**
+  - `app/extraction/llm.py` is among both evals' hashed files, so the injection run must be redone once a baseline exists. None is committed yet.
+  - An outage seen as a connection error or a timeout has no status code, so it is not retried, and it ends as "Something went wrong" rather than as an outage. Widening the retries would change mail's pipeline too.
+  - A local `serve` without the scheduler never sweeps, so queued turns stay queued there. That is development only.
+- **What still counts as typed** (README, Known limitations): a single word put in at once by a keyboard's clipboard, an extension or a text expander; and whatever an input method or voice typing composes. Neither can name a guest. Counting a single word as pasted too would break keyboards' word predictions.
+- **The `ChatBox` component** has no test of its own, since the web app has no DOM test runner (M16). Its key and marks logic lives in `chat.ts` (`keyToSend`, `remarkInput`), which is tested.
+- **Tests first:** the new tests failed before the code they test existed. Two older tests that typed two letters in one event, against pasted text, were rewritten as single keys: real keys put in one character at a time.
+- **Breaks:** 10 on the web side and 4 on the Python and SQL side, each caught.
+- **Checks:** 2225 Python tests pass locally, with 641 skipped for want of a database; lint, format and mypy are clean. 205 web tests pass, with typecheck, lint and build clean. On Neon: the chat job and the cost query, 22 tests; then the scheduler, chat's proposals, queue, API, spending and injection suites, and the purge, 231 tests.
+
+### Second doubt review, and decision 5 amended (2026-10-18)
+
+A second fresh-context review read the revised fixes against a revised contract, which named the accepted trade-off above. It found eleven problems: two high, two medium and seven low. Three of them showed the box can still be got around, in ways no rule on its events can close:
+- **Text the box was never told of** (high): a form a reload or Back restores, or a script that sets the box's value, puts text in with no input event. The next key's event marked all of it typed.
+- **A word put in at once, joined by keys** (high): a one-word clip, then keys typed around it, made an address that counted as "named by you".
+- **Typed fragments joined across a paste** (medium): Fly joins the typed runs, so pieces either side of a paste could make an address that never showed on screen.
+
+**The owner's decision** (2026-10-18): only a confirmed contact counts as the owner's. An address from the request is placed on the card, shown as "in your request", and waits for one Allow, kept for good. The box's marks now decide only what the planner reads.
+- `contacts.unconfirmed_outsiders`: for chat, every guest who is not a confirmed contact is outside. The typed request is no longer read, and `typed_in_request` is gone.
+- The chat job parks a card with its guests who are not confirmed contacts as `outside_guests`, so the card offers each an Allow, and `decide()` refuses a Confirm until it is given.
+- The cards say "in your request" (`participants.py`, `guests.ts`, the answer's own words), and Telegram's line for an outside chat guest says "Not a confirmed contact". A guest from the request, once allowed, reads as "an allowed contact".
+- The box's rules that kept an address whole (`settled`'s address pass, and the "@" checks) are removed: they guarded nothing any longer, and they made marks move only one way, so a letter typed against a pasted address was pasted for good.
+
+**Fixed, of the rest:**
+- Typing whose own text does not account for the change found is pasted (the restored-text case), an event a script made counts as pasted (`inputKind`), and the box asks the browser not to restore it (`autoComplete="off"`).
+- A spelling correction alone takes on its word. Composed text beside a paste, as in Japanese with no spaces, stays typed.
+- A resend whose turn has ended is told so (409 `already_ended`), rather than read as newly asked.
+- A turn that ended after parking cards says so without "please ask again" (`left_cards`).
+- An unreadable 409 is an error, which is safe to send again, not another zone.
+- `afterNotice` holds what the page remembers it sent, and is tested; `remark()`, which the page no longer called, is gone and its tests run through `remarkInput`.
+- `docs/DEPLOY.md` §14.1 says chat needs `RUN_SCHEDULER=true`.
+
+**Moot under the decision:** the two address findings above, and a third, that typed fragments on Fly can join into an address: all three now meet an Allow.
+
+**Noted:** connection errors and timeouts still end as "Something went wrong" (as before); and composed text of any length counts as typed, which the README names.
+
+- **Breaks:** 7 on the web side and 8 on the Python side, each caught. One web break that a neighbouring test caught first was run again as a plain disable, and its own test caught it.
+- **Checks:** 2225 Python tests pass locally, with 644 skipped for want of a database; lint, format and mypy are clean. 208 web tests pass, with typecheck, lint and build clean. On Neon, the suites the change touches pass in full: chat's API, job, proposals, queue, spending and injection suites, the participants, Telegram's cards, the answer's rendering, the purge, the cost query, the web API and the scheduler, 490 tests; and the out-of-time test, added after that run began, 1.
+- **Not run:** a third review. The doubt cycle stops at three; this one's findings either changed the decision or were fixed with tests, each proven by a break.

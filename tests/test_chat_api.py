@@ -117,6 +117,9 @@ def test_another_zone_is_refused_and_nothing_is_stored(
         _request(("Hi", False), key="has spaces in it, not allowed"),
         {"key": KEY, "zone": ZONE, "parts": []},
         {"key": KEY, "zone": ZONE, "parts": [{"text": "Hi", "pasted": False, "extra": 1}]},
+        # Postgres stores no NUL in text: a 422 here, not a 500 on every resend.
+        _request(("Am I free" + chr(0) + " tomorrow?", False)),
+        _request(("Summarize", False), ("Please" + chr(0) + " review.", True)),
     ],
 )
 def test_a_request_out_of_bounds_is_refused(
@@ -181,6 +184,56 @@ def test_a_resend_finds_the_turn_already_stored(
     rows = conn.execute("SELECT typed, pasted, status FROM chat_turns").fetchall()
     assert rows == [("Summarize this", "Please review.", "queued")]
     assert WOKEN == [1]  # the job is woken for the new turn, not for the resend
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "other",
+    [
+        _request(("Am I free on Friday instead?", False)),
+        _request(("Summarize this", False), ("Another email entirely.", True)),
+        _request(("Summarize this", False)),
+    ],
+    ids=["other-typed-words", "another-paste", "the-paste-dropped"],
+)
+def test_a_key_sent_again_with_other_words_is_refused(
+    on_postgres: TestClient, conn: psycopg.Connection, other: dict[str, Any]
+) -> None:
+    """A page that kept a stale key must not lose its new request behind the
+    turn that key stored: the second request is refused, and said so."""
+    first = _post(on_postgres, _request(("Summarize this", False), ("Please review.", True)))
+    assert first.status_code == 202
+
+    again = _post(on_postgres, other)
+
+    assert again.status_code == 409
+    assert again.json()["status"] == "key_reused"
+    assert "Friday" not in again.text and "Another email" not in again.text
+    rows = conn.execute("SELECT typed, pasted FROM chat_turns").fetchall()
+    assert rows == [("Summarize this", "Please review.")]
+    assert WOKEN == [1]
+
+
+@pytest.mark.integration
+def test_a_resend_whose_turn_has_ended_is_told_so(
+    on_postgres: TestClient, conn: psycopg.Connection
+) -> None:
+    """A send that timed out was stored after all, and its turn has since
+    ended. The same words sent again must not read as newly asked."""
+    body = _request(("Am I free tomorrow at 3pm?", False))
+    first = _post(on_postgres, body)
+    assert first.status_code == 202
+    conn.execute(
+        "UPDATE chat_turns SET status = 'failed', started_at = now(), finished_at = now(),"
+        " reason = 'This was stopped by a restart. Please ask again.'"
+    )
+
+    again = _post(on_postgres, body)
+
+    assert again.status_code == 409
+    assert again.json() == {"status": "already_ended", "turn_id": first.json()["turn_id"]}
+    assert conn.execute("SELECT count(*) FROM chat_turns").fetchone() == (1,)
+    assert WOKEN == [1]
 
 
 @pytest.mark.integration

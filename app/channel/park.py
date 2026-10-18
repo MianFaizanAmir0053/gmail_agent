@@ -252,6 +252,7 @@ def park_chat(
     proposed: ExtractionResult,
     request: str,
     guest_sources: dict[str, str],
+    outside_guests: list[str],
     conflicts: list[str],
     pipeline_version: str,
     binding: Binding,
@@ -260,7 +261,8 @@ def park_chat(
     """Claim a chat proposal's ledger row and park it, in the caller's
     transaction (D8). There is no graph: the proposal row keeps the proposed
     event itself, which the worker re-parks from and the registry runs, and
-    the typed request the card shows."""
+    the typed request the card shows. `outside_guests` are the guests the
+    owner has yet to allow: the card offers each an Allow."""
     require_transaction(conn)
     message_id = chat_proposal_id(turn_id, step)
     if not MessageLedger(conn).claim(message_id, f"{CHAT_PREFIX}{turn_id}", source="chat"):
@@ -273,6 +275,7 @@ def park_chat(
         "dry_run": dry_run,
         "conflicts": conflicts,
         "guest_sources": guest_sources,
+        "outside_guests": outside_guests,
     }
     record = chat_record(message_id, pending, revision=1, binding=binding)
     generation = write_park(conn, record, ledger_status=MessageStatus.CLAIMED)

@@ -85,7 +85,9 @@ class CalendarReads(Protocol):
 
 
 GuestSource = Literal["typed", "contact"]
-""""named by you" or "a confirmed contact", as the card says (D8)."""
+""""in your request" or "a confirmed contact", as the card says (D8). Only a
+confirmed contact is inside; one from the request waits for the owner's
+Allow (decision 5, as amended on 2026-10-18)."""
 
 
 @dataclass(frozen=True, slots=True)

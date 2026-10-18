@@ -19,16 +19,17 @@ import psycopg
 from app.google.gmail import MessageGoneError
 from app.policy import audit
 from app.policy.hashing import subject_hash
-from app.policy.participants import SPACE, addresses_in, guest_key, outside, participants
+from app.policy.participants import SPACE, guest_key, outside, participants
 
 __all__ = [
     "MAX_ADDRESS_CHARS",
     "allow",
     "confirmed",
     "every_confirmed",
+    "from_chat",
     "guest_key",
     "remove",
-    "typed_in_request",
+    "unconfirmed",
     "unconfirmed_outsiders",
 ]
 
@@ -111,7 +112,8 @@ def unconfirmed_outsiders(
     conn: psycopg.Connection, gmail: ThreadReader, message_id: str, guests: Sequence[str]
 ) -> list[str]:
     """The guests who are neither in the message's thread nor confirmed
-    contacts, as given, in order.
+    contacts, as given, in order. A proposal from chat has no thread: every
+    guest who is not a confirmed contact is outside.
 
     Read now, from Gmail and the contacts, never from a graph's state: the
     worker's check before a Confirm and the registry's at execution both use
@@ -121,15 +123,15 @@ def unconfirmed_outsiders(
     as an empty thread, so every guest not allowed is outside. Guests who are
     all allowed need no read at all, so Gmail being down never holds them.
     """
-    allowed = confirmed(conn, guests)
-    unknown = [guest for guest in guests if guest_key(guest) not in allowed]
+    unknown = unconfirmed(conn, guests)
     if not unknown:
         return []
-    typed = typed_in_request(conn, message_id)
-    if typed is not None:
-        # A proposal from chat (M19, D8): inside are the addresses the owner
-        # typed in its request, read again now. Gmail is never asked.
-        return [guest for guest in unknown if guest_key(guest) not in typed]
+    if from_chat(conn, message_id):
+        # A proposal from chat (M19, D8, as amended on 2026-10-18): only
+        # confirmed contacts are inside. The page's marks cannot prove an
+        # address was typed, so one from the request needs the owner's Allow
+        # like any other. Gmail is never asked.
+        return unknown
     try:
         thread = gmail.thread_headers(gmail.message_metadata(message_id).thread_id)
     except MessageGoneError:
@@ -137,20 +139,18 @@ def unconfirmed_outsiders(
     return outside(unknown, participants=participants(thread), confirmed=frozenset())
 
 
-def typed_in_request(conn: psycopg.Connection, message_id: str) -> frozenset[str] | None:
-    """For a proposal from chat, the guest keys of the addresses the owner
-    typed in its request (M19, D5); None for mail's. A request retention has
-    cleared names no one, so every guest not allowed is outside."""
+def unconfirmed(conn: psycopg.Connection, guests: Sequence[str]) -> list[str]:
+    """The guests who are not confirmed contacts, as given, in order."""
+    allowed = confirmed(conn, guests)
+    return [guest for guest in guests if guest_key(guest) not in allowed]
+
+
+def from_chat(conn: psycopg.Connection, message_id: str) -> bool:
+    """Whether the proposal was parked from a chat turn (M19, D8)."""
     row = conn.execute(
-        """
-        SELECT t.typed FROM proposals p JOIN chat_turns t ON t.id = p.chat_turn_id
-         WHERE p.message_id = %s AND p.source = 'chat'
-        """,
-        (message_id,),
+        "SELECT 1 FROM proposals WHERE message_id = %s AND source = 'chat'", (message_id,)
     ).fetchone()
-    if row is None:
-        return None
-    return frozenset(addresses_in(row[0] or ""))
+    return row is not None
 
 
 def _checked(address: str) -> str:

@@ -171,11 +171,9 @@ def approval_card(
     )
     if outsiders:
         # Allowed in the web app only (M17, D4). A chat proposal has no thread:
-        # its guests are the ones the owner typed, and confirmed contacts (M19, D8).
+        # only confirmed contacts are inside (M19, D8, as amended on 2026-10-18).
         where = (
-            "Not typed by you, nor a confirmed contact"
-            if is_chat(record.message_id)
-            else "Not in this email thread"
+            "Not a confirmed contact" if is_chat(record.message_id) else "Not in this email thread"
         )
         lines.append(
             f"🚧 {where}: {_escape(', '.join(outsiders))}."

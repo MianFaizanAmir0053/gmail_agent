@@ -80,7 +80,8 @@ class Quoted:
 
 def typed_addresses(typed: str, owner: Iterable[str]) -> frozenset[str]:
     """The guest keys of the addresses in the owner's typed request, less the
-    owner's own. A guest is "named by you" only when it is one of these (D5)."""
+    owner's own. A guest from the request must be one of these (D5); it is
+    still outside until the owner allows it (D8, as amended on 2026-10-18)."""
     mine = {guest_key(address) for address in owner}
     return frozenset(guest_key(found) for found in _ADDRESS.findall(typed)) - mine
 

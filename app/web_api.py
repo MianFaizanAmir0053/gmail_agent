@@ -112,6 +112,14 @@ class ChatPart(BaseModel):
     text: str = Field(max_length=MAX_PASTED_CHARS)
     pasted: bool
 
+    @field_validator("text")
+    @classmethod
+    def _no_nul(cls, text: str) -> str:
+        # Postgres stores no NUL in text: refused here, not failed there.
+        if "\x00" in text:
+            raise ValueError("a NUL character")
+        return text
+
 
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -370,8 +378,10 @@ async def post_chat(
     request: Request, authorization: str | None = Header(default=None)
 ) -> JSONResponse:
     """Store a request for the chat job (M19, D1). A resend with the same key
-    finds the turn already stored. The zone must be the agent's own, so the
-    two sides cannot disagree about what "tomorrow" means."""
+    and words finds the turn already stored, and is told when that turn has
+    ended; other words under the key are refused. The zone must be the
+    agent's own, so the two sides cannot disagree about what "tomorrow"
+    means."""
     settings = get_settings()
     _verify(settings, authorization)
     body = await _body(request, ChatRequest)
@@ -380,7 +390,17 @@ async def post_chat(
             {"status": "zone_mismatch", "detail": "the web app's zone is not the agent's"},
             status_code=409,
         )
-    stored = await run_in_threadpool(_store_turn, settings, body)
+    try:
+        stored = await run_in_threadpool(_store_turn, settings, body)
+    except turns.KeyReusedError:
+        return JSONResponse(
+            {"status": "key_reused", "detail": "the key asked something else"},
+            status_code=409,
+        )
+    if stored.ended:
+        # A send that timed out was stored after all, and its turn has ended:
+        # the same words again ask nothing new (D1).
+        return JSONResponse({"status": "already_ended", "turn_id": stored.turn_id}, status_code=409)
     if stored.new:
         chat_requested()
     return JSONResponse({"status": "queued", "turn_id": stored.turn_id}, status_code=202)

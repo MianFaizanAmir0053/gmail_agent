@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -62,7 +63,7 @@ NOTHING_TO_SHOW = "There was nothing to show."
 
 _ADDRESS = re.compile(ADDRESS)
 
-GUEST_WORDS = {"typed": "named by you", "contact": "a confirmed contact"}
+GUEST_WORDS = {"typed": "in your request", "contact": "a confirmed contact"}
 """How a card's guests were named (D8), as the answer says it."""
 
 _FOUND_IN_MESSAGE = {
@@ -111,6 +112,16 @@ def render(plan: Plan, outcome: Outcome, *, zone: ZoneInfo) -> Answer:
         )
     cards = tuple(ran.result.proposal_id for ran in outcome.ran if isinstance(ran.result, Parked))
     return Answer("\n".join(lines) or NOTHING_TO_SHOW, outcome.pasted, cards)
+
+
+def cards_made(parked: Sequence[Parked], *, zone: ZoneInfo) -> Answer:
+    """What a turn stopped part way still says: each card it made, which
+    waits on the queue for the owner all the same."""
+    return Answer(
+        "\n".join(_card(result, zone) for result in parked),
+        (),
+        tuple(result.proposal_id for result in parked),
+    )
 
 
 def _shown_by(template: Template, results: list[Result], zone: ZoneInfo) -> list[str]:

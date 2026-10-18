@@ -321,6 +321,14 @@ restate the published price list, so a typo has to be made twice to ship.
   model holds a tool, and every action waits for the owner's Confirm.
 - **The credential and code rules are English.** A one-time code worded in
   another language is scrubbed only if it sits near an English cue word.
+- **A keyboard can put in clipboard text as typing.** An Android keyboard's
+  clipboard chip, an extension or a text expander may put text in as
+  ordinary typing (not yet tried on a device). Ask counts such an insertion
+  as pasted when it is more than a word. A single word put in at once counts
+  as typed, and so does whatever an input method or voice typing composes:
+  those words reach the planner. None of it can invite anyone: on a card from
+  chat, every address that is not a confirmed contact waits for the owner's
+  Allow, and every card for the owner's Confirm.
 - **The failures dashboard view has never rendered real data.** Nothing has
   failed in production yet.
 
@@ -411,12 +419,21 @@ Deployment runbook: [`docs/DEPLOY.md`](docs/DEPLOY.md).
   - The ledger and stored errors quote no email.
 - The planner reads only what the owner typed (M19):
   - Mail and pasted text never reach it, and no step's result goes back to it.
-  - A card from chat invites only addresses the owner typed, or confirmed
-    contacts. A pasted address is offered for the owner's Allow, never placed.
+    The box judges each input event by its own type and text: a paste, a
+    drop, an undo or a redo is pasted, and so is typing that puts in more
+    than a word at once, or text that appears with no event of its own (one
+    keyboard case is under Known limitations).
+  - A card from chat invites only addresses from the owner's request, or
+    confirmed contacts, and every address that is not a confirmed contact
+    needs the owner's Allow first: the box's marks cannot prove what was
+    typed. A pasted address is offered for an Allow, never placed.
   - Answers are written by code, each value from mail labelled with its
     sender's address, never a display name.
-  - Chat spends at most `CHAT_DAILY_CAP_USD` a day and `CHAT_TURN_CEILING_USD`
-    a turn, and leaves `MAIL_RESERVE_USD` of the month for mail.
+  - Chat stops at `CHAT_DAILY_CAP_USD` a day and `CHAT_TURN_CEILING_USD` a
+    turn, and leaves `MAIL_RESERVE_USD` of the month for mail. Each limit is
+    checked before a call, and a call's cost is known only after it, so the
+    call that crosses a limit is the last one: a limit can be passed by one
+    call.
 - An injection suite checks all of it with no model in CI, through the
   preparation, the prompt and a model that obeys every injection. A committed
   run on the real model is tied by a hash to the code that shapes the prompt.
