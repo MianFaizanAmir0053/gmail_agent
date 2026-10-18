@@ -107,7 +107,9 @@ function Sync-Venv([string]$BasePython) {
     }
     if ($LASTEXITCODE) { throw 'uv could not export uv.lock: see above.' }
     try {
-        uv pip install --python $BasePython --prefix $venv --require-hashes --no-deps --quiet -r $lock
+        # Each line carries its hashes, and uv checks them unasked. Not
+        # --require-hashes: it would also want [tool.uv]'s constraint pinned.
+        uv pip install --python $BasePython --prefix $venv --no-deps --quiet -r $lock
         if ($LASTEXITCODE) { throw 'uv could not install the packages uv.lock names: see above.' }
     } finally {
         Remove-Item -LiteralPath $lock -ErrorAction SilentlyContinue
