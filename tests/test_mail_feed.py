@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -342,3 +343,88 @@ def test_a_claim_that_cannot_be_settled_is_left_and_the_rest_are_settled(
     assert (result.errors, result.failed) == (1, 1)
     entry = MessageLedger(mail).get("unreadable")
     assert entry is not None and entry.status is MessageStatus.CLAIMED
+
+
+# --- an outage (M20's open question, closed 2026-10-18) -------------------------------------
+
+OUTAGES_MIGRATION = Path(__file__).resolve().parent.parent / "migrations" / "014_poll_outages.sql"
+
+
+def test_the_outages_migration_can_be_run_again(mail: psycopg.Connection) -> None:
+    """Again on a table with rows, and still with one check on the count."""
+    _message(mail, "m1")
+    sql = OUTAGES_MIGRATION.read_text(encoding="utf-8")
+    mail.execute(sql)
+    mail.execute(sql)
+
+    checks = mail.execute(
+        """
+        SELECT count(*) FROM pg_constraint
+         WHERE conrelid = 'gmail_messages'::regclass AND contype = 'c'
+           AND pg_get_constraintdef(oid) LIKE '%%outages >= 0%%'
+        """
+    ).fetchone()
+    assert checks is not None and checks[0] == 1
+
+
+def test_the_outages_migration_upgrades_a_table_with_rows(mail: psycopg.Connection) -> None:
+    """As production meets it: rows written before the columns existed. The
+    fixture's transaction is rolled back, the dropped columns with it."""
+    mail.execute("ALTER TABLE gmail_messages DROP COLUMN outages, DROP COLUMN last_outage_at")
+    _message(mail, "before")
+
+    mail.execute(OUTAGES_MIGRATION.read_text(encoding="utf-8"))
+
+    row = mail.execute(
+        "SELECT outages, last_outage_at FROM gmail_messages WHERE message_id = 'before'"
+    ).fetchone()
+    assert row == (0, None)
+
+
+def test_a_message_released_for_an_outage_waits_before_the_feed_offers_it_again(
+    mail: psycopg.Connection,
+) -> None:
+    _message(mail, "rested")
+    _message(mail, "resting")
+    feed.record_outage(mail, "rested", now=NOW - feed.OUTAGE_WAIT)
+    feed.record_outage(mail, "resting", now=NOW - feed.OUTAGE_WAIT + timedelta(minutes=1))
+
+    assert _candidates(mail) == ["rested"]
+
+
+def test_the_third_tick_after_an_outage_offers_the_message_and_the_second_does_not(
+    mail: psycopg.Connection,
+) -> None:
+    """Passes start ten minutes apart, a few seconds either way: a pass that
+    opened its session faster than the stamped one still offers it."""
+    _message(mail, "three-ticks-ago")
+    _message(mail, "two-ticks-ago")
+    feed.record_outage(mail, "three-ticks-ago", now=NOW - timedelta(minutes=30, seconds=-3))
+    feed.record_outage(mail, "two-ticks-ago", now=NOW - timedelta(minutes=20, seconds=3))
+
+    assert _candidates(mail) == ["three-ticks-ago"]
+
+
+def test_a_message_still_waiting_at_seven_days_is_recorded_too_old(
+    mail: psycopg.Connection,
+) -> None:
+    _message(mail, "aged", at=NOW - timedelta(days=8))
+    mail.execute("UPDATE gmail_cursors SET feed_from = %s", (NOW - timedelta(days=30),))
+    feed.record_outage(mail, "aged", now=NOW - timedelta(minutes=5))
+
+    assert feed.record_too_old(mail, now=NOW) == ["aged"]
+
+
+def test_outages_are_counted_per_message(mail: psycopg.Connection) -> None:
+    _message(mail, "m1")
+    _message(mail, "m2")
+
+    assert [feed.record_outage(mail, "m1", now=NOW) for _ in range(3)] == [1, 2, 3]
+    assert feed.record_outage(mail, "m2", now=NOW) == 1
+
+
+def test_an_outage_on_a_message_the_sync_never_stored_counts_as_its_last(
+    mail: psycopg.Connection,
+) -> None:
+    """Nothing could count it, so poll dead-letters it rather than retry it blind."""
+    assert feed.record_outage(mail, "unknown", now=NOW) == feed.MAX_OUTAGES

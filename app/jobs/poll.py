@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import threading
+from datetime import UTC, datetime
 from typing import NamedTuple
 
 import psycopg
@@ -24,6 +25,7 @@ from app.google.gmail import MessageGoneError
 from app.graph.runner import GraphSession, graph_session
 from app.mail import feed
 from app.obs.redact import error_text
+from app.outage import is_outage
 from app.policy import audit, control
 from app.policy.budget import SPENDING_STOPPED, MessageTooCostlyError
 from app.store.db import connect
@@ -42,6 +44,7 @@ timeout, leaving a `claimed` row that nothing ever offers again.
 
 HELD_PAUSED = "the agent is paused"
 HELD_BY_GATE = "new work is stopped: the spending cap, or a model with no price"
+HELD_BY_OUTAGE = "the model, Google or the network is unavailable"
 
 
 class PollResult(NamedTuple):
@@ -57,7 +60,10 @@ class PollResult(NamedTuple):
     their records being written (reconciliation writes those later)."""
     held: str | None = None
     """Why the pass stopped short: the owner paused the agent, or the spend
-    gate stopped new work (M17). Nothing more was claimed; not a failure."""
+    gate stopped new work (M17), neither a failure; or an outage, which is
+    (`HELD_BY_OUTAGE`). Nothing more was claimed."""
+    outage: str | None = None
+    """The type of the exception that was the outage, when one held the pass."""
 
 
 def poll_once(
@@ -85,11 +91,15 @@ def poll_once(
         print("  paused: nothing is claimed")
         return PollResult(seen=0, started=0, failed=0, held=HELD_PAUSED)
 
+    # An outage is stamped with this, so the feed's wait ends at the tick it
+    # names, however long the run took to give up.
+    pass_started = datetime.now(UTC)
     candidates, seen, from_feed = _candidates(session, ledger, limit)
     started = 0
     failed = 0
     stopped = False
     held: str | None = None
+    outage_type: str | None = None
 
     for message_id in candidates:
         if stop is not None and stop.is_set():
@@ -141,6 +151,25 @@ def poll_once(
             print(f"  {message_id}  SKIPPED  {audit.REASONS['too_costly']}")
             continue
         except Exception as exc:
+            # An outage, not this message's failure (M20's open question,
+            # closed 2026-10-18): counted, then released like a spending stop,
+            # checkpoint first, so the feed offers it again after its wait.
+            # The rest of the pass would meet the same outage. Before the
+            # first sync run there is no row to count it on, so it is
+            # dead-lettered as before.
+            outage = from_feed and is_outage(exc)
+            if outage:
+                outage_type = type(exc).__name__
+            if (
+                outage
+                and feed.record_outage(session.conn, message_id, now=pass_started)
+                < feed.MAX_OUTAGES
+            ):
+                session.checkpointer.delete_thread(message_id)
+                ledger.release(message_id)
+                print(f"  {message_id}  RELEASED  {HELD_BY_OUTAGE} ({outage_type})")
+                stopped, held = True, HELD_BY_OUTAGE
+                break
             # Retries already happened inside the graph. Reaching here means the
             # failure survived them, so dead-letter it: FAILED is deliberately
             # non-terminal, and the message can be re-run once the cause is fixed.
@@ -150,6 +179,10 @@ def poll_once(
             ledger.mark(message_id, MessageStatus.FAILED, error=error)
             print(f"  {message_id}  FAILED  {error if show_titles else type(exc).__name__}")
             failed += 1
+            if outage:
+                # Its last outage: the outage itself goes on.
+                stopped, held = True, HELD_BY_OUTAGE
+                break
             continue
 
         pending = session.pending(message_id)
@@ -176,7 +209,7 @@ def poll_once(
         # Once the feed has started, it is where the sync's first run began,
         # and nothing moves it again.
         SyncCursor(session.conn).set(session.deps.gmail.current_history_id())
-    return PollResult(seen=seen, started=started, failed=failed, held=held)
+    return PollResult(seen=seen, started=started, failed=failed, held=held, outage=outage_type)
 
 
 def _candidates(

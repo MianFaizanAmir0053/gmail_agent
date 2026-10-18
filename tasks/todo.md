@@ -2207,6 +2207,8 @@ The fixtures begin in `data/loose_ends/fixtures/`, as metadata rows.
 
 A failure charges a strike unless it is an outage (`UnavailableError`, `is_outage`). Three strikes make `unreadable`, and `python -m app.loose_ends --retry-unreadable` clears them.
 
+*Since 2026-10-18 one judge decides an outage: `app.outage.is_outage`, which poll uses too. It covers more than these two; see M21's running notes.*
+
 **Acceptance criteria:**
 - [ ] With the switch off, nothing is scheduled and `started_at` stays unset. Two runs at once never both read. A run on a mailbox that is not current reads and closes nothing.
 - [ ] The order of reads, and the per-sender limit on asks only, have tests.

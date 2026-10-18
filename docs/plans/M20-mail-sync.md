@@ -232,6 +232,7 @@ these:
   - for a message with no category label, `has_list_unsubscribe` is false;
 - `internal_at` at or after `feed_from` less an hour;
 - no ledger row yet;
+- not waiting out an outage: 25 minutes since its last (`last_outage_at`, since 2026-10-18; see the running notes);
 - a sync pass reached the end of history in the last 30 minutes (`caught_up_at`). Labels are only as current as the sync: hours into a failing sync, a message the owner trashed meanwhile would still look like Inbox. While the sync is behind, the feed offers nothing, and records nothing as too old.
 
 They are taken oldest first, up to `POLL_BATCH_SIZE`. Everything after that is
@@ -452,6 +453,7 @@ On the deployed stack, at the owner's end tests:
 ## Open questions
 
 - **FAILED messages are never retried.** The ledger calls FAILED retryable, but poll skips any message with a ledger row. M20 removes the commonest cause it adds (rate limits) and records the cases it creates (gone, too old, stranded). Retrying the rest belongs with M21.
+  - *Closed for outages on 2026-10-18; see the running notes.* M21's spec did not take this up, and production met it on its first day back. A failure of the message itself is still FAILED, and never tried again.
 
 ## Review
 
@@ -510,3 +512,93 @@ Task 20.8's read-through had never been recorded. A fresh-context reader compare
 - The checklist's "`--status` shows the cursor" now says what it prints: when the cursor last reached the end of history.
 
 The task list's boxes for 20.1 to 20.8 were ticked on the same day from this record. The exit criterion waits for the owner's end tests.
+
+### Outages go back to the feed (2026-10-18)
+
+On its first day back in production, a Gemini overload (`503 UNAVAILABLE`, "high demand", on all four attempts) dead-lettered one message for good: the open question above, met for real. The owner chose to close it now, ahead of M21.
+
+**What counts as an outage.** One judge decides, `app.outage.is_outage`: a failure every message would meet. M21's reads use it too, so the two never disagree.
+- A model gave up after its retries (`UnavailableError`), or the network to it failed: httpx's `TransportError`, which the model clients raise as they are.
+- Gemini or AI Gateway refused the key, billing, permission, model or quota: a `401`, `403`, `404` or `429` on their own error classes (`MODEL_REFUSALS`). The same goes for a Gemini `400` naming the key invalid (`API_KEY_INVALID`) or the project unsupported (`FAILED_PRECONDITION`). A day's quota is one of these: the client gives up on it at once.
+- The calendar could not be read (`CalendarUnavailableError`). Google can say so inside a `200`, which nothing retries.
+- A response cut off mid-read: http.client's own errors, which httplib2 lets through on a bad link.
+- Google or the network failed, as `gmail.is_outage` judges it. That means a `429` or `5xx`, a rate-limit `403`, a `401` or a refused token, or an `OSError`. It covers Calendar's conflict check too, and a local `OSError` such as a missing token file, which also fails every message.
+
+Every other failure is the message's own, and is still dead-lettered as FAILED: a `400` about the message, for one.
+
+**What poll does with one.**
+- It counts the outage on the message's `gmail_messages` row (`outages`, `last_outage_at`, migration `014`), stamped with the start of the pass.
+- It then releases the message like a spending stop, checkpoint first, so the message runs from the start when it is offered again.
+- The pass stops there, since the rest would meet the same outage. Its line and its `job_runs` error name the outage's type.
+- Before the first sync run there is no row to count on, so an outage is dead-lettered there, as before.
+
+**What the feed does.** Passes start ten minutes apart, give or take the seconds a session takes to open. The feed waits 25 minutes from the stamp (`OUTAGE_WAIT`), so the third tick after offers the message again, half an hour on, and the second does not. The rest go first meanwhile. The rule's list (D4) names the wait.
+
+**The cap.** The forty-eighth outage for one message dead-letters it (`MAX_OUTAGES`), about a day on.
+- The count is per message, but most outages are everyone's, and each pass tries only the oldest waiting message: during a long outage, the three oldest take turns.
+- The first cut stopped at three tries and the second at twelve. Each review showed what that meant: an outage of an hour, then of five and a half, dead-lettered the waiting mail a few at a time. A day's quota resets only at midnight Pacific.
+- The owner chose a day. A message that meets an outage every time stops then, having held one pass in three, and the daily recall reports it stalled meanwhile.
+- A message still waiting at seven days is recorded too old when reached, as any other.
+
+**What the owner sees.**
+- A pass held by an outage is not ok ("the model, Google or the network is unavailable", with the type), as one that failed messages was.
+- `/health` returns 503 once no pass has succeeded for three intervals. That takes three passes in a row that meet the outage, so three messages or more waiting. With fewer, the ticks between are empty and ok, as before.
+- The outage wait is in `feed.candidates` only, not in `RULE`, so a message waiting out an outage is waiting. The daily recall reads mail that arrived 2 to 26 hours before it, after 05:15 UTC. A message that has waited over an hour makes it report the feed stalled, with its push. That alarm is true: the message did not move.
+
+**Left as they are.**
+- A pass run by hand while the scheduler's runs can claim a message the moment it is released, before its wait. It would only be tried early, and counted.
+- The count is never reset. Re-running a FAILED message by hand resets it: the runbook's §10.4 has the statement.
+- A database that fails with the outage, as a dropped Wi-Fi can, leaves the message claimed until the agent restarts, as any failure in the dead-letter step did before.
+- Each try runs the message from the start. An outage after extraction, at the calendar, spends its model calls again against the message's ceiling (`MESSAGE_CEILING_USD`, $0.50). For a long email at 2027's doubled price, many tries can pass it, and the message is then SKIPPED as too costly.
+- A failure of one message that looks like an outage is taken for one: a `500` that Gmail or Gemini answers for that message alone, where the sync would first ask Gmail's profile. It holds a pass a try for about a day, then FAILED.
+- The times assume `POLL_INTERVAL_MINUTES` of 10, the default and production's. A tick APScheduler starts late, up to its five-minute grace, can move a retry one tick either way.
+- `--check-feed` lists a message waiting out an outage as neither processed nor recorded, with no reason.
+- No test runs a real graph through an outage. The poll and judge tests raise the real exception classes at `start`.
+
+**Tests.**
+- `test_outage.py`:
+  - seventeen failures every message would meet are outages;
+  - four of the message's own are not;
+  - a `code` on anything but a model's error class reads as nothing;
+  - google-genai prints the invalid key's marker where the judge looks for it.
+- `test_poll.py`, thirteen tests:
+  - a message's tries span about a day, at three ticks apart;
+  - a model outage is counted, then its checkpoint deleted, then its claim released, and the pass's line names the type;
+  - a Gmail outage, the model's network, an unreadable calendar and Gemini refusing the project's billing each send the message back too;
+  - a `400` about the message is its own failure;
+  - the outage is stamped no earlier than its pass began, and no later than the feed was read;
+  - one partway through keeps what ran;
+  - the forty-seventh outage still sends the message back, and the forty-eighth dead-letters it and still stops the pass;
+  - a message's own failure is dead-lettered while the pass goes on;
+  - before the first sync run, an outage is dead-lettered.
+- `test_scheduler.py`, four:
+  - a pass held by an outage is not ok, in `job_runs` and in `/health`'s liveness, naming its type;
+  - a last outage reports both the failure and the outage;
+  - a pass held by a pause or by the cap is ok.
+- `test_mail_feed.py`, seven on Postgres:
+  - the migration upgrades a table with rows, and runs again with one check;
+  - the wait to its end;
+  - the third tick offers the message and the second does not;
+  - a message still waiting at seven days is recorded too old;
+  - the count per message;
+  - a message with no synced row counts as at its last outage.
+- Deliberate breaks of the judge, poll, the scheduler and the feed each made a test fail. The commit message gives the count.
+
+**Review.** Three fresh-context adversarial reviews; cross-model was offered for each and skipped by the owner.
+- **The first found:** the three-try cap, a wait of four ticks rather than three, the model's network errors left out, and docs that overstated `/health` and named only Gmail.
+- **The second found:**
+  - the wait could still slip a tick when a pass opened faster;
+  - Calendar's in-body errors, and the model's refusals, were not outages;
+  - the stamp test was one-sided;
+  - the outage's type went unrecorded;
+  - the docs were wrong on the recall's timing and the re-run steps.
+- **The third found:**
+  - twelve tries still dead-lettered mail in a long outage;
+  - AI Gateway's refusals, a retired model, an unsupported project and half-read responses were not outages;
+  - the judge would have diverged from M21's;
+  - the runbook's re-run steps were in an unsafe order;
+  - the judge read a `code` off any exception.
+
+All of those were fixed, by the owner's choices where they were choices. The reviews' other findings are the trade-offs above.
+
+The message dead-lettered that day stays FAILED unless the owner re-runs it: the fix does not re-run outages recorded before it.

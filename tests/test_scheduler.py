@@ -15,6 +15,7 @@ from app.channel.alerts import Alert
 from app.channel.reconcile import ReconcileResult
 from app.config import Settings
 from app.google.tokens import TokenHealth, TokenMetadata
+from app.jobs import poll
 from app.jobs.ingest_job import incremental_query, scheduled_ingest
 from app.jobs.poll import STOPPING, PollResult
 from app.jobs.scheduler import (
@@ -477,6 +478,55 @@ def test_a_poll_that_fails_any_message_is_not_ok(monkeypatch: pytest.MonkeyPatch
 
     assert recorded[0]["ok"] is False
     assert recorded[0]["failed"] == 1
+
+
+def test_a_poll_held_by_an_outage_is_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing was dead-lettered, yet no mail moved: `/health` must see it, as
+    it saw the failures an outage used to cause."""
+    recorded = _capture(monkeypatch)
+    liveness = Liveness(booted_at=datetime.now(UTC))
+    monkeypatch.setattr("app.jobs.scheduler.LIVENESS", liveness)
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    held = PollResult(
+        seen=2, started=1, failed=0, held=poll.HELD_BY_OUTAGE, outage="UnavailableError"
+    )
+    monkeypatch.setattr("app.jobs.scheduler.poll_once", lambda *a, **k: held)
+
+    run_poll(_settings())
+
+    assert recorded[0]["ok"] is False
+    assert recorded[0]["error"] == f"{poll.HELD_BY_OUTAGE} (UnavailableError)"
+    assert liveness.last_poll_at is not None and liveness.last_poll_ok_at is None
+
+
+def test_a_last_outage_reports_the_failure_and_the_outage(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _capture(monkeypatch)
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    held = PollResult(
+        seen=1, started=1, failed=1, held=poll.HELD_BY_OUTAGE, outage="UnavailableError"
+    )
+    monkeypatch.setattr("app.jobs.scheduler.poll_once", lambda *a, **k: held)
+
+    run_poll(_settings())
+
+    assert recorded[0]["error"] == f"1 message(s) failed; {poll.HELD_BY_OUTAGE} (UnavailableError)"
+
+
+@pytest.mark.parametrize("reason", [poll.HELD_PAUSED, poll.HELD_BY_GATE])
+def test_a_poll_held_by_a_pause_or_the_cap_is_ok(
+    monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    recorded = _capture(monkeypatch)
+    liveness = Liveness(booted_at=datetime.now(UTC))
+    monkeypatch.setattr("app.jobs.scheduler.LIVENESS", liveness)
+    monkeypatch.setattr("app.jobs.scheduler.graph_session", _session)
+    held = PollResult(seen=0, started=0, failed=0, held=reason)
+    monkeypatch.setattr("app.jobs.scheduler.poll_once", lambda *a, **k: held)
+
+    run_poll(_settings())
+
+    assert recorded[0]["ok"] is True
+    assert liveness.last_poll_ok_at is not None
 
 
 def test_a_raising_poll_is_recorded_with_its_error_type(monkeypatch: pytest.MonkeyPatch) -> None:

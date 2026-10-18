@@ -27,7 +27,7 @@ from app.config import Settings
 from app.google.auth import standby_token_store, token_store
 from app.graph.runner import graph_session
 from app.jobs.ingest_job import scheduled_ingest
-from app.jobs.poll import STOPPING, poll_once
+from app.jobs.poll import HELD_BY_OUTAGE, STOPPING, poll_once
 from app.jobs.purge import PurgeResult, purge
 from app.jobs.watch import watch
 from app.mail.recall import ALERTS as MAIL_ALERTS
@@ -111,16 +111,23 @@ def run_poll(settings: Settings) -> None:
     log.info(
         "poll: saw %d unread, started %d, failed %d", result.seen, result.started, result.failed
     )
-    LIVENESS.poll_finished(ok=result.failed == 0, at=datetime.now(UTC))
+    # A pass held by an outage is not ok, like one that failed messages: mail
+    # waits on the outage. `/health` returns 503 only once no pass has
+    # succeeded for three intervals: three passes in a row that meet the
+    # outage, so three messages or more waiting.
+    problems = [f"{result.failed} message(s) failed"] if result.failed else []
+    if result.held == HELD_BY_OUTAGE:
+        problems.append(f"{HELD_BY_OUTAGE} ({result.outage})" if result.outage else HELD_BY_OUTAGE)
+    LIVENESS.poll_finished(ok=not problems, at=datetime.now(UTC))
     record_tick(
         settings,
         "poll",
         started_at,
-        ok=result.failed == 0,
+        ok=not problems,
         seen=result.seen,
         started=result.started,
         failed=result.failed,
-        error=None if result.failed == 0 else f"{result.failed} message(s) failed",
+        error="; ".join(problems) or None,
     )
 
 

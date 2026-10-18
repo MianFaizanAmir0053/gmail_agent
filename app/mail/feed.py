@@ -29,6 +29,13 @@ labels again, and ends a message now in the trash or spam as gone.
 A candidate is processed only while it is under seven days old. An older
 one is recorded `SKIPPED` ("too old when reached") without a model call, so
 nothing that meets the rule is ever silently dropped.
+
+An outage is not the message's failure (M20's open question, closed on
+2026-10-18). Poll sends a message it could not run for an outage back here,
+counted on its row, and the feed waits `OUTAGE_WAIT` before it offers that
+message again: the rest go first. Its `MAX_OUTAGES`th outage dead-letters
+it, so one message that meets an outage every time cannot hold the feed for
+a week.
 """
 
 from __future__ import annotations
@@ -55,6 +62,21 @@ that both reached from being processed twice."""
 SYNCED_WITHIN = timedelta(minutes=30)
 """The feed offers nothing unless a sync pass reached the end of history
 this recently: fifteen of the sync's two-minute ticks."""
+
+OUTAGE_WAIT = timedelta(minutes=25)
+"""How long a message sent back for an outage waits before it is offered
+again. Poll stamps the outage with its pass's start, and passes start ten
+minutes apart, give or take the seconds a session takes to open. So the
+third tick after offers the message again, half an hour on, even when that
+pass opens faster than the stamped one did; the second, twenty minutes on,
+does not."""
+
+MAX_OUTAGES = 48
+"""The outage that dead-letters a message: its forty-eighth, so its tries
+span about a day, a day's quota included. The count is per message, but most
+outages are everyone's, and each pass tries only the oldest waiting message:
+a lower cap dead-lettered the waiting mail a few at a time in a long outage
+(the owner's decision, 2026-10-18, after three reviews)."""
 
 TOO_OLD = "too old when reached"
 GONE = "no longer in the mailbox"
@@ -90,7 +112,12 @@ _NOT_HELD = """
 RULE = OFFERED + UNRECORDED + _NOT_HELD
 """The whole rule, for the feed and for the recall and `--check-feed`
 checks that ask whether it held: the same SQL, so they cannot drift apart.
-Its one parameter is `margin`."""
+Its one parameter is `margin`.
+
+The outage wait is not part of it, only of `candidates`: a message waiting
+out an outage is waiting. The daily recall reads mail that arrived 2 to 26
+hours before it, and one that has waited over an hour makes it report the
+feed stalled. That alarm is true: the message did not move."""
 
 
 def active(conn: psycopg.Connection) -> bool:
@@ -115,6 +142,7 @@ def candidates(conn: psycopg.Connection, limit: int, *, now: datetime | None = N
           JOIN gmail_cursors c ON c.account = m.account
          WHERE {RULE}
            AND m.internal_at >= %(fresh)s
+           AND (m.last_outage_at IS NULL OR m.last_outage_at <= %(rested)s)
            {_SYNCED}
          ORDER BY m.internal_at, m.message_id
          LIMIT %(limit)s
@@ -122,11 +150,33 @@ def candidates(conn: psycopg.Connection, limit: int, *, now: datetime | None = N
         {
             "margin": MARGIN,
             "fresh": now - AGE_LIMIT,
+            "rested": now - OUTAGE_WAIT,
             "synced": now - SYNCED_WITHIN,
             "limit": limit,
         },
     ).fetchall()
     return [row[0] for row in rows]
+
+
+def record_outage(conn: psycopg.Connection, message_id: str, *, now: datetime | None = None) -> int:
+    """Count an outage against a message poll sends back, stamped `now`, and
+    return its count. A message with no synced row counts as at
+    `MAX_OUTAGES`: nothing could count it again, so poll dead-letters it
+    rather than retry it blind.
+
+    The count is never reset: to re-run a FAILED message by hand, reset it
+    and `last_outage_at` too (docs/DEPLOY.md, section 10.4). The id alone
+    names the row, as it names the ledger's: the agent reads one mailbox."""
+    rows = conn.execute(
+        """
+        UPDATE gmail_messages
+           SET outages = outages + 1, last_outage_at = %s
+         WHERE message_id = %s
+        RETURNING outages
+        """,
+        (now or datetime.now(UTC), message_id),
+    ).fetchall()
+    return max((row[0] for row in rows), default=MAX_OUTAGES)
 
 
 def record_too_old(conn: psycopg.Connection, *, now: datetime | None = None) -> list[str]:

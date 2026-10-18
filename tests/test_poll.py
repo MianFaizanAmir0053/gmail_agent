@@ -6,6 +6,7 @@ import threading
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -52,17 +53,27 @@ class FakeFeed:
     on: bool = False
     waiting: list[str] = field(default_factory=list)
     too_old: list[str] = field(default_factory=list)
+    outages: dict[str, int] = field(default_factory=dict)
+    stamps: dict[str, datetime] = field(default_factory=dict)
+    read_at: datetime | None = None
     GONE: str = real_feed.GONE
     TOO_OLD: str = real_feed.TOO_OLD
+    MAX_OUTAGES: int = real_feed.MAX_OUTAGES
 
     def active(self, conn: object) -> bool:
         return self.on
 
     def candidates(self, conn: object, limit: int) -> list[str]:
+        self.read_at = datetime.now(UTC)
         return self.waiting[:limit]
 
     def record_too_old(self, conn: object) -> list[str]:
         return self.too_old
+
+    def record_outage(self, conn: object, message_id: str, *, now: datetime) -> int:
+        self.outages[message_id] = self.outages.get(message_id, 0) + 1
+        self.stamps[message_id] = now
+        return self.outages[message_id]
 
 
 @dataclass
@@ -521,3 +532,252 @@ def test_a_message_stopped_by_a_model_with_no_price_goes_back_to_the_feed(
 
     assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
     assert (result.failed, result.held) == (0, poll.HELD_BY_GATE)
+
+
+# --- an outage is not the message's failure (M20's open question, 2026-10-18) -------------
+
+
+def _model_down(message_id: str) -> None:
+    from app.extraction.llm import UnavailableError
+
+    raise UnavailableError("gemini-3.6-flash unavailable after 4 attempts: 503 UNAVAILABLE")
+
+
+def test_a_model_outage_sends_the_message_back_to_the_feed_and_stops_the_pass(
+    ledger: FakeLedger,
+    cursor: FakeCursor,
+    feed: FakeFeed,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Released, checkpoint and all, like a spending stop, and counted: the
+    feed offers it again after its wait. The rest would meet the same outage."""
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=_model_down)
+    # Counted, then the checkpoint, then the claim: a pass that claimed the
+    # message after its release would otherwise lose its own new checkpoint,
+    # or find it offered with no outage counted.
+    before_release: list[tuple[bool, bool]] = []
+
+    def release(message_id: str) -> bool:
+        before_release.append((message_id in feed.outages, message_id in session.deleted))
+        ledger.marks.append((message_id, MessageStatus.CLAIMED, "released"))
+        return True
+
+    ledger.release = release  # type: ignore[method-assign]
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10, show_titles=False)
+
+    assert ledger.claimed == ["m1"]
+    assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
+    assert session.deleted == ["m1"] and before_release == [(True, True)]
+    assert feed.outages == {"m1": 1}
+    assert f"m1  RELEASED  {poll.HELD_BY_OUTAGE} (UnavailableError)" in capsys.readouterr().out
+    assert (result.failed, result.held, result.outage) == (
+        0,
+        poll.HELD_BY_OUTAGE,
+        "UnavailableError",
+    )
+
+
+def test_an_outage_is_stamped_with_the_start_of_its_pass(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """Not with when the run gave up, after its retries: the feed's wait then
+    ends at the tick it names, not one later."""
+    feed.on, feed.waiting = True, ["m1"]
+    session = FakeSession(unread=[], on_start=_model_down)
+    before = datetime.now(UTC)
+
+    poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert feed.read_at is not None
+    assert before <= feed.stamps["m1"] <= feed.read_at
+
+
+def test_a_message_s_tries_span_about_a_day() -> None:
+    """The owner's decision (2026-10-18): long enough for a day's quota to
+    reset. Poll ticks every ten minutes, so the wait is a whole number of
+    ticks; the tries run from the first outage to the last."""
+    from datetime import timedelta
+
+    tick = timedelta(minutes=10)
+    retry_every = -(-real_feed.OUTAGE_WAIT // tick) * tick  # whole ticks, rounded up
+
+    assert retry_every == timedelta(minutes=30)
+    assert (real_feed.MAX_OUTAGES - 1) * retry_every >= timedelta(hours=23)
+
+
+def test_a_message_short_of_its_last_outage_is_still_sent_back(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    feed.on, feed.waiting = True, ["m1"]
+    feed.outages = {"m1": feed.MAX_OUTAGES - 2}
+    session = FakeSession(unread=[], on_start=_model_down)
+
+    poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
+    assert feed.outages == {"m1": feed.MAX_OUTAGES - 1}
+
+
+def _gemini(code: int, status: str, message: str) -> Exception:
+    from google.genai import errors as genai_errors
+
+    return genai_errors.ClientError(
+        code, {"error": {"code": code, "status": status, "message": message}}
+    )
+
+
+def test_a_refusal_every_message_would_meet_is_an_outage(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """Gemini refusing the project's billing; `test_outage.py` has the rest."""
+
+    def refused(message_id: str) -> None:
+        raise _gemini(403, "PERMISSION_DENIED", "Billing is not enabled for this project.")
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=refused)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
+    assert (result.held, result.outage) == (poll.HELD_BY_OUTAGE, "ClientError")
+
+
+def test_a_400_about_the_message_itself_is_its_own_failure(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    def too_long(message_id: str) -> None:
+        if message_id == "m1":
+            raise _gemini(400, "INVALID_ARGUMENT", "The input token count exceeds the maximum.")
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=too_long)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == ["m1", "m2"]
+    assert ledger.marks[0][:2] == ("m1", MessageStatus.FAILED)
+    assert (result.failed, result.held) == (1, None)
+
+
+def test_a_calendar_that_cannot_be_read_is_an_outage(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """Google can say so inside a 200: every meeting's conflict check would fail."""
+    from app.google.calendar import CalendarUnavailableError
+
+    def unreadable(message_id: str) -> None:
+        raise CalendarUnavailableError("the calendar's free/busy cannot be read")
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=unreadable)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
+    assert (result.held, result.outage) == (poll.HELD_BY_OUTAGE, "CalendarUnavailableError")
+
+
+def test_the_network_failing_under_the_model_is_an_outage(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """The model's client gives up on no network error itself: it raises
+    httpx's own, which carries no status code."""
+    import httpx
+
+    def offline(message_id: str) -> None:
+        raise httpx.ConnectError("[Errno 11001] getaddrinfo failed")
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=offline)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
+    assert result.held == poll.HELD_BY_OUTAGE
+
+
+def test_an_outage_partway_through_keeps_what_ran_and_stops_there(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    def down_at_m2(message_id: str) -> None:
+        if message_id == "m2":
+            _model_down(message_id)
+
+    feed.on, feed.waiting = True, ["m1", "m2", "m3"]
+    session = FakeSession(unread=[], on_start=down_at_m2)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == ["m1", "m2"]
+    assert ledger.marks == [("m2", MessageStatus.CLAIMED, "released")]
+    assert (result.started, result.failed, result.held) == (2, 0, poll.HELD_BY_OUTAGE)
+
+
+def test_a_gmail_outage_sends_the_message_back_too(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    from fake_gmail import http_error
+
+    def gmail_down(message_id: str) -> None:
+        raise http_error(503)
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=gmail_down)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.marks == [("m1", MessageStatus.CLAIMED, "released")]
+    assert feed.outages == {"m1": 1}
+    assert (result.failed, result.held) == (0, poll.HELD_BY_OUTAGE)
+
+
+def test_a_message_at_its_last_outage_is_dead_lettered_and_the_pass_still_stops(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """One that meets an outage every time cannot hold the feed for a week."""
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    feed.outages = {"m1": feed.MAX_OUTAGES - 1}
+    session = FakeSession(unread=[], on_start=_model_down)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == ["m1"]
+    assert [(m, status) for m, status, _ in ledger.marks] == [("m1", MessageStatus.FAILED)]
+    assert (ledger.marks[0][2] or "").startswith("UnavailableError: ")
+    assert session.deleted == []
+    assert (result.failed, result.held) == (1, poll.HELD_BY_OUTAGE)
+
+
+def test_a_failure_of_the_message_itself_is_dead_lettered_and_the_pass_goes_on(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    def broken(message_id: str) -> None:
+        if message_id == "m1":
+            raise ValueError("the model's JSON did not parse")
+
+    feed.on, feed.waiting = True, ["m1", "m2"]
+    session = FakeSession(unread=[], on_start=broken)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == ["m1", "m2"]
+    assert ledger.marks[0][:2] == ("m1", MessageStatus.FAILED)
+    assert feed.outages == {}
+    assert (result.failed, result.held) == (1, None)
+
+
+def test_before_the_first_sync_run_an_outage_is_dead_lettered_as_before(
+    ledger: FakeLedger, cursor: FakeCursor, feed: FakeFeed
+) -> None:
+    """There is no synced row to count it on, and nothing would offer it again."""
+    session = FakeSession(unread=["a", "b"], on_start=_model_down)
+
+    result = poll.poll_once(cast(GraphSession, session), limit=10)
+
+    assert ledger.claimed == ["a", "b"]
+    assert [status for _, status, _ in ledger.marks] == [MessageStatus.FAILED] * 2
+    assert feed.outages == {}
+    assert (result.failed, result.held) == (2, None)

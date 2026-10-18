@@ -664,3 +664,13 @@ A fresh-context review of the first breakdown, read against this spec and the re
   - M21's alert tags and the service worker's map are one task;
   - snoozes end in 21.3;
   - a deploy task turns the switch on (21.27).
+
+### One outage judge (2026-10-18)
+
+M20 closed its open question on retrying FAILED messages the same day, for outages (its running notes). Poll now asks `app.outage.is_outage`, and it covers more than this spec's `UnavailableError` or `gmail.is_outage`. It also covers:
+- the models' network errors;
+- Gemini's and AI Gateway's refusals of the key, billing, model or quota;
+- a calendar Google cannot read;
+- a response cut off mid-read.
+
+M21's reads use the same judge for their strikes (21.7), so a failure poll sends back is never a strike here. The spec's own text ("Why this comes next", and D6's "A failed read") is unchanged; this note is what changed under it.

@@ -607,6 +607,59 @@ says).
 - **Too old:** mail first reached more than seven days after it arrived --
   after a long outage, restored from the trash, held by a pause -- is
   recorded SKIPPED ("too old when reached"), never processed.
+- **An outage is not a failure** (since 2026-10-18; migration `014`, applied
+  at start). When a message cannot be run for a failure every message would
+  meet, it goes back to the feed. One judge decides, `app.outage.is_outage`:
+  - Gemini or AI Gateway answering a `429` or `5xx` after the retries, or
+    the network to them failing;
+  - either refusing the key, billing, permission, model or quota, or Gemini
+    refusing the project outright (`FAILED_PRECONDITION`);
+  - a calendar Google cannot read, even when it says so inside a `200`;
+  - Gmail, Calendar or the network down, a response cut off mid-read
+    included.
+
+  The rest of that pass waits. The feed offers the message again three
+  ticks later, half an hour on, or one tick either way when a tick starts
+  late (APScheduler allows five minutes). Its forty-eighth outage records it
+  FAILED, about a day on. Any other failure is FAILED, and is never tried
+  again. The pass's line names the outage's type, and so does its
+  `job_runs` error. These times assume `POLL_INTERVAL_MINUTES` of 10, its
+  default.
+  - A pass held by an outage is not ok. `/health` returns 503 once no pass
+    has succeeded for three intervals, which takes three messages or more
+    waiting.
+  - A message waiting out an outage counts as waiting. The daily recall,
+    after 05:15 UTC, reads mail that arrived 2 to 26 hours before it. One
+    that has waited over an hour makes it report "The mail feed has
+    stalled", and that alarm is true. `--check-feed` lists such a message
+    as neither processed nor recorded, with no reason given.
+  - Each try runs the message from the start. An outage after extraction,
+    at the calendar, spends its model calls again, against the message's
+    ceiling (`MESSAGE_CEILING_USD`).
+  - A failure of one message that looks like an outage is taken for one: a
+    `500` that Gmail or Gemini answers for that message alone. It holds a
+    pass a try, for about a day, then FAILED.
+  - To re-run a FAILED message by hand, run this in Supabase's SQL editor,
+    with the message's id. It is one transaction, and it goes checkpoint
+    first and ledger last, as the code does:
+
+    ```sql
+    DO $$
+    DECLARE target text := '<message id>';
+    BEGIN
+      PERFORM 1 FROM processed_messages
+       WHERE gmail_message_id = target AND status = 'failed';
+      IF NOT FOUND THEN RAISE EXCEPTION 'no FAILED row for %', target; END IF;
+      DELETE FROM checkpoint_writes WHERE thread_id = target;
+      DELETE FROM checkpoint_blobs WHERE thread_id = target;
+      DELETE FROM checkpoints WHERE thread_id = target;
+      UPDATE gmail_messages SET outages = 0, last_outage_at = NULL
+       WHERE message_id = target;
+      DELETE FROM processed_messages WHERE gmail_message_id = target;
+    END $$;
+    ```
+
+    The feed offers it again at the next tick if it is under seven days old.
 
 ### 10.5 The command line
 
