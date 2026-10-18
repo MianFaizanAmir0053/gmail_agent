@@ -443,3 +443,25 @@ unattended window and the owner's labelling remain.
 - `gemini-embedding-001` is not on Google's pricing page as of today. Embedding cost is estimated at Gemini Embedding 2's $0.20 per million tokens, and M18 must check the model's status before re-enabling ingestion.
 - The owner's local `.env` sets `EXTRACTION_MODEL=gemini-2.5-pro`, which the price table leaves out because it has tiered pricing. Production keeps the priced default (`gemini-3.6-flash`), or `measure cost` refuses to run.
 - The Neon test database's password was pasted into the session chat. The owner resets it.
+
+### 2026-10-18 · Down two weeks; running again
+
+**What stopped it.** The agent ran on the laptop from 2026-10-02. The ledger last moved at 12:33 UTC on 2026-10-03, and the mail sync last caught up at 19:30 UTC that day. By 2026-10-18, two things kept it down:
+- Windows' Smart App Control blocked the venv's `python.exe`, and with it every `uv run`, the start script's included. `tasks.ps1` now runs uv's own Python as the venv when that happens (`21981fd`, its install fixed in `359d7e1`), and `secrets\start-prod.ps1` runs the worktree's `tasks.ps1 agent`.
+- With nothing touching it for over a week, Supabase paused the free project, and its pooler answered `tenant/user ... not found`. The owner restored it.
+
+**The restart, at `359d7e1`, which brings M18 and M19.**
+- Production had seen 6 messages (2 failed, 4 skipped) and made 1 proposal, already decided. Nothing was parked, so M18's drain had nothing to do.
+- Migration 013 applied at 18:39 UTC. `/health` answers 200 on the laptop and through ngrok, with `DRY_RUN` on.
+- The first poll, at 18:49, ran clean and processed nothing, as designed: the feed offers mail only once the sync has caught up. Gmail still accepted the two-week-old cursor, so the sync walked the history without a catch-up and caught up at 18:51.
+- The second poll, at 18:59, ran 20 messages through M18's pipeline:
+  - 10 were too old when reached;
+  - 4 were set aside for carrying a sign-in code;
+  - 2 were not meetings;
+  - 3 became cards, which the owner confirmed from the phone, each ending as a dry run;
+  - 1 failed: Gemini answered `503 UNAVAILABLE` ("high demand") on all four attempts.
+- The third poll, at 19:09, ran clean, and `/health` reports it.
+- A FAILED message is never tried again: the feed offers only mail with no ledger row. M20 left that open for M21, and M21's spec does not take it up.
+- The hourly recall at 18:49 reported "Mail sync missed messages". It ran two minutes before the sync caught up.
+
+**For the window.** Day 0 is still not recorded, so none of the eight days has run. Mail from the gap that is over seven days old is recorded `SKIPPED` ("too old when reached"), with no model call. The day-4 standby token was never made, so `/health` reports it `unreadable`.
